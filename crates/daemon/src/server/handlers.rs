@@ -31,13 +31,18 @@ pub(crate) async fn handle_compact_benchmark(State(state): State<RuntimeState>, 
     }
     let conn = state.db.lock().await;
     let result = crate::compaction::purge_benchmark_artifacts(&conn);
+    let failures: Vec<serde_json::Value> = result
+        .failures
+        .iter()
+        .map(|f| serde_json::json!({"op": f.op, "error": f.error}))
+        .collect();
     handlers::json_response(
         axum::http::StatusCode::OK,
         serde_json::json!({"decisionsDeleted":result
 .decisions_deleted,"embeddingsDeleted":result.embeddings_deleted,"clusterMembersDeleted":result.cluster_members_deleted,
 "decisionConflictsDeleted":result.decision_conflicts_deleted,"recallFeedbackDeleted":result.recall_feedback_deleted,
 "coOccurrenceDeleted":result.co_occurrence_deleted,"eventsDeleted":result.events_deleted,"bytesBefore":result.bytes_before,
-"bytesAfter":result.bytes_after,"savedKB":(result.bytes_before-result.bytes_after)/1024,}),
+"bytesAfter":result.bytes_after,"savedKB":(result.bytes_before-result.bytes_after)/1024,"failures":failures}),
     )
 }
 pub(crate) async fn handle_storage(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {

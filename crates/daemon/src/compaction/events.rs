@@ -1,9 +1,11 @@
 use super::*;
 use rusqlite::{params, Connection};
-pub(crate) fn rollup_old_boot_savings(conn: &Connection) -> usize {
-    rollup_old_boot_savings_with_retention(conn, BOOT_SAVINGS_RETENTION_DAYS)
+pub(crate) fn rollup_old_boot_savings(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
+    rollup_old_boot_savings_with_retention(conn, failures, BOOT_SAVINGS_RETENTION_DAYS)
 }
-pub(crate) fn rollup_old_boot_savings_with_retention(conn: &Connection, retention_days: i64) -> usize {
+pub(crate) fn rollup_old_boot_savings_with_retention(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, retention_days: i64) -> usize {
+    // Read-only aggregate SELECTs stay fail-safe-swallowed: a failed read
+    // yields zeros and the early-return below skips every destructive op.
     let retention_window = format!("-{retention_days} days");
     let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
     let (old_saved, old_served, old_baseline, old_boots): (i64, i64, i64, i64) = conn
@@ -44,24 +46,34 @@ pub(crate) fn rollup_old_boot_savings_with_retention(conn: &Connection, retentio
     let merged_served = old_served + rollup_served;
     let merged_baseline = old_baseline + rollup_baseline;
     let merged_boots = old_boots + rollup_boots;
-    let deleted_old = conn
-        .execute(
-            "DELETE FROM events \
-             WHERE type = 'boot_savings' \
-               AND created_at < datetime('now', ?1) \
-               AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
-               AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
-               AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
-            params![retention_window, benchmark_source_pattern],
-        )
-        .unwrap_or(0);
-    let deleted_rollups = conn.execute("DELETE FROM events WHERE type = 'boot_savings_rollup'", []).unwrap_or(0);
+    let deleted_old = exec_counted(
+        conn,
+        failures,
+        "rollup_old_boot_savings DELETE events (boot_savings)",
+        "DELETE FROM events \
+         WHERE type = 'boot_savings' \
+           AND created_at < datetime('now', ?1) \
+           AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
+        params![retention_window, benchmark_source_pattern],
+    );
+    let deleted_rollups = exec_counted(
+        conn,
+        failures,
+        "rollup_old_boot_savings DELETE events (boot_savings_rollup)",
+        "DELETE FROM events WHERE type = 'boot_savings_rollup'",
+        [],
+    );
     if merged_boots > 0 {
         let payload = serde_json::json!({"saved":
 merged_saved,"served":merged_served,"baseline":merged_baseline,"boots":merged_boots,"retention_days":retention_days,"rolled_up_at"
 :chrono::Utc::now().to_rfc3339(),})
         .to_string();
-        let _ = conn.execute(
+        exec_counted(
+            conn,
+            failures,
+            "rollup_old_boot_savings INSERT boot_savings_rollup",
             "INSERT INTO events (type, data, source_agent, created_at) \
              VALUES ('boot_savings_rollup', ?1, 'compaction', datetime('now'))",
             params![payload],
@@ -72,10 +84,11 @@ merged_saved,"served":merged_served,"baseline":merged_baseline,"boots":merged_bo
         deleted_old + deleted_rollups
     }
 }
-pub(crate) fn rollup_old_savings_events(conn: &Connection, retention_days: i64) -> usize {
+pub(crate) fn rollup_old_savings_events(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, retention_days: i64) -> usize {
     let retention_window = format!("-{retention_days} days");
     let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
     type SavingsRollupRow = (String, i64, String, i64, i64, i64, i64, i64, i64);
+    // Candidate SELECT stays fail-safe-swallowed: no candidates -> no deletes.
     let rollup_rows:Vec<SavingsRollupRow>=conn.prepare(
 "SELECT \
                  SUBSTR(created_at, 1, 10) AS day, \
@@ -123,7 +136,10 @@ row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,i64>(8)?,))})?;Ok(rows.fla
         return 0;
     }
     for (day, hour, operation, saved, served, baseline, events, hits, misses) in rollup_rows {
-        let _ = conn.execute(
+        exec_counted(
+            conn,
+            failures,
+            "rollup_old_savings_events INSERT event_savings_rollups",
             "INSERT INTO event_savings_rollups \
                  (day, hour, operation, saved, served, baseline, events, hits, misses, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now')) \
@@ -138,7 +154,10 @@ row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,i64>(8)?,))})?;Ok(rows.fla
             params![day, hour, operation, saved, served, baseline, events, hits, misses],
         );
     }
-    conn.execute(
+    exec_counted(
+        conn,
+        failures,
+        "rollup_old_savings_events DELETE events (savings)",
         "DELETE FROM events \
          WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
            AND created_at IS NOT NULL \
@@ -148,50 +167,58 @@ row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,i64>(8)?,))})?;Ok(rows.fla
            AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
         params![retention_window, benchmark_source_pattern],
     )
-    .unwrap_or(0)
 }
-pub(crate) fn prune_old_event_savings_rollups(conn: &Connection, retention_days: i64) -> usize {
-    conn.execute(
+pub(crate) fn prune_old_event_savings_rollups(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, retention_days: i64) -> usize {
+    exec_counted(
+        conn,
+        failures,
+        "prune_old_event_savings_rollups DELETE event_savings_rollups",
         "DELETE FROM event_savings_rollups \
          WHERE day < date('now', ?1)",
         params![format!("-{retention_days} days")],
     )
-    .unwrap_or(0)
 }
-pub(crate) fn prune_old_events_with_retention_limit(conn: &Connection, retention_days: i64, max_delete_rows: Option<i64>) -> usize {
+pub(crate) fn prune_old_events_with_retention_limit(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, retention_days: i64, max_delete_rows: Option<i64>) -> usize {
     let retention_window = format!("-{retention_days} days");
     if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
-        return conn
-            .execute(
-                "DELETE FROM events \
-                 WHERE id IN ( \
-                   SELECT id \
-                   FROM events \
-                   WHERE type NOT IN ('boot_savings', 'boot_savings_rollup') \
-                     AND (created_at IS NULL OR TRIM(created_at) = '' OR created_at < datetime('now', ?1)) \
-                   ORDER BY id ASC \
-                   LIMIT ?2 \
-                 )",
-                params![retention_window, max_rows],
-            )
-            .unwrap_or(0);
+        return exec_counted(
+            conn,
+            failures,
+            "prune_old_events DELETE events (batched)",
+            "DELETE FROM events \
+             WHERE id IN ( \
+               SELECT id \
+               FROM events \
+               WHERE type NOT IN ('boot_savings', 'boot_savings_rollup') \
+                 AND (created_at IS NULL OR TRIM(created_at) = '' OR created_at < datetime('now', ?1)) \
+               ORDER BY id ASC \
+               LIMIT ?2 \
+             )",
+            params![retention_window, max_rows],
+        );
     }
-    conn.execute(
+    exec_counted(
+        conn,
+        failures,
+        "prune_old_events DELETE events",
         "DELETE FROM events \
          WHERE type NOT IN ('boot_savings', 'boot_savings_rollup') \
            AND (created_at IS NULL OR TRIM(created_at) = '' OR created_at < datetime('now', ?1))",
         params![retention_window],
     )
-    .unwrap_or(0)
 }
-pub(crate) fn prune_event_type_caps_with_limit(conn: &Connection, caps: &[(&str, i64)], max_delete_rows: Option<i64>) -> usize {
+pub(crate) fn prune_event_type_caps_with_limit(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, caps: &[(&str, i64)], max_delete_rows: Option<i64>) -> usize {
     let mut total = 0usize;
     for (event_type, keep_rows) in caps.iter().copied() {
         if keep_rows <= 0 {
             continue;
         }
+        let op = format!("prune_event_type_caps DELETE events ({event_type})");
         let deleted = if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
-            conn.execute(
+            exec_counted(
+                conn,
+                failures,
+                &op,
                 "DELETE FROM events
                  WHERE id IN (
                    SELECT id
@@ -207,9 +234,11 @@ pub(crate) fn prune_event_type_caps_with_limit(conn: &Connection, caps: &[(&str,
                  )",
                 params![event_type, keep_rows, max_rows],
             )
-            .unwrap_or(0)
         } else {
-            conn.execute(
+            exec_counted(
+                conn,
+                failures,
+                &op,
                 "DELETE FROM events
                  WHERE id IN (
                    SELECT id
@@ -220,16 +249,17 @@ pub(crate) fn prune_event_type_caps_with_limit(conn: &Connection, caps: &[(&str,
                  )",
                 params![event_type, keep_rows],
             )
-            .unwrap_or(0)
         };
         total += deleted;
     }
     total
 }
-pub(crate) fn prune_nonboot_event_overflow_with_limit(conn: &Connection, keep_rows: i64, max_delete_rows: Option<i64>) -> usize {
+pub(crate) fn prune_nonboot_event_overflow_with_limit(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, keep_rows: i64, max_delete_rows: Option<i64>) -> usize {
     if keep_rows <= 0 {
         return 0;
     }
+    // Read-only protected-rows COUNT stays fail-safe-swallowed: zero shifts
+    // only the overflow threshold, never deletes a row by itself.
     let protected_analytics_rows: i64 = conn
         .query_row(
             "SELECT COUNT(*)
@@ -249,28 +279,32 @@ pub(crate) fn prune_nonboot_event_overflow_with_limit(conn: &Connection, keep_ro
         'tool_call_savings'
     )";
     if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
-        return conn
-            .execute(
-                &format!(
-                    "DELETE FROM events
-                     WHERE id IN (
-                       SELECT id
-                       FROM (
-                         SELECT id
-                         FROM events
-                         WHERE {prune_types_predicate}
-                         ORDER BY id DESC
-                         LIMIT -1 OFFSET ?1
-                       )
-                       ORDER BY id ASC
-                       LIMIT ?2
-                     )"
-                ),
-                params![keep_non_analytics_rows, max_rows],
-            )
-            .unwrap_or(0);
+        return exec_counted(
+            conn,
+            failures,
+            "prune_nonboot_event_overflow DELETE events (batched)",
+            &format!(
+                "DELETE FROM events
+                 WHERE id IN (
+                   SELECT id
+                   FROM (
+                     SELECT id
+                     FROM events
+                     WHERE {prune_types_predicate}
+                     ORDER BY id DESC
+                     LIMIT -1 OFFSET ?1
+                   )
+                   ORDER BY id ASC
+                   LIMIT ?2
+                 )"
+            ),
+            params![keep_non_analytics_rows, max_rows],
+        );
     }
-    conn.execute(
+    exec_counted(
+        conn,
+        failures,
+        "prune_nonboot_event_overflow DELETE events",
         &format!(
             "DELETE FROM events
              WHERE id IN (
@@ -283,8 +317,11 @@ pub(crate) fn prune_nonboot_event_overflow_with_limit(conn: &Connection, keep_ro
         ),
         params![keep_non_analytics_rows],
     )
-    .unwrap_or(0)
 }
-pub(crate) fn checkpoint_after_compaction(conn: &Connection, allow_vacuum: bool) {
-    let _ = if allow_vacuum { conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") } else { conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);") };
+pub(crate) fn checkpoint_after_compaction(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, allow_vacuum: bool) {
+    if allow_vacuum {
+        exec_batch_counted(conn, failures, "checkpoint_after_compaction wal_checkpoint", "PRAGMA wal_checkpoint(TRUNCATE);");
+    } else {
+        exec_batch_counted(conn, failures, "checkpoint_after_compaction wal_checkpoint", "PRAGMA wal_checkpoint(PASSIVE);");
+    }
 }

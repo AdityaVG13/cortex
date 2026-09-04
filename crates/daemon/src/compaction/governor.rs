@@ -44,6 +44,11 @@ pub struct BenchmarkPurgeResult {
     pub events_deleted: usize,
     pub bytes_before: i64,
     pub bytes_after: i64,
+    /// Destructive/maintenance ops executed by this purge that failed. Empty =
+    /// all succeeded. Additive visibility only: `total_deleted` counts exactly
+    /// the deletions that committed, so purge pass/fail semantics are
+    /// unchanged.
+    pub failures: Vec<MaintenanceFailure>,
 }
 impl BenchmarkPurgeResult {
     pub fn total_deleted(&self) -> usize {
@@ -64,7 +69,7 @@ pub(crate) fn bytes_to_mb(bytes: i64) -> i64 {
 /// On failure the error is logged (op + driver message) and recorded in
 /// `failures` so the outcome struct reflects it; returns 0 — a failed purge
 /// is never counted as work.
-fn exec_counted(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, op: &str, sql: &str, params: impl rusqlite::Params) -> usize {
+pub(crate) fn exec_counted(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, op: &str, sql: &str, params: impl rusqlite::Params) -> usize {
     match conn.execute(sql, params) {
         Ok(n) => n,
         Err(err) => {
@@ -77,7 +82,7 @@ fn exec_counted(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, op: &
 
 /// Same contract as `exec_counted` for batch maintenance statements (VACUUM,
 /// wal_checkpoint) that return no row count.
-fn exec_batch_counted(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, op: &str, sql: &str) {
+pub(crate) fn exec_batch_counted(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, op: &str, sql: &str) {
     if let Err(err) = conn.execute_batch(sql) {
         eprintln!("[compaction] {op} FAILED: {err}");
         failures.push(MaintenanceFailure { op: op.to_string(), error: err.to_string() });
@@ -142,16 +147,16 @@ pub(crate) fn run_compaction_governor_with_options(conn: &Connection, allow_vacu
     }
     let mut result = run_compaction_with_options(conn, allow_vacuum);
     if before >= STORAGE_HARD_LIMIT_BYTES || nonboot_event_rows_before >= EVENT_NONBOOT_HARD_LIMIT_ROWS {
-        result.events_pruned += rollup_old_boot_savings_with_retention(conn, AGGRESSIVE_BOOT_SAVINGS_RETENTION_DAYS);
-        result.events_pruned += rollup_old_savings_events(conn, AGGRESSIVE_SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
-        result.events_pruned += prune_old_event_savings_rollups(conn, AGGRESSIVE_EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
-        result.events_pruned += prune_old_events_with_retention_limit(conn, AGGRESSIVE_EVENT_RETENTION_DAYS, startup_prune_limit);
-        result.events_pruned += prune_event_type_caps_with_limit(conn, EVENT_TYPE_HARD_CAPS, startup_prune_limit);
-        result.events_pruned += prune_nonboot_event_overflow_with_limit(conn, EVENT_NONBOOT_HARD_KEEP_ROWS, startup_prune_limit);
-        result.benchmark_pruned += prune_old_benchmark_artifacts(conn, AGGRESSIVE_BENCHMARK_RETENTION_DAYS, allow_vacuum);
-        result.archived_text_stripped += strip_archived_text_with_retention(conn, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
-        result.cluster_members_pruned += prune_orphan_cluster_members(conn);
-        result.feedback_aggregated += aggregate_old_feedback_with_window(conn, AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS);
+        result.events_pruned += rollup_old_boot_savings_with_retention(conn, &mut result.failures, AGGRESSIVE_BOOT_SAVINGS_RETENTION_DAYS);
+        result.events_pruned += rollup_old_savings_events(conn, &mut result.failures, AGGRESSIVE_SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
+        result.events_pruned += prune_old_event_savings_rollups(conn, &mut result.failures, AGGRESSIVE_EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
+        result.events_pruned += prune_old_events_with_retention_limit(conn, &mut result.failures, AGGRESSIVE_EVENT_RETENTION_DAYS, startup_prune_limit);
+        result.events_pruned += prune_event_type_caps_with_limit(conn, &mut result.failures, EVENT_TYPE_HARD_CAPS, startup_prune_limit);
+        result.events_pruned += prune_nonboot_event_overflow_with_limit(conn, &mut result.failures, EVENT_NONBOOT_HARD_KEEP_ROWS, startup_prune_limit);
+        result.benchmark_pruned += prune_old_benchmark_artifacts(conn, &mut result.failures, AGGRESSIVE_BENCHMARK_RETENTION_DAYS, allow_vacuum);
+        result.archived_text_stripped += strip_archived_text_with_retention(conn, &mut result.failures, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
+        result.cluster_members_pruned += prune_orphan_cluster_members(conn, &mut result.failures);
+        result.feedback_aggregated += aggregate_old_feedback_with_window(conn, &mut result.failures, AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS);
         let vacuum_sql = if allow_vacuum { "PRAGMA wal_checkpoint(TRUNCATE); VACUUM;" } else { "PRAGMA wal_checkpoint(PASSIVE);" };
         exec_batch_counted(conn, &mut result.failures, "governor aggressive checkpoint+VACUUM", vacuum_sql);
         result.bytes_after = db_size_bytes(conn);
@@ -180,23 +185,23 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
 pub(crate) fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> CompactionResult {
     let startup_prune_limit = (!allow_vacuum).then_some(STARTUP_EVENT_PRUNE_BATCH_ROWS);
     let mut result = CompactionResult { bytes_before: db_size_bytes(conn), ..CompactionResult::default() };
-    result.events_pruned = rollup_old_boot_savings(conn);
-    result.events_pruned += rollup_old_savings_events(conn, SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
-    result.events_pruned += prune_old_event_savings_rollups(conn, EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
-    result.events_pruned += prune_old_events_with_retention_limit(conn, EVENT_RETENTION_DAYS, startup_prune_limit);
-    result.events_pruned += prune_event_type_caps_with_limit(conn, EVENT_TYPE_SOFT_CAPS, startup_prune_limit);
-    result.events_pruned += prune_nonboot_event_overflow_with_limit(conn, EVENT_NONBOOT_SOFT_KEEP_ROWS, startup_prune_limit);
-    result.benchmark_pruned = prune_old_benchmark_artifacts(conn, BENCHMARK_RETENTION_DAYS, allow_vacuum);
-    result.archived_text_stripped = strip_archived_text(conn);
-    result.expired_pruned = prune_expired_entries(conn);
+    result.events_pruned = rollup_old_boot_savings(conn, &mut result.failures);
+    result.events_pruned += rollup_old_savings_events(conn, &mut result.failures, SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
+    result.events_pruned += prune_old_event_savings_rollups(conn, &mut result.failures, EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
+    result.events_pruned += prune_old_events_with_retention_limit(conn, &mut result.failures, EVENT_RETENTION_DAYS, startup_prune_limit);
+    result.events_pruned += prune_event_type_caps_with_limit(conn, &mut result.failures, EVENT_TYPE_SOFT_CAPS, startup_prune_limit);
+    result.events_pruned += prune_nonboot_event_overflow_with_limit(conn, &mut result.failures, EVENT_NONBOOT_SOFT_KEEP_ROWS, startup_prune_limit);
+    result.benchmark_pruned = prune_old_benchmark_artifacts(conn, &mut result.failures, BENCHMARK_RETENTION_DAYS, allow_vacuum);
+    result.archived_text_stripped = strip_archived_text(conn, &mut result.failures);
+    result.expired_pruned = prune_expired_entries(conn, &mut result.failures);
     result.crystal_embeddings_pruned = prune_crystal_member_embeddings(conn);
-    result.cluster_members_pruned = prune_orphan_cluster_members(conn);
-    result.feedback_aggregated = aggregate_old_feedback(conn);
+    result.cluster_members_pruned = prune_orphan_cluster_members(conn, &mut result.failures);
+    result.feedback_aggregated = aggregate_old_feedback(conn, &mut result.failures);
     result.stale_embeddings_pruned = prune_stale_embeddings(conn, &mut result.failures);
     result.co_occurrence_pruned = prune_singleton_co_occurrence(conn, &mut result.failures);
     result.legacy_embeddings_migrated = migrate_legacy_embeddings_to_pq8(conn);
     result.fts_optimized = optimize_fts_indexes(conn, &mut result.failures);
-    checkpoint_after_compaction(conn, allow_vacuum);
+    checkpoint_after_compaction(conn, &mut result.failures, allow_vacuum);
     let freelist_pages = freelist_count(conn);
     let total_deleted = result.events_pruned
         + result.benchmark_pruned
