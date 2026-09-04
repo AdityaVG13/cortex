@@ -94,7 +94,7 @@ pub(crate) fn parse_json_array(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| json!([]))
 }
 pub(crate) fn estimate_tokens_from_chars(char_count: usize) -> usize {
-    (char_count.saturating_mul(5) + 18) / 19
+    char_count.saturating_mul(5).div_ceil(19)
 }
 pub(crate) fn estimate_tokens(text: &str) -> usize {
     estimate_tokens_from_chars(text.len())

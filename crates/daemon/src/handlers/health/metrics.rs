@@ -79,10 +79,10 @@ pub(crate) fn app_managed_warmup_active(daemon_owner: Option<&str>) -> bool {
     started.elapsed() < Duration::from_secs(HEALTH_HEAVY_WARMUP_DELAY_SECS)
 }
 pub(crate) fn cache_snapshot_if_fresh(snapshot: Option<HealthHeavyMetricsSnapshot>, now_unix_secs: i64) -> Option<HealthHeavyMetricsSnapshot> {
-    snapshot.and_then(|entry| if entry.cache_age_secs(now_unix_secs) <= HEALTH_HEAVY_CACHE_TTL_SECS { Some(entry) } else { None })
+    snapshot.filter(|entry| entry.cache_age_secs(now_unix_secs) <= HEALTH_HEAVY_CACHE_TTL_SECS)
 }
 pub(crate) fn savings_payload_cache_if_fresh(snapshot: Option<SavingsPayloadSnapshot>, now_unix_secs: i64) -> Option<SavingsPayloadSnapshot> {
-    snapshot.and_then(|entry| if entry.cache_age_secs(now_unix_secs) <= SAVINGS_CACHE_TTL_SECS { Some(entry) } else { None })
+    snapshot.filter(|entry| entry.cache_age_secs(now_unix_secs) <= SAVINGS_CACHE_TTL_SECS)
 }
 pub(crate) fn weekday_name_from_sqlite(weekday: i64) -> &'static str {
     match weekday {

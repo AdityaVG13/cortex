@@ -35,20 +35,6 @@ pub enum SqliteVecRouteMode {
     Primary,
 }
 impl SqliteVecRouteMode {
-    pub(crate) fn from_env() -> Self {
-        match std::env::var("CORTEX_SQLITE_VEC_ROUTE") {
-            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "baseline" | "off" | "disabled" => Self::Baseline,
-                "trial" | "canary" | "sampled" => Self::Trial,
-                "primary" | "vec0" | "production" | "on" => Self::Primary,
-                unknown => {
-                    eprintln!("[cortex] WARNING: invalid CORTEX_SQLITE_VEC_ROUTE={unknown:?}; using primary");
-                    Self::Primary
-                }
-            },
-            Err(_) => Self::Primary,
-        }
-    }
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Baseline => "baseline",
@@ -66,9 +52,6 @@ pub struct SqliteVecCanaryConfig {
 impl SqliteVecCanaryConfig {
     pub(crate) fn disabled() -> Self {
         Self { trial_percent: 0, force_off: true, route_mode: SqliteVecRouteMode::Baseline }
-    }
-    pub(crate) fn from_env() -> Self {
-        Self::disabled()
     }
     pub fn effective_route_mode(&self) -> SqliteVecRouteMode {
         if self.force_off {

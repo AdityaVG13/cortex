@@ -430,7 +430,7 @@ pub async fn execute_unified_recall(
     let started_at = Instant::now();
     let policy_mode = recall_mode_for_budget(budget);
     let latency_budget_ms = recall_latency_budget_ms_for_mode(policy_mode);
-    let (mut results, semantic_route, fail_closed) = {
+    let (results, semantic_route, fail_closed) = {
         let conn = state.db_read.lock().await;
         let (mut results, mut semantic_route) = if budget == 0 {
             let trace = run_recall_with_query_vector_trace(&conn, query_text, k, None, ctx, source_prefix, Some(&state.sqlite_vec_canary), false)?;

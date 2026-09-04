@@ -96,7 +96,7 @@ fn label_for_members(texts: &[String]) -> String {
     items.truncate(4);
     if items.is_empty() {
         let first = texts.first().map(|s| s.as_str()).unwrap_or("");
-        let tokens: Vec<String> = first.split_whitespace().filter(|w| w.len() > 1).take(4).map(|w| fold_jaccard_token(w)).collect();
+        let tokens: Vec<String> = first.split_whitespace().filter(|w| w.len() > 1).take(4).map(fold_jaccard_token).collect();
         if tokens.is_empty() {
             return "cluster".to_string();
         }
@@ -170,7 +170,7 @@ pub fn run_crystallize_pass_with_brain(conn: &Connection, owner_id: Option<i64>,
                     vector_map.get(&(c.target_type.clone(), c.id)).cloned()
                 })
                 .collect();
-            if let Some(mean) = mean_vector(&vectors) {
+            if let Some(_mean) = mean_vector(&vectors) {
                 Vec::<u8>::new()
             } else {
                 Vec::new()
@@ -184,7 +184,7 @@ pub fn run_crystallize_pass_with_brain(conn: &Connection, owner_id: Option<i64>,
             "INSERT INTO memory_clusters (label, centroid, consolidated_text, member_count, owner_id, visibility) VALUES (?1, ?2, ?3, ?4, ?5, 'private')",
             params![label, centroid_blob, consolidated_text, member_count, owner_id],
         );
-        if let Ok(_) = insert {
+        if insert.is_ok() {
             let cluster_id = conn.last_insert_rowid();
             for &idx in member_indices {
                 let cand = &candidates[idx];

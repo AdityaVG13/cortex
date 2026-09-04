@@ -738,10 +738,12 @@ fn row_eligible(conn: &Connection, candidate: &ScoredCandidate, ctx: &RecallCont
     if !is_visible(candidate.owner_id, candidate.visibility.as_deref(), ctx) {
         return Ok(false);
     }
-    if ctx.team_mode && candidate.owner_id.is_some() && candidate.owner_id != ctx.caller_id {
-        if !matches!(candidate.visibility.as_deref(), Some("shared") | Some("team")) {
-            return Ok(false);
-        }
+    if ctx.team_mode
+        && candidate.owner_id.is_some()
+        && candidate.owner_id != ctx.caller_id
+        && !matches!(candidate.visibility.as_deref(), Some("shared") | Some("team"))
+    {
+        return Ok(false);
     }
     if matches!(frame.temporal_mode, TemporalMode::Current) || ctx.as_of.is_some() {
         let exists = load_target(conn, &candidate.target_type, candidate.target_id, ctx)?.is_some();

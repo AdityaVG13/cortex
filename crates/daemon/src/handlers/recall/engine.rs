@@ -1,7 +1,7 @@
 use crate::db::checkpoint_wal_best_effort;
 use crate::handlers::{estimate_tokens, now_iso, parse_timestamp_ms, truncate_chars};
 use crate::state::{RuntimeState, SqliteVecCanaryConfig};
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
@@ -1326,7 +1326,7 @@ fn search_table_recency(
         SearchTableKind::Memories => (MEMORIES_RECENCY_SQL, true),
         SearchTableKind::Decisions => (DECISIONS_RECENCY_SQL, false),
     };
-    let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![limit as i64, source_like], |row| {
             let effective_score =
@@ -1370,7 +1370,7 @@ fn search_table_fts(
         SearchTableKind::Memories => MEMORIES_FTS_SQL,
         SearchTableKind::Decisions => DECISIONS_FTS_SQL,
     };
-    let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
     let mut ranked = Vec::new();
     let mut push_fts_row = |id: i64,
                             primary: String,

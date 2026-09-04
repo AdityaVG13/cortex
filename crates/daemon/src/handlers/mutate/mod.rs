@@ -120,7 +120,7 @@ pub async fn handle_resolve(State(state): State<RuntimeState>, headers: HeaderMa
         return json_response(StatusCode::BAD_REQUEST, json!({"error":"Missing fields: keepId, action"}));
     }
     let mut conn = state.db.lock().await;
-    match resolve_decision_with_metadata(&mut conn, keep_id, action, body.superseded_id, ResolutionMetadata::default()) {
+    match resolve_decision_with_metadata(&mut conn, keep_id, action, body.superseded_id, ResolutionMetadata) {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(err) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":err})),
     }

@@ -255,7 +255,7 @@ pub(crate) fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result
         file.write_all(contents)?;
         file.flush()?;
         restrict_file_to_owner(path)?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(unix))]
     {

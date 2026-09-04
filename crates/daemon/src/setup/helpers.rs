@@ -1,6 +1,5 @@
 use super::types::StepResult;
 use crate::auth;
-use crate::db;
 use std::fs;
 use std::path::{Path, PathBuf};
 pub(crate) fn daemon_port() -> u16 {

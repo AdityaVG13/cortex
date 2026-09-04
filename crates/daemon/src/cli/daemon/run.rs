@@ -2,7 +2,7 @@ use super::*;
 use crate::aging;
 use crate::auth;
 use crate::cli::cleanup::{cleanup_backup_retention, cleanup_bridge_backups, cleanup_expired_rows, create_backup, rotate_startup_logs, should_backup};
-use crate::cli::common::{parse_env_u64, parse_env_usize, parse_truthy_flag};
+use crate::cli::common::parse_env_u64;
 use crate::compaction;
 use crate::crystallize;
 use crate::daemon_lifecycle;

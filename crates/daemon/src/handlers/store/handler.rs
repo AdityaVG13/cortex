@@ -33,7 +33,7 @@ pub async fn handle_store(State(state): State<RuntimeState>, headers: HeaderMap,
     if let Err(StoreError::BadRequest(message)) = validate_explicit_ttl_seconds(body.ttl_seconds) {
         return json_response(StatusCode::BAD_REQUEST, json!({"error":message}));
     }
-    let decision_text = crate::handlers::redact_secrets(&decision.trim().to_string());
+    let decision_text = crate::handlers::redact_secrets(decision.trim());
     let redacted_context = body.context.map(|c| crate::handlers::redact_secrets(&c));
     let mut conn = state.db.lock().await;
     let result = store_decision_with_input_embedding_and_provenance_retention(
