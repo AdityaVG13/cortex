@@ -304,14 +304,46 @@ pub(crate) async fn run_tls(
     let mut make_svc = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
     tokio::pin!(shutdown);
     loop {
-        tokio::select! {_=&mut shutdown=>{eprintln
-        !("[cortex] TLS server shutting down");break;}accept=listener.accept()=>{match accept{Ok((stream,_addr))=>{let acceptor=acceptor.
-        clone();let tower_svc=match make_svc.call(_addr).await{Ok(tower_svc)=>tower_svc,Err(e)=>{eprintln!(
-        "[cortex] Failed to build TLS service for {_addr}: {e}");continue;}};tokio::spawn(async move{match acceptor.accept(stream).await{
-        Ok(tls_stream)=>{let hyper_svc=hyper_util::service::TowerToHyperService::new(tower_svc);let io=hyper_util::rt::TokioIo::new(
-        tls_stream);if let Err(e)=hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new(),).serve_connection(io,
-        hyper_svc).await{eprintln!("[cortex] TLS connection error for {_addr}: {e}");}}Err(e)=>{eprintln!(
-        "[cortex] TLS handshake failed: {e}");}}});}Err(e)=>{eprintln!("[cortex] TCP accept error: {e}");}}}}
+        tokio::select! {
+            _ = &mut shutdown => {
+                eprintln!("[cortex] TLS server shutting down");
+                break;
+            }
+            accept = listener.accept() => {
+                match accept {
+                    Ok((stream, _addr)) => {
+                        let acceptor = acceptor.clone();
+                        let tower_svc = match make_svc.call(_addr).await {
+                            Ok(tower_svc) => tower_svc,
+                            Err(e) => {
+                                eprintln!("[cortex] Failed to build TLS service for {_addr}: {e}");
+                                continue;
+                            }
+                        };
+                        tokio::spawn(async move {
+                            match acceptor.accept(stream).await {
+                                Ok(tls_stream) => {
+                                    let hyper_svc = hyper_util::service::TowerToHyperService::new(tower_svc);
+                                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new(),)
+                                        .serve_connection(io, hyper_svc)
+                                        .await
+                                    {
+                                        eprintln!("[cortex] TLS connection error for {_addr}: {e}");
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[cortex] TLS handshake failed: {e}");
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[cortex] TCP accept error: {e}");
+                    }
+                }
+            }
+        }
     }
 }
 pub(crate) fn parse_allowed_origin(origin: &str) -> Option<HeaderValue> {
