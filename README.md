@@ -125,7 +125,7 @@ Session 1 &nbsp;→&nbsp; explain preferences<br>
 Session 2 &nbsp;→&nbsp; explain them again<br>
 Session 3 &nbsp;→&nbsp; and again, new tool<br>
 Session 14 &nbsp;→&nbsp; still explaining<br><br>
-<b>~15,000 tokens wasted</b>
+<b>~15,000 tokens wasted</b> <i>(declared target, not yet measured/pinned — no claim)</i>
 </p>
 <br>
 </td>
@@ -137,7 +137,7 @@ Session 1 &nbsp;→&nbsp; store once<br>
 Session 2 &nbsp;→&nbsp; boot, already knows<br>
 Session 3 &nbsp;→&nbsp; boot, already knows<br>
 Session 14 &nbsp;→&nbsp; boot, still knows<br><br>
-<b>~300 tokens per boot (97% less)</b>
+<b>~300 tokens per boot (97% less)</b> <i>(declared target, not yet measured/pinned — no claim)</i>
 </p>
 <br>
 </td>
@@ -300,7 +300,7 @@ LongMemEval quality claims are deferred. CQR is scored on honest miss, as-of win
 ### Recall quality
 
 - **`cortex-http-pure` adapter** as the canonical helper-free measurement floor
-- **Purity gates, CAS-100, and triangle judge tooling** for safer quality claims
+- **Purity gates, CAS-100, and triangle judge tooling** for safer quality claims (declared target, not yet measured/pinned — no claim: `CAS-100` and the triangle judge are named but have no located artifact in `tests/`; purity gates exist at `tests/purity-gates/`)
 - **Clock-Quorum Recall**: deterministic evidence from write, truth, task, and history clocks. No local embedding or reranker model.
 
 ### Reliability
@@ -500,7 +500,7 @@ Full threat model, auth rules, and vulnerability reporting: <a href="Info/securi
 <details>
 <summary>How much disk space does Cortex use?</summary>
 <br>
-The daemon binary is ~30 MB. The SQLite database grows with usage. Clock-Quorum Recall does not download or load a local model. Older installs may still have leftover files under <code>~/.cortex/models</code>; they are unused.
+The daemon binary is ~30 MB (declared target, not yet measured/pinned — no claim; build-profile-dependent). The SQLite database grows with usage. Clock-Quorum Recall does not download or load a local model. Older installs may still have leftover files under <code>~/.cortex/models</code>; they are unused.
 </details>
 
 <details>

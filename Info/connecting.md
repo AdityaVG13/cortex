@@ -25,7 +25,7 @@ Cortex is a persistent memory daemon on `localhost:7437`. It stores decisions, p
 
 **You are not the only AI.** Claude Code, Codex, Cursor, Gemini, Cline, and local LLMs all share the same brain. What you store becomes available to every other AI. What they stored is available to you.
 
-**Token savings are tracked.** Every boot logs tokens consumed vs what raw file reads would cost. Typical efficiency: ~97% reduction.
+**Token savings are tracked.** Every boot logs tokens consumed vs what raw file reads would cost. Typical efficiency: ~97% reduction (declared target, not yet measured/pinned — no claim; dataset-dependent, no pinned measurement corpus).
 
 ---
 
@@ -136,6 +136,8 @@ Returns extractive capsules (no summarizer):
 | **Identity** | ~200 | User identity, platform rules, constraints. Stable across sessions. |
 | **Delta** | ~50–100 | What changed since last boot: conflicts, tasks, focus, messages, locks, agents, feed. |
 | **TRUTH** | variable | Top current facts with `FACT!` / `FACT?` / `FACT~` sigils, packed to budget. |
+
+Token counts above are declared targets, not yet measured/pinned — no claim (no corresponding constants or benchmark artifacts in `crates/daemon/src/compiler/`).
 
 <details>
 <summary>Example response</summary>

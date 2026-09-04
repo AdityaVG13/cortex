@@ -51,7 +51,9 @@ pub async fn run_team_cli(paths: &auth::CortexPaths, args: &[String]) {
         "create" => {
             let team = required_cli_positional_or_exit(args, 3, "Usage: cortex team create <name>");
             validate_cli_options_or_exit(&args[4..], &[], &[]);
-            print_daemon_error(admin_request(paths, "POST", "/admin/team/create", Some(serde_json::json!({"team":team}))).await);
+            // Wire contract: TeamCreateBody (handlers/admin/types.rs:31) deserializes
+            // the field `name`; anything else dies in the Json extractor as 422.
+            print_daemon_error(admin_request(paths, "POST", "/admin/team/create", Some(serde_json::json!({"name":team}))).await);
         }
         "add" => {
             let team = required_cli_positional_or_exit(args, 3, "Usage: cortex team add <team> <user> [--role member|admin]");

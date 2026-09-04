@@ -211,6 +211,25 @@ Admission math lives in `cortex-logic`. Candidate SQL lives in the daemon. Rebui
 | Defaults | `~/.cortex`, `cortex.db`, `cortex.token`, port `7437` |
 | Budgets | `~/.cortex/budgets.toml` |
 
+Operator-critical environment variables (meanings derived from the definition sites):
+
+| Variable | Meaning |
+|----------|---------|
+| `CORTEX_HOME` | Root of all state: db, token, pid, lock, tls (`auth/keys.rs:9`) |
+| `CORTEX_DB` | SQLite database path override (`auth/paths.rs:33`) |
+| `CORTEX_PORT` | Daemon listen port; default `7437` (`auth/paths.rs:36`) |
+| `CORTEX_BIND` | Daemon bind address; default localhost (`auth/paths.rs:38`) |
+| `CORTEX_TLS_CERT` | TLS certificate path; required for team mode (`tls.rs:10`) |
+| `CORTEX_TLS_KEY` | TLS private-key path; required for team mode (`tls.rs:13`) |
+| `CORTEX_ALLOW_INSECURE_REMOTE` | `=1` explicitly allows serving plain HTTP on non-local binds; temporary override (`server/runtime.rs:79`) |
+| `CORTEX_API_KEY` | Client-side API key for remote daemon targets (`cli/common.rs:92`) |
+| `CORTEX_API_BASE` / `CORTEX_BASE_URL` | Client-side base URL of a remote daemon (`cli/common.rs:91`) |
+| `CORTEX_RATE_LIMIT_REQUESTS_PER_MIN` | Per-minute request budget; over-budget requests get 429 (`crates/logic/src/rate_limit/mod.rs:97`) |
+| `CORTEX_RECALL_{FAST,BALANCED,DEEP}_BUDGET` | Per-policy recall token budgets (`handlers/recall/engine.rs:438-440`) |
+| `CORTEX_IDLE_SHUTDOWN_SECS` | Idle-auto-shutdown threshold (`cli/daemon/startup.rs:38`) |
+
+The complete `CORTEX_*` variable surface is enumerated in the source (`grep CORTEX_ crates/`); undocumented variables are internal tuning knobs with no stability guarantee (declared no-claim boundary — they may change or disappear without notice).
+
 Removed from the runtime: `CORTEX_EMBEDDING_MODEL`, `CORTEX_EMBED_SESSION_POOL_SIZE`, `CORTEX_RERANK_*`. Historical changelog and benchmark text may still mention them.
 
 The daemon crate does not depend on `ort`, `tokenizers`, `sqlite-vec`, or `cortex-models`. That crate is gone.

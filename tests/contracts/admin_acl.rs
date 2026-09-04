@@ -509,6 +509,95 @@ async fn admin_acl_team_mode_matrix() {
     );
 }
 
+/// Regression (cortex-70s): `cortex team create <name>` (cli/admin.rs) used to
+/// POST `{"team":<name>}`, but the handler's `TeamCreateBody`
+/// (handlers/admin/types.rs:31) deserializes the field `name` — every CLI team
+/// create died in the Json extractor as 422 before the handler ran. The
+/// handler is the wire truth, so this pins BOTH shapes through the same
+/// oneshot router as the matrix test: the CLI's `{"name": ...}` payload is
+/// accepted (200) and the team actually exists with the requested name, while
+/// the legacy `{"team": ...}` shape stays pinned as a 422 that creates nothing
+/// (so neither side of the contract can silently drift back to the bug).
+#[tokio::test]
+async fn admin_acl_team_create_wire_payload_contract() {
+    let mut state = team_state(1);
+    let admin_key;
+    {
+        let conn = state.db.lock().await;
+        db::create_team_mode_tables(&conn).expect("create team tables");
+        let (admin_id, a_key, a_hash) = seed_team_user(&conn, "admin-one", "admin");
+        assert_eq!(admin_id, 1, "admin-one is user id 1");
+        admin_key = a_key;
+        let mut hashes = state.team_api_key_hashes.write().expect("hash cache lock");
+        hashes.push((admin_id, a_hash));
+    }
+    let router = build_router(state, 7438);
+    let router = &router;
+
+    // The exact payload `cortex team create cli-made` now sends.
+    let (status, body) = call(
+        router,
+        "POST",
+        "/admin/team/create",
+        Some(&admin_key),
+        true,
+        Some(json!({"name":"cli-made"})),
+    )
+    .await;
+    assert_eq!(status, 200, "CLI-shaped {{\"name\":...}} payload must be accepted, body {body}");
+    assert_eq!(body["name"], "cli-made", "team create echoes the requested name");
+    assert!(body["team_id"].is_i64(), "team create returns team_id");
+
+    // The team must actually exist under the requested name, not just echo it.
+    let (status, body) = call(router, "GET", "/admin/teams", Some(&admin_key), true, None).await;
+    assert_eq!(status, 200, "team list must succeed, body {body}");
+    let created = body["teams"]
+        .as_array()
+        .expect("teams array")
+        .iter()
+        .find(|t| t["name"] == "cli-made")
+        .unwrap_or_else(|| panic!("team cli-made must exist after CLI-shaped create, body {body}"));
+    assert_eq!(created["member_count"], 0, "freshly created team has no members");
+
+    // The legacy buggy CLI shape is rejected by the Json extractor (422)
+    // BEFORE the handler, and creates nothing. The extractor rejection body is
+    // plain text (not JSON), so this probe reads the raw response instead of
+    // the JSON-parsing `call` helper.
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/admin/team/create")
+        .header("authorization", format!("Bearer {admin_key}"))
+        .header("x-cortex-request", "true")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"team":"legacy-shape"}).to_string()))
+        .expect("build legacy-shape request");
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("router service responds");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("read legacy-shape response body");
+    let legacy_body = String::from_utf8_lossy(&bytes);
+    assert_eq!(status, 422, "legacy {{\"team\":...}} shape must die in the extractor, body {legacy_body}");
+    assert!(
+        legacy_body.contains("missing field `name`"),
+        "extractor rejection must cite the missing `name` field, body {legacy_body}"
+    );
+    let (status, body) = call(router, "GET", "/admin/teams", Some(&admin_key), true, None).await;
+    assert_eq!(status, 200, "team list must succeed after legacy probe, body {body}");
+    assert!(
+        !body["teams"]
+            .as_array()
+            .expect("teams array")
+            .iter()
+            .any(|t| t["name"] == "legacy-shape"),
+        "legacy-shaped create must not create a team, body {body}"
+    );
+}
+
 #[test]
 fn admin_acl_team_mode_refuses_plain_http_at_boot() {
     let _guard = daemon_spawn_test_guard();

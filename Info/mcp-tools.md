@@ -12,7 +12,7 @@
 |---|---|---|---|
 | `cortex_boot` | — | `agent`, `budget`, `profile` | Session boot prompt from identity, delta, and current-truth capsules |
 | `cortex_boot_audit` | — | `agent`, `limit` | Read recent boot audit rows and token/capsule metadata |
-| `cortex_peek` | `query` | `limit` | Headline-only relevance check (~80% cheaper than recall) |
+| `cortex_peek` | `query` | `limit` | Headline-only relevance check (~80% cheaper than recall; declared target, not yet measured/pinned — no claim) |
 | `cortex_recall` | `query` | `budget`, `policyMode`, `k`, `agent`, `taskClass`, `adaptive` | Clock-Quorum Recall over write, truth, task, and history clocks |
 | `cortex_semantic_recall` | `query` | `budget`, `k`, `agent` | Named CQR surface; same engine as `cortex_recall`, no embedding model |
 | `cortex_recall_policy_explain` | `query` | `budget`, `policyMode`, `k`, `pool_k`, `agent` | Explain ranking: why these results, in this order |
