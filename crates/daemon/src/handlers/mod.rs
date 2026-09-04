@@ -109,6 +109,24 @@ where
         }
     }
 }
+/// Raw-body extractor with the daemon-contract error envelope: axum's default
+/// `Bytes` extractor answers body-buffer failures — notably the 2 MiB
+/// `DefaultBodyLimit` length limit — with a `text/plain` body. Routes that
+/// consume raw bytes (`/mcp-rpc`) must still reject oversized bodies with the
+/// standard envelope (same wire contract as [`Json`]).
+pub struct RawBody(pub axum::body::Bytes);
+impl<S> FromRequest<S> for RawBody
+where
+    S: Send + Sync,
+{
+    type Rejection = Response;
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::body::Bytes::from_request(req, state).await {
+            Ok(bytes) => Ok(RawBody(bytes)),
+            Err(rejection) => Err(json_response(rejection.status(), json!({"error": rejection.body_text()}))),
+        }
+    }
+}
 pub fn json_error(status: StatusCode, msg: &str) -> Response {
     json_response(status, serde_json::json!({"error":msg}))
 }

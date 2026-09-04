@@ -2,8 +2,8 @@ use super::*;
 use crate::budgets::BudgetEndpoint;
 use crate::handlers;
 use crate::handlers::mcp::handle_mcp_message_with_caller;
+use crate::handlers::RawBody;
 use crate::state::RuntimeState;
-use axum::body::Bytes;
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -140,7 +140,7 @@ pub(crate) async fn activity_tracking_middleware(State(state): State<RuntimeStat
     }
     next.run(request).await
 }
-pub(crate) async fn handle_mcp_rpc(State(state): State<RuntimeState>, headers: HeaderMap, body: Bytes) -> axum::response::Response {
+pub(crate) async fn handle_mcp_rpc(State(state): State<RuntimeState>, headers: HeaderMap, RawBody(body): RawBody) -> axum::response::Response {
     let caller_id = match handlers::ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => {

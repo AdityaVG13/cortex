@@ -179,6 +179,17 @@ fn wire_error_bodies_are_application_json_envelopes() {
     // `Path` extractor and must carry the envelope too.
     let (status, ctype, body) = raw(&daemon, "GET", "/feed/%FF", &headers, None);
     assert_json_envelope(status, &ctype, &body, 400, "GET /feed invalid-UTF-8 path segment");
+
+    // Raw-bytes family: /mcp-rpc takes axum's raw `Bytes` extractor (not
+    // Json<T>), and axum's `Bytes` rejection — notably the 2 MiB
+    // DefaultBodyLimit length limit — is also a text/plain body. Round-3 RED
+    // history: an oversized body leaked `text/plain; charset=utf-8` here even
+    // after the Json/Query/Path conversions, and F18 only pins the envelope
+    // shape on /store (whose limit error flows through the Json wrapper).
+    // The rejection precedes auth, exactly like F18's /store probe.
+    let oversized = "x".repeat(2 * 1024 * 1024 + 1);
+    let (status, ctype, body) = raw(&daemon, "POST", "/mcp-rpc", &headers, Some(&oversized));
+    assert_json_envelope(status, &ctype, &body, 413, "POST /mcp-rpc oversized body");
 }
 
 /// Contract 2: JSON-RPC notifications get NO reply body. The daemon must
