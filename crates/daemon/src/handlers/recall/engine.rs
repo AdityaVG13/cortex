@@ -335,12 +335,12 @@ pub(crate) fn crystal_member_sources(conn: &Connection, crystal_id: i64, ctx: &R
        ON cm.target_type = 'memory'
       AND cm.target_id = m.id
       AND m.status = 'active'
-      AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
+      AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR julianday(m.valid_from) <= julianday('now')) AND (m.valid_until IS NULL OR julianday(m.valid_until) > julianday('now'))
      LEFT JOIN decisions d
        ON cm.target_type = 'decision'
       AND cm.target_id = d.id
       AND d.status = 'active'
-      AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) AND (d.valid_until IS NULL OR d.valid_until > datetime('now'))
+      AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR julianday(d.valid_from) <= julianday('now')) AND (d.valid_until IS NULL OR julianday(d.valid_until) > julianday('now'))
      WHERE cm.cluster_id = ?1
      ORDER BY cm.target_type, cm.target_id";
     let sql_legacy="SELECT CASE
@@ -352,12 +352,12 @@ pub(crate) fn crystal_member_sources(conn: &Connection, crystal_id: i64, ctx: &R
        ON cm.target_type = 'memory'
       AND cm.target_id = m.id
       AND m.status = 'active'
-      AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
+      AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR julianday(m.valid_from) <= julianday('now')) AND (m.valid_until IS NULL OR julianday(m.valid_until) > julianday('now'))
      LEFT JOIN decisions d
        ON cm.target_type = 'decision'
       AND cm.target_id = d.id
       AND d.status = 'active'
-      AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) AND (d.valid_until IS NULL OR d.valid_until > datetime('now'))
+      AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR julianday(d.valid_from) <= julianday('now')) AND (d.valid_until IS NULL OR julianday(d.valid_until) > julianday('now'))
      WHERE cm.cluster_id = ?1
      ORDER BY cm.target_type, cm.target_id";
     let rows = match query_rows(sql_with_visibility, true) {
@@ -1292,11 +1292,14 @@ enum SearchTableKind {
     Memories,
     Decisions,
 }
-const MEMORIES_FTS_SQL: &str = "SELECT m.id, m.text, m.source, m.tags, m.score, m.trust_score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility FROM memories_fts fts JOIN memories m ON m.id = fts.rowid WHERE memories_fts MATCH ?1 AND m.status = 'active' AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) AND (?6 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?6) ORDER BY bm25(memories_fts, ?3, ?4, ?5) LIMIT ?2";
-const DECISIONS_FTS_SQL: &str = "SELECT d.id, d.decision, d.context, d.score, d.trust_score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility FROM decisions_fts fts JOIN decisions d ON d.id = fts.rowid WHERE decisions_fts MATCH ?1 AND d.status = 'active' AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) AND (?5 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?5) ORDER BY bm25(decisions_fts, ?3, ?4) LIMIT ?2";
-const MEMORIES_RECENCY_SQL: &str = "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier, owner_id, visibility FROM memories WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now')) AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
-const DECISIONS_RECENCY_SQL: &str = "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at, owner_id, visibility FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now')) AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
-const ACTIVE_TEMPORAL:&str="status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))";
+const MEMORIES_FTS_SQL: &str = "SELECT m.id, m.text, m.source, m.tags, m.score, m.trust_score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility FROM memories_fts fts JOIN memories m ON m.id = fts.rowid WHERE memories_fts MATCH ?1 AND m.status = 'active' AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR julianday(m.valid_from) <= julianday('now')) AND (m.valid_until IS NULL OR julianday(m.valid_until) > julianday('now')) AND (?6 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?6) ORDER BY bm25(memories_fts, ?3, ?4, ?5) LIMIT ?2";
+const DECISIONS_FTS_SQL: &str = "SELECT d.id, d.decision, d.context, d.score, d.trust_score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility FROM decisions_fts fts JOIN decisions d ON d.id = fts.rowid WHERE decisions_fts MATCH ?1 AND d.status = 'active' AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR julianday(d.valid_from) <= julianday('now')) AND (d.valid_until IS NULL OR julianday(d.valid_until) > julianday('now')) AND (?5 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?5) ORDER BY bm25(decisions_fts, ?3, ?4) LIMIT ?2";
+const MEMORIES_RECENCY_SQL: &str = "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier, owner_id, visibility FROM memories WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
+const DECISIONS_RECENCY_SQL: &str = "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at, owner_id, visibility FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
+// Same format rule as UNFOLD_ACTIVE (engine_execution.rs): valid_from /
+// valid_until are RFC3339 'T'-format and must be compared via julianday(),
+// never string-compared against space-format datetime('now') output.
+const ACTIVE_TEMPORAL:&str="status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now'))";
 fn fts_keyword_sort(ranked: &mut [SearchCandidate]) {
     ranked.sort_by(|a, b| {
         b.relevance

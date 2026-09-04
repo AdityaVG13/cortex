@@ -299,23 +299,47 @@ fn wave2_unfold_pins_full_text_and_not_found_shape() {
     assert_eq!(resp.body["count"], 1, "count excludes not_found rows: {}", resp.body);
     assert_eq!(resp.body["totalTokens"], tokens, "totalTokens is the sum of item tokens: {}", resp.body);
 
-    // CURRENT-BEHAVIOR PIN (suspected defect, reported to the bead): a decision
-    // stored TODAY is invisible to /unfold. The active filter compares the
-    // RFC3339 valid_from ("2026-...T...") against datetime('now')
-    // ("2026-... ...") as STRINGS, and 'T' > ' ' makes the comparison false for
-    // same-day rows — same-day decisions and same-day focus summaries unfold as
-    // not_found. If this is ever fixed, this pin goes red on purpose and must
-    // be upgraded to the positive decision-unfold contract.
+    // SAME-DAY CONTRACT (bead cortex-4z2): a decision stored today must unfold
+    // by its context source immediately. The active filter compares RFC3339
+    // valid_from ("2026-...T...") with the now side, and a space-separated
+    // datetime('now') string-compare excluded every same-day row ('T' > ' ');
+    // the filter must compare equal-format time values so store-then-unfold in
+    // the same session returns the exact stored text.
     let ctx = "rcov-unfold-context-77a2";
     let ctx_decision = marker("UNFOLD_CTX");
     daemon.store_decision(&ctx_decision, Some(ctx));
     let same_day = daemon.get(&format!("/unfold?sources={ctx}")).expect("unfold same-day decision");
     assert_eq!(same_day.status, 200, "body {}", same_day.body);
+    let found_day = &same_day.body["results"][0];
+    assert_eq!(found_day["source"], ctx, "handler stamps the requested source: {}", same_day.body);
+    assert_eq!(found_day["type"], "decision", "same-day decision unfolds with type decision: {}", same_day.body);
     assert_eq!(
-        same_day.body["results"][0],
-        json!({"source": ctx, "text": null, "tokens": 0, "type": "not_found"}),
-        "SAME-DAY DECISIONS ARE not_found TODAY (valid_from string-compare defect): {}",
+        found_day["text"],
+        json!(format!("{ctx_decision}\n\nContext: {ctx}")),
+        "SAME-DAY DECISION MUST UNFOLD with decision + Context: line (valid_from filter must not exclude same-day rows): {}",
         same_day.body
+    );
+    let day_tokens = found_day["tokens"].as_u64().expect("tokens number");
+    assert!(day_tokens > 0, "tokens {day_tokens}");
+
+    // Negative control: a future-dated valid_from must stay unfoldable-LATER,
+    // not now — the fix may not simply drop the valid_from clause.
+    let future_src = "rcov-unfold-future-src";
+    let future_text = marker("UNFOLD_FUTURE");
+    let imported_future = daemon
+        .post(
+            "/import",
+            json!({"memories": [{"text": future_text, "source": future_src, "valid_from": "2099-01-01T00:00:00.000Z"}]}),
+        )
+        .expect("import future fixture");
+    assert_eq!(imported_future.status, 200, "body {}", imported_future.body);
+    let future_unfold = daemon.get(&format!("/unfold?sources={future_src}")).expect("unfold future-dated");
+    assert_eq!(future_unfold.status, 200, "body {}", future_unfold.body);
+    assert_eq!(
+        future_unfold.body["results"][0],
+        json!({"source": future_src, "text": null, "tokens": 0, "type": "not_found"}),
+        "FUTURE-DATED valid_from MUST NOT unfold yet: {}",
+        future_unfold.body
     );
 
     let no_sources = daemon.get("/unfold").expect("unfold no-sources");
