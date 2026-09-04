@@ -160,7 +160,25 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
     // warning). Detect team mode up front, create the team schema in the
     // fresh DB, and salvage the identity rows alongside the data tables.
     const TEAM_IDENTITY_TABLES: &[&str] = &["config", "users", "teams", "team_members"];
-    let corrupt_team_mode = current_mode(&corrupt_conn) == "team";
+    // Team-ness detection must not rely solely on the config mode row: when
+    // config itself is the damaged table (its rows unreadable/lost),
+    // current_mode falls back to "solo" and the identity tables would be
+    // silently excluded from salvage -- every credential hash dropped with no
+    // warning, the same loss bed9809 fixed in the fully-readable-config case.
+    // The `users` table only exists in team-mode DBs (initialize_schema does
+    // not create it), so its presence disambiguates the fallback. A readable
+    // mode row keeps the exact solo/team verdict (no inference for a DB that
+    // was already downgraded to solo before the corruption).
+    let corrupt_team_mode = match corrupt_conn.query_row(
+        "SELECT value FROM config WHERE key = 'mode' LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(mode) => mode == "team",
+        Err(_) => corrupt_conn
+            .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users' LIMIT 1", params![], |_| Ok(()))
+            .is_ok(),
+    };
     let tables: Vec<&str> = if corrupt_team_mode {
         DATA_TABLES.iter().copied().chain(TEAM_IDENTITY_TABLES.iter().copied()).collect()
     } else {

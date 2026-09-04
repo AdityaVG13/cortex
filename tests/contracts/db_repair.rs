@@ -355,6 +355,116 @@ fn auto_repair_preserves_team_mode_and_credentials() {
     let _ = fs::remove_dir_all(&home_dir);
 }
 
+/// Round-5 completeness contract for the bed9809 team-salvage fix: PARTIAL
+/// identity damage must be handled in both directions, not only a fully
+/// readable config.
+/// - Case A: config damaged (its rows unreadable/lost) while users survive.
+///   The mode row falling back to "solo" must not exclude the identity tables
+///   from salvage -- silently dropping the roster repeats the exact credential
+///   loss bed9809 fixed, only with a different damaged table. The repair must
+///   keep users/teams/team_members (credential hashes stay recoverable via
+///   `cortex setup --team`) and honestly downgrade to solo.
+/// - Case B: config intact (mode='team') while users are lost. The guard must
+///   downgrade to solo instead of booting a team-mode DB with an empty
+///   roster (every ctx_ key would fail with no admin left to fix it).
+#[test]
+fn auto_repair_handles_partially_damaged_team_identity() {
+    // ---- Case A: config lost, users intact.
+    let home_a = unique_temp_dir("dbrepair_team_partial_a");
+    fs::create_dir_all(&home_a).expect("create temp home a");
+    let db_a = home_a.join("cortex.db");
+    {
+        let conn = rusqlite::Connection::open(&db_a).expect("open db a");
+        cortex_daemon::db::configure(&conn).expect("configure db a");
+        cortex_daemon::db::initialize_schema(&conn).expect("init schema a");
+        cortex_daemon::crystallize::migrate_crystal_tables(&conn);
+        cortex_daemon::db::create_team_mode_tables(&conn).expect("create team tables a");
+        let owner_id = cortex_daemon::db::upsert_owner_user(&conn, "partial-owner", None, "hash-partial-r5")
+            .expect("seed owner user a");
+        cortex_daemon::db::migrate_to_team_mode(&conn, owner_id).expect("migrate team a");
+        conn.execute(
+            "INSERT INTO decisions (decision, type, status) VALUES ('partial identity sentinel r5', 'decision', 'active')",
+            [],
+        )
+        .expect("seed decision a");
+        // Observable state of single-page damage to config: the table shell
+        // survives, its rows (mode, owner_user_id) are gone.
+        conn.execute("DELETE FROM config", []).expect("damage config a");
+    }
+    let result_a = cortex_daemon::db::auto_repair(&db_a, "gauntletr5a").expect("auto_repair a must succeed");
+    assert_eq!(
+        result_a.decisions_recovered, 1,
+        "data salvage must be unaffected by identity damage, got {result_a:?}"
+    );
+    {
+        let conn = rusqlite::Connection::open(&db_a).expect("open repaired a");
+        let (users, hash): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE((SELECT api_key_hash FROM users WHERE username = 'partial-owner'), '') FROM users",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("query repaired users a");
+        assert_eq!(
+            users, 1,
+            "auto-repair must salvage the users roster even when config is damaged -- dropping it silently destroys every credential hash"
+        );
+        assert_eq!(
+            hash, "hash-partial-r5",
+            "salvaged credential hash must be verbatim, got {hash:?}"
+        );
+        let teams: i64 = conn
+            .query_row("SELECT COUNT(*) FROM teams", [], |row| row.get(0))
+            .expect("query repaired teams a");
+        let memberships: i64 = conn
+            .query_row("SELECT COUNT(*) FROM team_members", [], |row| row.get(0))
+            .expect("query repaired team_members a");
+        assert_eq!(teams, 1, "teams table must be salvaged alongside users");
+        assert_eq!(memberships, 1, "team_members must be salvaged alongside users");
+        assert_eq!(
+            cortex_daemon::db::current_mode(&conn),
+            "solo",
+            "with the mode flag unrecoverable the repaired DB must honestly boot solo (recoverable via setup --team), not claim team"
+        );
+    }
+    let _ = fs::remove_dir_all(&home_a);
+
+    // ---- Case B: config intact, users lost.
+    let home_b = unique_temp_dir("dbrepair_team_partial_b");
+    fs::create_dir_all(&home_b).expect("create temp home b");
+    let db_b = home_b.join("cortex.db");
+    {
+        let conn = rusqlite::Connection::open(&db_b).expect("open db b");
+        cortex_daemon::db::configure(&conn).expect("configure db b");
+        cortex_daemon::db::initialize_schema(&conn).expect("init schema b");
+        cortex_daemon::crystallize::migrate_crystal_tables(&conn);
+        cortex_daemon::db::create_team_mode_tables(&conn).expect("create team tables b");
+        let owner_id = cortex_daemon::db::upsert_owner_user(&conn, "partial-owner-b", None, "hash-partial-b")
+            .expect("seed owner user b");
+        cortex_daemon::db::migrate_to_team_mode(&conn, owner_id).expect("migrate team b");
+        conn.execute(
+            "INSERT INTO decisions (decision, type, status) VALUES ('partial identity sentinel b r5', 'decision', 'active')",
+            [],
+        )
+        .expect("seed decision b");
+        conn.execute("DROP TABLE users", []).expect("drop users b");
+    }
+    let result_b = cortex_daemon::db::auto_repair(&db_b, "gauntletr5b").expect("auto_repair b must succeed");
+    assert_eq!(
+        result_b.decisions_recovered, 1,
+        "data salvage must survive user-roster loss, got {result_b:?}"
+    );
+    {
+        let conn = rusqlite::Connection::open(&db_b).expect("open repaired b");
+        assert_eq!(
+            cortex_daemon::db::current_mode(&conn),
+            "solo",
+            "a team-mode DB whose users roster did not survive must downgrade to solo, never boot team with zero users"
+        );
+    }
+    let _ = fs::remove_dir_all(&home_b);
+}
+
 #[test]
 fn repair_failure_degrades_predictably() {
     let home_dir = unique_temp_dir("dbrepair_degraded");
