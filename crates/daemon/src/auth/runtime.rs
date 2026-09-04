@@ -26,6 +26,22 @@ pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
     }
     Some(pid)
 }
+
+/// Returns the pid recorded in the daemon pid file while that process is
+/// alive (i.e. a daemon appears active); `None` when the file is absent,
+/// unparseable, or the recorded pid is dead. Complement of
+/// `stale_pid_candidate`; used by destructive CLI paths (`cortex restore`)
+/// that must refuse while a daemon may be running.
+pub fn pid_file_live_pid(paths: &CortexPaths) -> Option<u32> {
+    if !paths.pid.exists() {
+        return None;
+    }
+    let pid = fs::read_to_string(&paths.pid).ok().and_then(|value| value.trim().parse::<u32>().ok())?;
+    if pid == std::process::id() || process_is_running(pid) {
+        return Some(pid);
+    }
+    None
+}
 #[cfg(windows)]
 fn process_is_running(pid: u32) -> bool {
     use std::process::Command;

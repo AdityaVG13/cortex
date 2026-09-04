@@ -39,6 +39,10 @@ pub(crate) const IDLE_SHUTDOWN_SECS_ENV: &str = "CORTEX_IDLE_SHUTDOWN_SECS";
 pub(crate) const IDLE_SHUTDOWN_MIN_UPTIME_SECS_ENV: &str = "CORTEX_IDLE_SHUTDOWN_MIN_UPTIME_SECS";
 pub(crate) const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 pub(crate) const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
+// Upper bound mirrors the other env knobs in this file (all clamped). The
+// deadline is computed as `Instant::now() + timeout`; an unclamped huge value
+// (e.g. 2^64-1 secs) overflowed that addition and panicked the serve path.
+pub(crate) const MAX_DAEMON_LOCK_WAIT_SECS: u64 = 3_600;
 pub(crate) const DAEMON_LOCK_RETRY_INTERVAL_MS: u64 = 100;
 pub(crate) const DAEMON_LOCK_HANDOFF_GRACE_SECS: u64 = 3;
 pub(crate) const DAEMON_LOCAL_SPAWN_ENV: &str = "CORTEX_DAEMON_OWNER_LOCAL_SPAWN";
@@ -50,7 +54,7 @@ pub(crate) fn daemon_lock_wait_timeout() -> Duration {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(DEFAULT_DAEMON_LOCK_WAIT_SECS);
-    Duration::from_secs(secs.max(1))
+    Duration::from_secs(secs.clamp(1, MAX_DAEMON_LOCK_WAIT_SECS))
 }
 #[derive(Debug)]
 pub(crate) struct RuntimeLockGuards {

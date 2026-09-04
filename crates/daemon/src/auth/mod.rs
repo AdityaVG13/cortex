@@ -12,4 +12,4 @@ pub use locks::{acquire_daemon_lock, acquire_global_daemon_lock};
 pub use migration::migrate_legacy_db;
 pub use paths::CortexPaths;
 pub(crate) use paths::{restrict_file_to_owner, write_secret_file};
-pub use runtime::{cleanup_stale_pid_lock, db_path};
+pub use runtime::{cleanup_stale_pid_lock, db_path, pid_file_live_pid};

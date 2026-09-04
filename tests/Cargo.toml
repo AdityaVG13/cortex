@@ -44,6 +44,10 @@ name = "cli_goldens"
 path = "contracts/cli_goldens.rs"
 
 [[test]]
+name = "cli_resource_boundaries"
+path = "contracts/cli_resource_boundaries.rs"
+
+[[test]]
 name = "clock_quorum"
 path = "contracts/clock_quorum.rs"
 

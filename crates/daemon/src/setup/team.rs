@@ -3,7 +3,12 @@ use crate::auth;
 use crate::db;
 use std::fs;
 pub async fn run_setup_team(args: &[String], dry_run: bool) {
-    let db_path = auth::db_path();
+    // Resolve from the CLI args (falling back to env/defaults) so the global
+    // `--home`/`--db` flags the validator accepts actually select the target.
+    // The previous env-only resolution silently migrated the default home
+    // while `--home` pointed elsewhere.
+    let paths = auth::CortexPaths::resolve_from_args(args);
+    let db_path = paths.db.clone();
     if let Some(parent) = db_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -162,7 +167,6 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
             return;
         }
     };
-    let paths = auth::CortexPaths::resolve();
     let previous_token = fs::read(&paths.token).ok();
     if let Err(e) = persist_team_owner_token(&paths, &owner_key) {
         rollback_team_setup(&conn);

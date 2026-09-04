@@ -1,7 +1,7 @@
 use super::common::{is_cli_option_token, validate_cli_options_or_exit};
 use crate::{auth, db};
 use chrono::{Local, Utc};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(crate) const BACKUP_RETENTION_COUNT: usize = 3;
 const BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION: i32 = 5;
@@ -56,16 +56,28 @@ pub(crate) fn cleanup_expired_rows(conn: &rusqlite::Connection, label: &str) {
 }
 
 pub(crate) fn run_stale_pid_cleanup(paths: &auth::CortexPaths, dry_run: bool) -> Vec<String> {
+    // Live-daemon check must work on every platform; the previous /proc-based
+    // probe never matched on macOS/Windows, so a live daemon's pid file could
+    // be deleted as "stale".
+    if auth::pid_file_live_pid(paths).is_some() {
+        return Vec::new();
+    }
     let Some(pid) = std::fs::read_to_string(&paths.pid).ok().and_then(|value| value.trim().parse::<u32>().ok()) else {
         return Vec::new();
     };
-    if pid == std::process::id() || std::path::Path::new(&format!("/proc/{pid}")).exists() {
-        return Vec::new();
-    }
     if !dry_run {
         let _ = std::fs::remove_file(&paths.pid);
     }
     vec![format!("DELETE cortex.pid (process {pid} not running)")]
+}
+
+/// SQLite sidecar path (`<db>-wal` / `<db>-shm`): the suffix is appended to
+/// the full file name, not substituted for the extension, so custom db names
+/// like `foo.sqlite` resolve correctly.
+fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut name = db_path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(suffix);
+    db_path.with_file_name(name)
 }
 
 pub(crate) fn rotate_startup_logs(home: &Path) -> usize {
@@ -148,6 +160,15 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
         }
     };
     validate_cli_options_or_exit(&args[3..], &[], &["--skip-verification"]);
+    // Documented dangerous-operation gate (capabilities payload
+    // `dangerous_operations`, robot-docs guide): restore refuses while a
+    // daemon appears active. Copying over a live daemon's database file
+    // corrupts it, so this refuses rather than warn-and-continue.
+    if let Some(pid) = auth::pid_file_live_pid(paths) {
+        eprintln!("[cortex] Error: daemon appears active (pid {pid} per {}).", paths.pid.display());
+        eprintln!("[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using.");
+        std::process::exit(1);
+    }
     let pre_backup = paths.home.join(format!("cortex.pre-restore.{}.db", Local::now().format("%Y%m%dT%H%M%S")));
     if let Err(err) = std::fs::copy(&paths.db, &pre_backup) {
         eprintln!("[cortex] Error: failed to create pre-restore backup: {err}");
@@ -158,5 +179,12 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
         eprintln!("[cortex] Pre-restore backup preserved at: {}", pre_backup.display());
         std::process::exit(1);
     }
+    // The WAL sidecars describe the replaced database. Leaving them lets
+    // SQLite replay old frames onto the restored file, so they are dropped
+    // with the file they belonged to (after the copy succeeded).
+    let db_wal = sqlite_sidecar_path(&paths.db, "-wal");
+    let db_shm = sqlite_sidecar_path(&paths.db, "-shm");
+    let _ = std::fs::remove_file(&db_wal);
+    let _ = std::fs::remove_file(&db_shm);
     println!("Restore complete. Pre-restore backup preserved at: {}", pre_backup.display());
 }
