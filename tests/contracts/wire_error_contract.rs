@@ -243,7 +243,10 @@ fn wire_method_mismatch_required_query_and_preflight_semantics() {
     assert_json_envelope(status, &ctype, &body, 400, "GET /recall missing q");
     let parsed: Value = serde_json::from_str(&body).expect("missing-q body is JSON");
     assert!(
-        parsed["error"].as_str().unwrap_or_default().contains("q"),
+        // "q" alone would match any message containing "query"/"required";
+        // pin the full stable suffix so a mutant that stops naming the
+        // parameter fails this oracle.
+        parsed["error"].as_str().unwrap_or_default().contains("parameter: q"),
         "error must name the missing parameter, body {body}"
     );
 
