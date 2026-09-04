@@ -47,6 +47,10 @@ path = "contracts/cli_goldens.rs"
 name = "clock_quorum"
 path = "contracts/clock_quorum.rs"
 
+[[test]]
+name = "compiler_resource_bounds"
+path = "contracts/compiler_resource_bounds.rs"
+
 
 [[test]]
 name = "conflict"

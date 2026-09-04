@@ -26,7 +26,17 @@ pub(crate) fn get_last_boot_time(conn: &Connection, agent: &str) -> Option<Strin
 }
 pub(crate) fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
-    if let Ok(mut stmt) = conn.prepare_cached("SELECT sender, message FROM messages WHERE recipient = ?1 ORDER BY timestamp ASC, id ASC") {
+    // The messages table has no runtime writer or pruner (auto_repair salvage
+    // repopulates it whole), so an unbounded SELECT rendered one capsule line
+    // per message ever salvaged on every boot. Bound the capsule to the newest
+    // messages, rendered oldest-first as before.
+    if let Ok(mut stmt) = conn.prepare_cached(
+        "SELECT sender, message FROM ( \
+             SELECT sender, message, timestamp, id FROM messages \
+             WHERE recipient = ?1 \
+             ORDER BY timestamp DESC, id DESC LIMIT 10 \
+         ) ORDER BY timestamp ASC, id ASC",
+    ) {
         if let Ok(rows) = stmt.query_map(params![agent], |r| Ok(json!({"from":r.get::<_,String>(0)?,"message":r.get::<_,String>(1)?}))) {
             for row in rows.flatten() {
                 out.push(row);
@@ -70,41 +80,60 @@ pub(crate) fn fetch_locks(conn: &Connection) -> Vec<Value> {
     out
 }
 pub(crate) fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
+    // The feed table has no retention pruner, so the previous whole-table scan
+    // made every boot O(feed rows ever posted) in time and memory even though
+    // the capsule renders at most the last 10 unread entries. Bound the scan
+    // to the newest entries; (timestamp, id) tuple ordering matches the
+    // previous positional scan, and an ack row that no longer exists still
+    // yields no unread entries (it marked a position, not a filter).
+    const FEED_CAPSULE_LINES: i64 = 10;
     let ack: Option<String> = conn
         .query_row("SELECT last_seen_id FROM feed_acks WHERE agent = ?1", params![agent], |row| row.get(0))
         .optional()
         .ok()
         .flatten();
-    let mut all: Vec<(String, String, String, String)> = Vec::new();
-    if let Ok(mut stmt) = conn.prepare_cached("SELECT id, agent, kind, summary FROM feed ORDER BY timestamp ASC, id ASC") {
-        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))) {
-            for row in rows.flatten() {
-                all.push(row);
+    if let Some(ack_id) = &ack {
+        let anchor: Option<String> = conn
+            .query_row("SELECT timestamp FROM feed WHERE id = ?1", params![ack_id], |row| row.get(0))
+            .optional()
+            .ok()
+            .flatten();
+        let Some(anchor_ts) = anchor else {
+            return Vec::new();
+        };
+        if let Ok(mut stmt) = conn.prepare_cached(
+            "SELECT agent, kind, summary FROM feed \
+             WHERE agent != ?1 AND (timestamp > ?2 OR (timestamp = ?2 AND id > ?3)) \
+             ORDER BY timestamp DESC, id DESC LIMIT ?4",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![agent, anchor_ts, ack_id, FEED_CAPSULE_LINES], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            }) {
+                let mut newest: Vec<(String, String, String)> = rows.flatten().collect();
+                newest.reverse();
+                return newest
+                    .into_iter()
+                    .map(|(entry_agent, kind, summary)| json!({"kind":kind,"agent":entry_agent,"summary":summary}))
+                    .collect();
+            }
+        }
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare_cached(
+        "SELECT agent, kind, summary FROM feed WHERE agent != ?1 ORDER BY timestamp DESC, id DESC LIMIT ?2",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![agent, FEED_CAPSULE_LINES], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        }) {
+            let mut newest: Vec<(String, String, String)> = rows.flatten().collect();
+            newest.reverse();
+            for (entry_agent, kind, summary) in newest {
+                out.push(json!({"kind":kind,"agent":entry_agent,"summary":summary}));
             }
         }
     }
-    if let Some(ack_id) = ack {
-        let mut past_ack = false;
-        let mut unread = Vec::new();
-        for (id, entry_agent, kind, summary) in all {
-            if id == ack_id {
-                past_ack = true;
-                continue;
-            }
-            if past_ack && entry_agent != agent {
-                unread.push(json!({"kind":kind,"agent":entry_agent,"summary":summary}));
-            }
-        }
-        unread
-    } else {
-        all.into_iter()
-            .filter(|(_, entry_agent, _, _)| entry_agent != agent)
-            .map(|(_, entry_agent, kind, summary)| {
-                json!({"kind":kind,"agent":
-entry_agent,"summary":summary})
-            })
-            .collect()
-    }
+    out
 }
 pub(crate) fn fetch_pending_tasks(conn: &Connection) -> Vec<Value> {
     let mut out = Vec::new();
