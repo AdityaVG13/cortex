@@ -1,13 +1,39 @@
 #!/bin/bash
+# Post-build smoke: spawn daemon -> health -> one store -> one recall -> shutdown.
+# Isolated by construction: dedicated temp CORTEX_HOME + reserved ephemeral port,
+# mirroring tests/support/harness.rs (spawn_daemon / reserve_port / wait_for_health).
+# It never touches a live $HOME/.cortex and never shuts down a foreign daemon.
 set -euo pipefail
 
-BINARY="${1:-../target/release/cortex.exe}"
-PORT=7437
-TOKEN_FILE="$HOME/.cortex/cortex.token"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) BIN_NAME="cortex.exe" ;;
+    *) BIN_NAME="cortex" ;;
+esac
+BINARY="${1:-$ROOT/target/debug/$BIN_NAME}"
+
+# Port: SMOKE_PORT env wins; otherwise reserve an ephemeral port the same way
+# tests/support/harness.rs::reserve_port() does (bind 127.0.0.1:0, read, release).
+# Fallback 7493 is deliberately != the daemon default 7437.
+if [ -n "${SMOKE_PORT:-}" ]; then
+    PORT="$SMOKE_PORT"
+elif command -v python3 >/dev/null 2>&1; then
+    PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+else
+    PORT=7493
+fi
+
+# Temp home; left behind intentionally (no deletions from a test script).
+SMOKE_HOME="$(mktemp -d "${TMPDIR:-/tmp}/cortex-smoke-XXXXXX")"
+TOKEN_FILE="$SMOKE_HOME/cortex.token"
 DAEMON_PID=""
 TOKEN=""
 
 echo "=== Cortex Rust Daemon Smoke Test ==="
+echo "  binary: $BINARY"
+echo "  port:   $PORT"
+echo "  home:   $SMOKE_HOME"
 
 cleanup() {
     local token="${TOKEN:-}"
@@ -34,26 +60,48 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
-    TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
-    if [ -n "$TOKEN" ]; then
-        curl -s -X POST \
-          -H "Authorization: Bearer $TOKEN" \
-          -H "X-Cortex-Request: true" \
-          "http://localhost:$PORT/shutdown" > /dev/null 2>&1 || true
-        sleep 2
-    fi
-fi
-
-"$BINARY" serve &
-DAEMON_PID=$!
-sleep 3
-
-if [ ! -s "$TOKEN_FILE" ]; then
-    echo "Token file not created: $TOKEN_FILE"
+if [ ! -x "$BINARY" ]; then
+    echo "SMOKE TEST FAILED: binary not found or not executable: $BINARY" >&2
+    echo "build it with: cargo build -p cortex-daemon --bin cortex" >&2
     exit 1
 fi
-TOKEN=$(cat "$TOKEN_FILE")
+
+# Same flags + env contract as tests/support/harness.rs::spawn_daemon. The test
+# bypass only exists in debug builds, hence the target/debug default binary.
+CORTEX_SINGLE_DAEMON_TEST_BYPASS=1 CORTEX_BIND=127.0.0.1 \
+    "$BINARY" serve --home "$SMOKE_HOME" --port "$PORT" &
+DAEMON_PID=$!
+
+# Poll health with the harness deadline (30s, 250ms interval, exit-detection).
+HEALTH_OK=0
+for _ in $(seq 1 120); do
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+        echo "daemon exited before becoming healthy (pid $DAEMON_PID)" >&2
+        exit 1
+    fi
+    if curl -fsS "http://127.0.0.1:$PORT/health" > /dev/null 2>&1; then
+        HEALTH_OK=1
+        break
+    fi
+    sleep 0.25
+done
+if [ "$HEALTH_OK" -ne 1 ]; then
+    echo "daemon did not become healthy on port $PORT within 30s" >&2
+    exit 1
+fi
+
+TOKEN=""
+for _ in $(seq 1 120); do
+    if [ -s "$TOKEN_FILE" ]; then
+        TOKEN="$(cat "$TOKEN_FILE")"
+        [ -n "$TOKEN" ] && break
+    fi
+    sleep 0.25
+done
+if [ -z "$TOKEN" ]; then
+    echo "Token file not created: $TOKEN_FILE" >&2
+    exit 1
+fi
 
 PASS=0
 FAIL=0
@@ -93,7 +141,7 @@ run_test "GET /recall" \
     curl -s "${auth_headers[@]}" "http://localhost:$PORT/recall?q=cortex"
 
 run_test "GET /peek" \
-    '"results"' \
+    '"matches"' \
     curl -s "${auth_headers[@]}" "http://localhost:$PORT/peek?q=cortex"
 
 run_test "GET /digest" \
@@ -101,7 +149,7 @@ run_test "GET /digest" \
     curl -s "${auth_headers[@]}" "http://localhost:$PORT/digest"
 
 run_test "GET /savings" \
-    '"summary"' \
+    '"totals"' \
     curl -s "${auth_headers[@]}" "http://localhost:$PORT/savings"
 
 echo ""
