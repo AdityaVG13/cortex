@@ -113,6 +113,10 @@ name = "redaction_store"
 path = "contracts/redaction_store.rs"
 
 [[test]]
+name = "route_coverage"
+path = "contracts/route_coverage.rs"
+
+[[test]]
 name = "store_recall"
 path = "contracts/store_recall.rs"
 
