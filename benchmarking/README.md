@@ -2,6 +2,23 @@
 
 Optional lab for recall-quality measurement. Normal Cortex use does not need this directory.
 
+## Measurement class
+
+**Manual evidence lab. Never a gate.** Everything here is one-off, hand-run
+measurement: curated point-in-time snapshots, not a measurement program.
+
+- **No seed, no repeats, no variance (`cv_pct`), not ratcheted.** No row in
+  `results/` is baseline-eligible for the keep-gate or any other repo gate.
+- Every number in `results/` is a **point-in-time observation with no
+  performance claim attached** — one dev machine, one run, unverified variance.
+  Do not cite these numbers as gates, baselines, or current-engine quality.
+- This lab sits **outside the perf pillar** (SPEC-086: no public LongMemEval
+  quality claim). Gate eligibility would require, per the
+  `tests/fixtures/bench-history/` convention: a fixed seed, repeated rounds
+  per workload, `cv_pct <= 5` on every workload, and a median-ratio ratchet
+  (warn 1.10 / critical 1.25) against a committed baseline. Until that is
+  funded, this lab stays manual evidence only.
+
 ## What ships here
 
 | File | Purpose |
@@ -44,4 +61,4 @@ Each run writes `benchmarking/runs/<timestamp>/` with `summary.json`, `run-manif
 
 ## Purity gate
 
-`tests/purity-gates/adapter-surface-check.sh` keeps the pure adapter under 150 LOC and free of tuning patterns.
+`tests/purity-gates/adapter-surface-check.sh` keeps the pure adapter under 150 LOC and free of tuning patterns. This is a code-shape check on the adapter source only — it is not a performance or quality gate, and it says nothing about recall quality.
