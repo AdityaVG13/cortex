@@ -29,18 +29,22 @@ fn upsert_memory(conn: &Connection, text: &str, source: &str, mem_type: &str, ag
         let _ = id; // embedding rows stay inert
     }
     let ts = crate::handlers::now_iso();
-    if let Some(oid) = owner_id {
-        let _ = conn.execute(
+    let insert_result = if let Some(oid) = owner_id {
+        conn.execute(
             "INSERT INTO memories (text, source, type, source_agent, owner_id, observed_at, valid_from, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6, ?6)",
             rusqlite::params![text, source, mem_type, agent, oid, ts],
-        );
+        )
     } else {
-        let _ = conn.execute(
+        conn.execute(
             "INSERT INTO memories (text, source, type, source_agent, observed_at, valid_from, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5, ?5)",
             rusqlite::params![text, source, mem_type, agent, ts],
-        );
+        )
+    };
+    if let Err(e) = insert_result {
+        eprintln!("[indexer] failed to index memory from {source}: {e}");
+        return false;
     }
     true
 }

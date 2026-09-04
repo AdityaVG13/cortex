@@ -31,7 +31,7 @@ pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
         false
     }
 }
-pub fn focus_end(conn: &Connection, label: &str, agent: &str, owner_id: Option<i64>) -> Result<Value, String> {
+pub fn focus_end(conn: &mut Connection, label: &str, agent: &str, owner_id: Option<i64>) -> Result<Value, String> {
     let session: Option<(i64, String)> = conn
         .query_row("SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'", params![label, agent], |row| {
             Ok((row.get(0)?, row.get(1)?))
@@ -48,25 +48,31 @@ pub fn focus_end(conn: &Connection, label: &str, agent: &str, owner_id: Option<i
     let tokens_before = entries.iter().map(|e| estimate_tokens(e)).sum::<usize>();
     let summary = summarize_entries(&entries);
     let tokens_after = estimate_tokens(&summary);
-    if let Some(oid) = owner_id {
-        conn.execute(
+    // The summary memory and the session close must commit together: if the
+    // memory INSERT committed but the UPDATE failed, a client retry of
+    // focus_end would store a duplicate summary (memories.source has no
+    // uniqueness constraint).
+    let tx = conn.transaction().map_err(|e| format!("Failed to start focus close transaction: {e}"))?;
+    let stored_summary = if let Some(oid) = owner_id {
+        tx.execute(
             "INSERT INTO memories (text, source, type, source_agent, confidence, owner_id, observed_at, valid_from) \
              VALUES (?1, ?2, 'focus_summary', ?3, 0.9, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             params![summary, format!("focus::{label}"), agent, oid],
         )
     } else {
-        conn.execute(
+        tx.execute(
             "INSERT INTO memories (text, source, type, source_agent, confidence, observed_at, valid_from) \
              VALUES (?1, ?2, 'focus_summary', ?3, 0.9, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             params![summary, format!("focus::{label}"), agent],
         )
-    }
-    .map_err(|e| format!("Failed to store focus summary: {e}"))?;
-    conn.execute(
+    };
+    stored_summary.map_err(|e| format!("Failed to store focus summary: {e}"))?;
+    tx.execute(
         "UPDATE focus_sessions SET status = 'closed', summary = ?1, ended_at = datetime('now'), tokens_before = ?2, tokens_after = ?3 WHERE id = ?4",
         params![summary, tokens_before as i64, tokens_after as i64, id],
     )
     .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| format!("Failed to commit focus close: {e}"))?;
     let savings = if tokens_before > 0 { ((1.0 - (tokens_after as f64 / tokens_before as f64)) * 100.0).round() as i64 } else { 0 };
     Ok(json!({"id":id,"label":label,"status":"closed",
 "entries":entries.len(),"tokensBefore":tokens_before,"tokensAfter":tokens_after,"savings":format!("{savings}%"),"summary":summary,

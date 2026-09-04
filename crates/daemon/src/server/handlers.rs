@@ -169,8 +169,8 @@ pub(crate) async fn handle_focus_end(State(state): State<RuntimeState>, headers:
         }
     };
     let agent = body.agent.as_deref().unwrap_or("http");
-    let conn = state.db.lock().await;
-    match crate::focus::focus_end(&conn, label, agent, state.default_owner_id) {
+    let mut conn = state.db.lock().await;
+    match crate::focus::focus_end(&mut conn, label, agent, state.default_owner_id) {
         Ok(v) => handlers::json_response(axum::http::StatusCode::OK, v),
         Err(e) => handlers::json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
