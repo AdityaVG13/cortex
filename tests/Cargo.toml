@@ -73,6 +73,10 @@ name = "failure_classes"
 path = "contracts/failure_classes.rs"
 
 [[test]]
+name = "fault_matrix"
+path = "contracts/fault_matrix.rs"
+
+[[test]]
 name = "history"
 path = "contracts/history.rs"
 
