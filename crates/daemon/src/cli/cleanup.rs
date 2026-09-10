@@ -103,7 +103,9 @@ pub(crate) fn rotate_startup_logs(home: &Path) -> usize {
 pub(crate) fn create_backup(db_path: &Path, backup_dir: &Path) -> Result<String, String> {
     std::fs::create_dir_all(backup_dir).map_err(|err| format!("create backup dir: {err}"))?;
     let dest = backup_dir.join(format!("cortex-{}.db", Local::now().format("%Y%m%d")));
-    std::fs::copy(db_path, &dest).map_err(|err| format!("copy db: {err}"))?;
+    // Coherent snapshot through the online backup API (a raw copy of a live
+    // .db ignores WAL frames) plus a manifest beside it.
+    db::backup::backup_to(db_path, &dest)?;
     let _ = cleanup_backup_retention(backup_dir);
     let _ = std::fs::write(backup_dir.join(".last_backup"), Utc::now().to_rfc3339());
     Ok(dest.to_string_lossy().to_string())
@@ -169,34 +171,22 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
         eprintln!("[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using.");
         std::process::exit(1);
     }
-    let pre_backup = paths.home.join(format!("cortex.pre-restore.{}.db", Local::now().format("%Y%m%dT%H%M%S")));
-    if let Err(err) = std::fs::copy(&paths.db, &pre_backup) {
-        eprintln!("[cortex] Error: failed to create pre-restore backup: {err}");
-        std::process::exit(1);
-    }
-    if let Err(err) = std::fs::copy(restore_file, &paths.db) {
-        eprintln!("[cortex] Error: failed to restore backup: {err}");
-        eprintln!("[cortex] Pre-restore backup preserved at: {}", pre_backup.display());
-        std::process::exit(1);
-    }
-    // The WAL sidecars describe the replaced database. Leaving them lets
-    // SQLite replay old frames onto the restored file, so they are dropped
-    // with the file they belonged to (after the copy succeeded). A failed
-    // removal must NOT look like success: a stale -wal would be replayed on
-    // the next open, corrupting exactly the restore this step protects.
-    // Absent sidecars are fine (nothing to replay).
-    let db_wal = sqlite_sidecar_path(&paths.db, "-wal");
-    let db_shm = sqlite_sidecar_path(&paths.db, "-shm");
-    for sidecar in [&db_wal, &db_shm] {
-        if let Err(err) = std::fs::remove_file(sidecar) {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                continue;
+    match db::backup::restore_from(Path::new(restore_file), &paths.db, &paths.home) {
+        Ok(report) => {
+            let verified = report.integrity_ok && report.sample_reads_ok;
+            println!(
+                "Restore complete: epoch {} (was {}); integrity={} sample_reads={} records={} decisions={} memories={} aliases_expired={} projections_rebuilt={}",
+                report.new_restore_epoch, report.previous_restore_epoch, report.integrity_ok, report.sample_reads_ok, report.records, report.decisions, report.memories, report.aliases_expired, report.projections_rebuilt
+            );
+            println!("Verification report: {}", report.report_path.display());
+            if !verified {
+                eprintln!("[cortex] WARNING: restore verification FAILED; the pre-restore copy in {} is intact", paths.home.display());
+                std::process::exit(1);
             }
-            eprintln!("[cortex] Error: failed to remove WAL sidecar {}: {err}", sidecar.display());
-            eprintln!("[cortex] The restored database is staged but NOT safe to open until this sidecar is removed manually.");
-            eprintln!("[cortex] Pre-restore backup preserved at: {}", pre_backup.display());
+        }
+        Err(err) => {
+            eprintln!("[cortex] Error: restore failed: {err}");
             std::process::exit(1);
         }
     }
-    println!("Restore complete. Pre-restore backup preserved at: {}", pre_backup.display());
 }

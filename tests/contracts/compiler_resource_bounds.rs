@@ -107,7 +107,10 @@ fn boot_unread_feed_capsule_pins_newest_ten_after_ack() {
     let home = temp_home();
     let result = compiler::compile(&conn, &home, AGENT, 4000);
     let section = section_between(&result.boot_prompt, "## Feed");
-    let lines: Vec<&str> = section.lines().filter(|line| line.starts_with("- [")).collect();
+    let lines: Vec<&str> = section
+        .lines()
+        .filter(|line| line.starts_with("- ["))
+        .collect();
     assert_eq!(
         lines.len(),
         10,
@@ -121,4 +124,3 @@ fn boot_unread_feed_capsule_pins_newest_ten_after_ack() {
         );
     }
 }
-

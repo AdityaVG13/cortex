@@ -9,14 +9,15 @@
     "test": "cargo build -p cortex-daemon --bin cortex && cargo test -p cortex-tests --all-features",
     "purity": "bash tests/purity-gates/adapter-surface-check.sh && bash tests/purity-gates/codeowners-protection.sh && bash tests/purity-gates/daemon-clean.sh && bash tests/purity-gates/no-helper-envvar.sh && bash tests/purity-gates/changelog-truthfulness.sh",
     "smoke": "bash tests/smoke_test.sh",
-    "test:plugin": "node --test tests/plugin/run-mcp.contract.test.cjs",
+    "test:plugin": "node --test tests/plugin/run-mcp.contract.test.cjs tests/plugin/hook-event.contract.test.cjs",
     "test:desktop": "npm --prefix desktop/cortex-control-center run test -- --run",
     "daemon:check": "cargo -p cortex-daemon check --all-features",
     "daemon:clippy": "cargo -p cortex-daemon clippy --all-targets --all-features -- -D warnings",
     "desktop:install": "npm --prefix desktop/cortex-control-center install",
     "desktop:dev": "npm --prefix desktop/cortex-control-center run dev",
     "desktop:build": "npm --prefix desktop/cortex-control-center run build",
-    "desktop:verify:lifecycle:dev": "npm --prefix desktop/cortex-control-center run verify:lifecycle:dev"
+    "desktop:verify:lifecycle:dev": "npm --prefix desktop/cortex-control-center run verify:lifecycle:dev",
+    "check:docs": "node scripts/check-docs-vocabulary.cjs"
   },
   "keywords": [
     "ai",

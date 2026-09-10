@@ -8,6 +8,70 @@ Current release: **v0.6.0**. Source on `main` also includes the Clock-Quorum Rec
 
 ---
 
+## V5 native cycle and remaining release gates
+
+Unreleased source now implements exact registered intake, resumable file inventory,
+version-pinned host fixture normalization, scoped reverse any-cue needs, context-bound
+preparation, and opt-in lineage-deduplicated associations with reversible named feedback.
+CLI and optional plugin-sidecar entry points are documented in README. Existing CQR
+semantic APIs stay separate from raw attributed observations.
+
+Verification: 27 targeted Rust contracts and three plugin bridge tests passed; omitted
+reverse-index maintenance and weakened independent-support thresholds were detected by
+regressions. `tests/examples/observation_bench.rs` measures the native Path-A subset.
+On RCH worker `spark-1672` (Linux aarch64, 20 logical CPUs, debug profile), 64-document
+fixture measurements were capture p50/p95 5795/8886 us, full indexed API p50/p95
+7238/7978 us, and cold open-plus-query p50/p95 33207/52778 us (eight cold samples).
+The scan-only reference omits policy/receipt work, so this is not a speedup comparison
+or release acceptance. Log: `/tmp/cortex-v5-measurements.log`.
+An additional eight-process CLI capture probe retained all eight acknowledgements
+in 298900 us wall time including startup; `/tmp/cortex-v5-concurrent-measurements.log`.
+
+The ready literal pull path now reads postings without temporary subscriptions
+or a writer reservation. Two failure-first contracts prove zero subscription
+churn and successful reads while another connection holds the WAL writer lock;
+both reject a deliberately disabled candidate join. After this change, the same
+64-document debug workload on `spark-1672` reported full-API p50/p95
+1284/1321 us (64 samples), versus the earlier 7238/7978 us observation above.
+Eight concurrent CLI captures again retained all eight acknowledgements. These
+are observed fixture timings, not a normalized speedup or release acceptance.
+Logs: `/tmp/cortex-v5-readonly-tests.log`, `/tmp/cortex-v5-readonly-measurements.log`.
+
+An isolated installed **Claude Code 2.1.260** probe now covers native
+UserPromptSubmit, Bash PostToolUse and Stop emission plus acceptance of
+`additionalContext`. External networking and writes to the user's home were
+sandbox-denied; a deterministic loopback Messages stub drove the tool/final
+sequence. Its token/cost counters are synthetic, not reader-quality evidence.
+Artifacts: `/tmp/cortex-v5-host-KgzWM2/events.jsonl` and
+`/tmp/cortex-v5-host-KgzWM2/loopback-bAZzvQ/loopback-result.json`.
+
+The observed shapes exposed and fixed three concrete gaps: prompt IDs differ
+from transcript UUIDs, Bash responses are structured objects, and non-evidence
+control records otherwise stall raw-tail capture. The pinned native adapter now
+preserves prompt/tool identity, full reported Bash fields and transactional
+metadata markers. Opt-in native user/Bash hook configuration derives invocation
+metadata without model memory commands. Final live capture still needs its
+original message UUID; transcript catch-up remains available. Other tool/private
+shapes are not silently accepted. This is protocol-subset validation, not a fully
+deployed Cortex/host or real-model task certification.
+
+**Not complete as a V5 release:** broader installed-host capture/delivery validation,
+held-out reader/task quality and token savings, power-loss tests, large-scale
+contention, and a matched release-performance acceptance band remain
+unverified. No host settings or production data were changed to manufacture that
+proof; fixtures and debug timings cannot substitute for it.
+
+## Progress on the 2026-09-06 integration state note
+
+| Deliverable | Status on `main` |
+|-------------|------------------|
+| Transport cutover (plugin MCP/boot off HTTP) | Done — local `cortex mcp` / `hook-boot` stdio |
+| Truthful discovery | Done — eight ops; `cortex_boot`→orient; removed names `UNKNOWN_TOOL` |
+| Unified V5 access via ops | Done — `observations` on query/orient; `expand` `obs:<id>` |
+| Claude coverage matrix | Partial — Stop packaged; Edit/Write legacy ToolResult; Read not native |
+| Additional hosts | Not started — MCP interop first; capture only where hooks exist |
+| Release evidence | Open — held-out quality, crash/power-loss, release perf |
+
 ## Shipped
 
 ### v0.5.0 — Stabilization
@@ -50,6 +114,14 @@ Production recall is CQR only. No local embedding or reranker model.
 Details: [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ---
+
+## Shipped vs proposed
+
+Everything under `docs/architecture/next/` is a **proposal path**; a proposal
+becomes "shipped" only when a contract under `tests/contracts/` holds it and
+`ARCHITECTURE.md` lists the surface. Three guides describe the shipped
+system: `docs/guides/user-guide.md`, `docs/guides/developer-guide.md`,
+`docs/guides/operations-guide.md`.
 
 ## Next (v0.7 direction)
 

@@ -18,6 +18,7 @@ from .types import (
     HealthResponse,
     ImportPayload,
     ImportResponse,
+    OperationResult,
     PeekResponse,
     RecallResponse,
     ShutdownResponse,
@@ -25,6 +26,14 @@ from .types import (
 )
 
 _DEFAULT_BASE = "http://127.0.0.1:7437"
+OPERATIONS = ("capabilities", "orient", "query", "expand", "commit", "checkpoint", "resolve", "feedback")
+RESPONSE_STATUSES = (
+    "ok", "partial", "no_match", "ambiguous", "needs_more_budget", "projection_pending",
+    "resnapshot_required", "unavailable", "denied", "outcome_unknown", "invalid_request",
+)
+# ``http`` talks to a daemon. ``local`` is the in-process entry (``cortex mcp
+# --native`` / ``cortex hook-event``) and is never an HTTP wrapper.
+TRANSPORTS = ("http", "local")
 _CORTEX_HEADERS = {"X-Cortex-Request": "true"}
 
 
@@ -78,7 +87,16 @@ class CortexClient:
         token: Optional[str] = None,
         timeout: float = 10.0,
         source_agent: str = "python-sdk",
+        transport: str = "http",
     ):
+        if transport not in TRANSPORTS:
+            raise ValueError(f"unknown transport {transport!r}; known: {', '.join(TRANSPORTS)}")
+        if transport != "http":
+            raise ValueError(
+                "CortexClient over the local transport is the native package entry "
+                "(cortex mcp --native / cortex hook-event); this HTTP client never wraps a local runtime."
+            )
+        self.transport = transport
         self.base_url = _normalize_base_url(base_url)
         if token:
             self.token = token
@@ -256,3 +274,50 @@ class CortexClient:
 
     def shutdown(self) -> ShutdownResponse:
         return cast(ShutdownResponse, self._post("/shutdown"))
+
+    # -- the eight operations -------------------------------------------------
+
+    def operation(self, operation: str, args: Optional[dict[str, object]] = None) -> OperationResult:
+        """One of the eight operations over ``POST /op/{operation}``.
+
+        The envelope status is returned verbatim; a non-``ok`` status is
+        data, not an exception. Only transport failures raise.
+        """
+        if operation not in OPERATIONS:
+            raise ValueError(f"unknown operation {operation!r}; known: {', '.join(OPERATIONS)}")
+        resp = self._client().post(
+            f"{self.base_url}/op/{operation}",
+            headers=self._headers(),
+            json=args or {},
+        )
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {}
+        if not resp.is_success and "status" not in body:
+            resp.raise_for_status()
+        return cast(OperationResult, body)
+
+    def capabilities(self) -> OperationResult:
+        return self.operation("capabilities")
+
+    def orient(self, **args: object) -> OperationResult:
+        return self.operation("orient", dict(args))
+
+    def query(self, need: str, **args: object) -> OperationResult:
+        return self.operation("query", {"need": need, **args})
+
+    def expand(self, **args: object) -> OperationResult:
+        return self.operation("expand", dict(args))
+
+    def commit(self, **args: object) -> OperationResult:
+        return self.operation("commit", dict(args))
+
+    def checkpoint(self, thread: str, **args: object) -> OperationResult:
+        return self.operation("checkpoint", {"thread": thread, **args})
+
+    def resolve(self, **args: object) -> OperationResult:
+        return self.operation("resolve", dict(args))
+
+    def feedback(self, outcome: str, **args: object) -> OperationResult:
+        return self.operation("feedback", {"outcome": outcome, **args})

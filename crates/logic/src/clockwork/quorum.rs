@@ -1,9 +1,16 @@
-use super::evidence::ClockEvidence;
+use super::evidence::{direct_domains, independent_support, ClockEvidence, Witness};
 use std::cmp::Ordering;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RankKey {
+    /// Versioned rank tuple (integers only; see `RANK_TUPLE_VERSION`):
+    /// required role → exact applicable (hard anchor) → independent lineage
+    /// → clock count → material contradiction → strength → specificity →
+    /// path cost → scoped utility → valid-time recency → canonical id.
+    pub required_role: bool,
     pub hard_anchor: bool,
+    pub lineage: u8,
+    pub contradiction: bool,
     pub clock_count: u8,
     pub strength: u8,
     pub specificity: u8,
@@ -28,7 +35,10 @@ impl RankKey {
         target_id: i64,
     ) -> Self {
         Self {
+            required_role: false,
             hard_anchor,
+            lineage: evidence.nonzero_count().min(1),
+            contradiction: false,
             clock_count: evidence.nonzero_count(),
             strength: evidence.strength_sum(),
             specificity,
@@ -54,10 +64,15 @@ impl Ord for RankKey {
     }
 }
 
+pub const RANK_TUPLE_VERSION: &str = "rank/2";
+
 pub fn compare_rank_keys(a: &RankKey, b: &RankKey) -> Ordering {
-    b.hard_anchor
-        .cmp(&a.hard_anchor)
+    b.required_role
+        .cmp(&a.required_role)
+        .then_with(|| b.hard_anchor.cmp(&a.hard_anchor))
+        .then_with(|| b.lineage.cmp(&a.lineage))
         .then_with(|| b.clock_count.cmp(&a.clock_count))
+        .then_with(|| b.contradiction.cmp(&a.contradiction))
         .then_with(|| b.strength.cmp(&a.strength))
         .then_with(|| b.specificity.cmp(&a.specificity))
         .then_with(|| a.hops.cmp(&b.hops))
@@ -76,6 +91,8 @@ pub struct Rankable {
     pub strong_lexical: bool,
 }
 
+/// Legacy numeric admission (counters only). Retained for callers that have
+/// no witness lineage; the engine uses `admit_with_lineage`.
 pub fn admit(item: Rankable) -> Option<&'static str> {
     if !item.eligible {
         return None;
@@ -87,6 +104,47 @@ pub fn admit(item: Rankable) -> Option<&'static str> {
         return Some("clock_quorum");
     }
     if item.strong_lexical && item.evidence.write >= 2 {
+        return Some("strong_lexical");
+    }
+    None
+}
+
+/// Lineage-aware admission law:
+/// 1. ineligible (policy/scope/validity) → not exposed;
+/// 2. a *direct* hard anchor → `hard_anchor`;
+/// 3. a *direct* strong lexical match → `strong_lexical`;
+/// 4. two witness domains with independent origin groups → `clock_quorum`
+///    (a derived route counts once, through its seed's origin; shared
+///    ancestry is one family);
+/// 5. otherwise not in the supported set. Derived-only candidates are leads.
+pub fn admit_with_lineage(item: Rankable, witnesses: &[Witness]) -> Option<&'static str> {
+    if !item.eligible {
+        return None;
+    }
+    let has_direct_hard =
+        item.hard_anchor && witnesses.iter().any(|w| !w.derived && w.specificity >= 3);
+    if has_direct_hard {
+        return Some("hard_anchor");
+    }
+    let direct = direct_domains(witnesses);
+    let origins = independent_support(witnesses);
+    // Two domains AND two origin groups. A hop-only row has one origin
+    // (its seed) and zero direct domains; a row matched lexically and via a
+    // hop from an unrelated seed has one direct domain plus one derived
+    // family from a distinct origin.
+    let domains_incl_derived = {
+        let mut kinds: Vec<String> = witnesses
+            .iter()
+            .map(|w| format!("{:?}", w.domain))
+            .collect();
+        kinds.sort();
+        kinds.dedup();
+        kinds.len()
+    };
+    if direct >= 1 && domains_incl_derived >= 2 && origins >= 2 {
+        return Some("clock_quorum");
+    }
+    if item.strong_lexical && item.evidence.write >= 2 && witnesses.iter().any(|w| !w.derived) {
         return Some("strong_lexical");
     }
     None

@@ -1,23 +1,31 @@
 # Architecture
 
-Cortex is a private, local-first memory system for AI tools. A Rust daemon owns one SQLite brain and exposes it over HTTP and MCP. The Control Center is a Tauri desktop app that supervises that daemon.
+Cortex is a private, local-first memory library for AI tools. `cortex-kernel` owns SQLite semantics; the `cortex` executable provides in-process CLI, hooks and MCP stdio. Asupersync owns runtime capabilities, locks, channels and timers. No HTTP listener or proxy is built. The separate Control Center and HTTP SDKs are legacy clients for earlier tagged releases, not clients of this runtime.
 
-Clock-Quorum Recall (CQR) is the only production retrieval engine. The daemon does not download, load, or run language, embedding, or reranking models. Older databases may still contain inert `embeddings` rows; they are not read. `~/.cortex/models` is neither required nor created.
+Clock-Quorum Recall (CQR) remains the production semantic retrieval engine. The unreleased V5 observation path adds separately labeled exact any-cue retrieval; it does not promote captured prose into CQR facts. The daemon does not download, load, or run language, embedding, or reranking models. Older databases may still contain inert `embeddings` rows; they are not read. `~/.cortex/models` is neither required nor created.
 
 Current version: **0.6.0**.
 
 ---
 
+## Shipped vs proposed
+
+This file describes shipped behavior. The design pack under
+`docs/architecture/next/` is a proposal path; its ideas that have landed are
+listed in `docs/architecture/next/README.md` with the contract that holds
+each one. Guides for users, developers and operators live in `docs/guides/`.
+
 ## Products in this tree
 
 | Product | Path | Role |
 |---------|------|------|
-| Daemon | `crates/daemon` (`cortex-daemon`, binary `cortex`) | HTTP API, MCP stdio proxy, SQLite, CQR collection, boot compiler |
+| Kernel | `crates/kernel` (`cortex-kernel`) | The embeddable brain: `CortexRuntime::open / deposit / lens / boot` in-process over SQLite — CQR engines, store path, boot compiler, schema, Reflex, hooks. No axum, no server, no port. Rust hosts (Outfit) path-dep this crate |
+| CLI / MCP edge | `crates/daemon` (`cortex-daemon`, binary `cortex`) | Direct kernel access, MCP stdio, hooks, and an optional bounded maintenance worker. No network listener or service manager. |
 | Logic | `crates/logic` (`cortex-logic`) | Deterministic types: clocks, graph, traces, conflict, budgets |
 | Tests | `tests/` (`cortex-tests`) | Public contracts. Production crates have no inline tests |
-| Control Center | `desktop/cortex-control-center` | Operator UI, daemon supervisor, budgets, brain view |
-| Plugin | `plugins/cortex-plugin` | Claude Code attach-only MCP bridge |
-| SDKs | `sdks/python`, `sdks/typescript` | Thin HTTP clients |
+| Legacy Control Center | `desktop/cortex-control-center` | Separate workspace; requires the earlier HTTP daemon |
+| Plugin | `plugins/cortex-plugin` | Invokes local MCP stdio and in-process hooks |
+| Legacy SDKs | `sdks/python`, `sdks/typescript` | HTTP clients for earlier releases; not supported by this runtime |
 
 ---
 
@@ -25,14 +33,22 @@ Current version: **0.6.0**.
 
 | Surface | How to start | Notes |
 |---------|--------------|-------|
-| HTTP daemon | `cortex serve` | Default `127.0.0.1:7437` |
-| MCP stdio | `cortex mcp --agent <name>` | Proxies onto the running daemon; does not spawn a second one from plugin paths |
-| Control Center | Desktop installer / `npm run desktop:dev` | Owns daemon lifecycle in app-managed mode |
-| Status | `cortex status --json` | Readiness without starting another daemon |
+| Maintenance worker | `cortex serve` | Optional; capped outbox slices, no network listener |
+| MCP stdio | `cortex mcp --agent <name>` | Lifetime bound to the host connection; opens SQLite directly |
+| CLI operations | `cortex op <operation>` | Same kernel semantics and explicit caller scope |
+| Status | `cortex status --json` | Opens the local brain; no token or running service required |
 
-Protected HTTP requires `Authorization: Bearer …` and `X-Cortex-Request` (SSRF guard). Solo mode uses `~/.cortex/cortex.token`. Team mode uses Argon2id-hashed `ctx_` keys.
+Local process/file access is the trust boundary. Async APIs receive the host-owned `&asupersync::Cx`; cancellation errors propagate. Existing owner IDs still scope domain operations, but remote authentication and HTTP headers no longer exist.
 
 ---
+
+## V5 observation cycle (unreleased)
+
+`runtime/observation.rs` owns explicit source grants and atomic occurrence/cursor/receipt intake. `inventory.rs` snapshots registered file candidates and resumes bounded base population without crawling unregistered paths. `cycle.rs` maintains scoped postings and reverse any-cue subscriptions, revalidates current source permissions on reads, and qualifies delivery against coverage, size limits and explicit context presence. Exact sources remain independently retrievable after derived-index replacement or retraction.
+
+`host_capture.rs` provides a version-pinned Claude-shaped fixture subset and an origin firewall for live/history overlap. The optional plugin invocation sidecar selects capture-and-prepare without model-generated memory commands; missing native identities and unresolved origin fail closed. `associations.rs` adds opt-in lineage-deduplicated local routes and reversible named usefulness assessments. Learned navigation neither changes source authority nor proves causal utility.
+
+These surfaces have native contract coverage, not installed-host or reader-quality certification. The CLI is `cortex capture`; see README and `crates/kernel/CONTRACT.md` for commands, bounds and no-claim boundaries. No host configuration is automatically installed, and no full V5 release-performance or power-loss claim follows from transactional fixtures.
 
 ## Two layers of truth
 
@@ -57,7 +73,7 @@ Retention classes: **durable** (no TTL), **operational** (90d), **audit** (365d)
 
 ```text
 client
-  -> POST /store
+  -> CortexRuntime::deposit / MCP cortex_commit
   -> redact secrets
   -> classify retention / TTL
   -> Jaccard conflict vs recent decisions
@@ -140,7 +156,7 @@ Packed today:
 
 1. **Identity** — durable constraints and platform facts
 2. **Delta** — conflicts, tasks, focus, messages, locks, agents, recent decisions, feed, activity since last boot
-3. **TRUTH** — top-N current facts ranked by retention × recency × relevance × activity, with `FACT!` / `FACT?` / `FACT~` sigils
+3. **TRUTH** — top-N current facts ranked by retention × recency × relevance × activity, with `FACT!` / `FACT?` / `FACT~` sigils (legacy boot-capsule projection; the operations surface exposes the same records as Cards with an explicit epistemic status — see `docs/guides/user-guide.md`)
 
 Then token-pack against the budget. Savings vs a raw dump are logged.
 
@@ -192,13 +208,14 @@ crates/logic/src/graph/     entities, closed synonym clusters
 crates/logic/src/traces/    traces, versions, HEAD
 crates/logic/src/conflict/  Jaccard classes
 
-crates/daemon/src/handlers/recall/engine_clockwork.rs   six arms + gates
-crates/daemon/src/handlers/store/                       write + project
-crates/daemon/src/compiler/                             boot pack
-crates/daemon/src/db/                                   schema, FTS, migrations
+crates/kernel/src/handlers/recall/engine_clockwork.rs   six arms + gates
+crates/kernel/src/handlers/store/                       write + project
+crates/kernel/src/compiler/                             boot pack
+crates/kernel/src/db/                                   schema, FTS, migrations
+crates/kernel/src/runtime/                              CortexRuntime (embed entry)
 ```
 
-Admission math lives in `cortex-logic`. Candidate SQL lives in the daemon. Rebuild projections without changing admit.
+Admission math lives in `cortex-logic`. Candidate SQL lives in the kernel; the daemon only adds transport. Rebuild projections without changing admit.
 
 ---
 
@@ -250,7 +267,7 @@ Production crates have no inline tests. CQR, store, conflict, temporal, and hist
 
 ## Safety
 
-- Handler panics become HTTP 500 via `CatchPanicLayer`.
+- Lock cancellation propagates through the caller capability; committed SQLite effects are not undone by later cancellation.
 - Secret redaction runs before anchor extraction.
 - ACL, HEAD, validity, and expiry are SQL gates during candidate generation.
 - Empty evidence is returned rather than a neighbor guess.

@@ -15,4 +15,4 @@ pub(crate) use rpc::{
     wrap_mcp_tool_result, wrap_mcp_tool_result_verbose,
 };
 pub use rpc::{mcp_error, mcp_success};
-pub use tools::mcp_tools;
+pub use tools::{legacy_mcp_tools, mcp_tools, removed_tool_replacements};

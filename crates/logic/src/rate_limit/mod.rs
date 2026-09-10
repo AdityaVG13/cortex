@@ -5,7 +5,8 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use asupersync::sync::{LockError, Mutex};
+use asupersync::Cx;
 const AUTH_FAIL_LIMIT: usize = 10;
 const REQUEST_LIMIT_NON_LOOPBACK: usize = 100;
 const REQUEST_LIMIT_LOOPBACK: usize = 10_000;
@@ -171,39 +172,43 @@ impl RateLimiter {
             }
         }
     }
-    pub async fn record_auth_failure(&self, ip: IpAddr) -> Result<(), u64> {
-        let mut map = self.auth_failures.lock().await;
+    /// The outer error reports lock failure; the inner error is retry-after seconds.
+    pub async fn record_auth_failure(&self, cx: &Cx, ip: IpAddr) -> Result<Result<(), u64>, LockError> {
+        let mut map = self.auth_failures.lock(cx).await?;
         let window = map.entry(ip).or_insert_with(SlidingWindow::new);
         let now = Instant::now();
-        window
+        Ok(window
             .try_record(now, self.auth_fail_limit, WINDOW)
-            .map(|_| ())
+            .map(|_| ()))
     }
-    pub async fn is_auth_blocked(&self, ip: &IpAddr) -> Option<u64> {
-        let mut map = self.auth_failures.lock().await;
+    pub async fn is_auth_blocked(&self, cx: &Cx, ip: &IpAddr) -> Result<Option<u64>, LockError> {
+        let mut map = self.auth_failures.lock(cx).await?;
         if let Some(window) = map.get_mut(ip) {
             let now = Instant::now();
             window.prune(now, WINDOW);
             if window.timestamps.len() >= self.auth_fail_limit {
-                return Some(window.seconds_until_slot_pruned(now, self.auth_fail_limit, WINDOW));
+                return Ok(Some(window.seconds_until_slot_pruned(now, self.auth_fail_limit, WINDOW)));
             }
         }
-        None
+        Ok(None)
     }
-    pub async fn check_request(&self, ip: IpAddr) -> Result<usize, u64> {
-        self.check_request_for_class(ip, RequestClass::Default)
+    /// The outer error reports lock failure; the inner error is retry-after seconds.
+    pub async fn check_request(&self, cx: &Cx, ip: IpAddr) -> Result<Result<usize, u64>, LockError> {
+        self.check_request_for_class(cx, ip, RequestClass::Default)
             .await
     }
+    /// The outer error reports lock failure; the inner error is retry-after seconds.
     pub async fn check_request_for_class(
         &self,
+        cx: &Cx,
         ip: IpAddr,
         class: RequestClass,
-    ) -> Result<usize, u64> {
-        let mut map = self.requests.lock().await;
+    ) -> Result<Result<usize, u64>, LockError> {
+        let mut map = self.requests.lock(cx).await?;
         let window = map.entry((ip, class)).or_insert_with(SlidingWindow::new);
         let request_limit = self.request_limit_for_ip_class(ip, class);
         let now = Instant::now();
-        window.try_record(now, request_limit, WINDOW)
+        Ok(window.try_record(now, request_limit, WINDOW))
     }
     pub fn budget_status(&self) -> BudgetConfigStatus {
         (*self.budget_config_status).clone()
@@ -213,47 +218,51 @@ impl RateLimiter {
     }
     pub async fn check_budget_for_endpoint(
         &self,
+        cx: &Cx,
         ip: IpAddr,
         endpoint: BudgetEndpoint,
-    ) -> Option<BudgetDecision> {
-        let budget = self.budget_for_endpoint(endpoint)?;
+    ) -> Result<Option<BudgetDecision>, LockError> {
+        let Some(budget) = self.budget_for_endpoint(endpoint) else {
+            return Ok(None);
+        };
         let window_duration = Duration::from_secs(budget.window_seconds);
-        let mut map = self.budget_requests.lock().await;
+        let mut map = self.budget_requests.lock(cx).await?;
         let window = map.entry((ip, endpoint)).or_insert_with(SlidingWindow::new);
         let now = Instant::now();
         match window.try_record(now, budget.limit, window_duration) {
-            Ok(remaining) => Some(BudgetDecision::allowed(endpoint, budget, remaining)),
+            Ok(remaining) => Ok(Some(BudgetDecision::allowed(endpoint, budget, remaining))),
             Err(retry_after) => {
                 drop(map);
-                self.record_budget_denial().await;
-                Some(BudgetDecision::denied(endpoint, budget, retry_after))
+                self.record_budget_denial(cx).await?;
+                Ok(Some(BudgetDecision::denied(endpoint, budget, retry_after)))
             }
         }
     }
-    async fn record_budget_denial(&self) {
+    async fn record_budget_denial(&self, cx: &Cx) -> Result<(), LockError> {
+        let mut denials = self.budget_denials.lock(cx).await?;
         self.total_budget_denials.fetch_add(1, Ordering::Relaxed);
-        let mut denials = self.budget_denials.lock().await;
         denials.record_unbounded(Instant::now(), BUDGET_DENIAL_RECENT_WINDOW);
+        Ok(())
     }
-    pub async fn recent_budget_denials(&self) -> usize {
-        let mut denials = self.budget_denials.lock().await;
-        denials.len_after_prune(Instant::now(), BUDGET_DENIAL_RECENT_WINDOW)
+    pub async fn recent_budget_denials(&self, cx: &Cx) -> Result<usize, LockError> {
+        let mut denials = self.budget_denials.lock(cx).await?;
+        Ok(denials.len_after_prune(Instant::now(), BUDGET_DENIAL_RECENT_WINDOW))
     }
     #[allow(dead_code)]
     pub fn total_budget_denials(&self) -> usize {
         self.total_budget_denials.load(Ordering::Relaxed)
     }
-    pub async fn cleanup(&self) {
+    pub async fn cleanup(&self, cx: &Cx) -> Result<(), LockError> {
         let now = Instant::now();
         {
-            let mut map = self.auth_failures.lock().await;
+            let mut map = self.auth_failures.lock(cx).await?;
             map.retain(|_, w| {
                 w.prune(now, WINDOW);
                 !w.timestamps.is_empty()
             });
         }
         {
-            let mut map = self.requests.lock().await;
+            let mut map = self.requests.lock(cx).await?;
             map.retain(|_, w| {
                 w.prune(now, WINDOW);
                 !w.timestamps.is_empty()
@@ -261,7 +270,7 @@ impl RateLimiter {
         }
         {
             let budget_status = self.budget_status();
-            let mut map = self.budget_requests.lock().await;
+            let mut map = self.budget_requests.lock(cx).await?;
             map.retain(|(_, endpoint), w| {
                 let window = budget_status
                     .budget_for(*endpoint)
@@ -271,5 +280,6 @@ impl RateLimiter {
                 !w.timestamps.is_empty()
             });
         }
+        Ok(())
     }
 }

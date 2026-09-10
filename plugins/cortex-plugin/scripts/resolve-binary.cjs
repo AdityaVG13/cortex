@@ -19,9 +19,9 @@ function normalizedPath(value) {
   return normalized;
 }
 
-function isLikelyTempPath(candidatePath) {
+function isLikelyTempPath(candidatePath, env = process.env) {
   if (!candidatePath) return false;
-  const tempRoots = [process.env.TEMP, process.env.TMP, os.tmpdir()]
+  const tempRoots = [env.TEMP, env.TMP, os.tmpdir()]
     .map(normalizeOption)
     .filter(Boolean)
     .map(normalizedPath);
@@ -33,8 +33,8 @@ function isLikelyTempPath(candidatePath) {
   });
 }
 
-function resolveCanonicalUserHome() {
-  const home = process.env.USERPROFILE || process.env.HOME || '';
+function resolveCanonicalUserHome(env = process.env) {
+  const home = env.USERPROFILE || env.HOME || '';
   return normalizeOption(home);
 }
 
@@ -70,31 +70,32 @@ function resolveCortexBinary({
   binaryName,
   ensureBundled,
   allowBundled = true,
-  rejectTempCandidates = false
+  rejectTempCandidates = false,
+  env = process.env
 }) {
   const envOverrides = [
-    ['CORTEX_APP_BINARY', normalizeOption(process.env.CORTEX_APP_BINARY)],
-    ['CORTEX_DAEMON_BINARY', normalizeOption(process.env.CORTEX_DAEMON_BINARY)],
-    ['CORTEX_PLUGIN_CORTEX_BINARY', normalizeOption(process.env.CORTEX_PLUGIN_CORTEX_BINARY)]
+    ['CORTEX_APP_BINARY', normalizeOption(env.CORTEX_APP_BINARY)],
+    ['CORTEX_DAEMON_BINARY', normalizeOption(env.CORTEX_DAEMON_BINARY)],
+    ['CORTEX_PLUGIN_CORTEX_BINARY', normalizeOption(env.CORTEX_PLUGIN_CORTEX_BINARY)]
   ];
 
   for (const [name, candidate] of envOverrides) {
-    if (fileExists(candidate) && !(rejectTempCandidates && isLikelyTempPath(candidate))) {
+    if (fileExists(candidate) && !(rejectTempCandidates && isLikelyTempPath(candidate, env))) {
       return { binaryPath: candidate, source: `env:${name}` };
     }
   }
 
-  const userHome = resolveCanonicalUserHome();
+  const userHome = resolveCanonicalUserHome(env);
   if (userHome) {
     const canonicalInstall = path.join(userHome, '.cortex', 'bin', binaryName);
-    if (fileExists(canonicalInstall) && !(rejectTempCandidates && isLikelyTempPath(canonicalInstall))) {
+    if (fileExists(canonicalInstall) && !(rejectTempCandidates && isLikelyTempPath(canonicalInstall, env))) {
       return { binaryPath: canonicalInstall, source: 'canonical-install' };
     }
 
     const workspaceRoot =
-      normalizeOption(process.env.CORTEX_WORKSPACE_ROOT) || path.join(userHome, 'cortex');
+      normalizeOption(env.CORTEX_WORKSPACE_ROOT) || path.join(userHome, 'cortex');
     for (const candidate of workspaceBinaryCandidates(workspaceRoot, binaryName)) {
-      if (fileExists(candidate) && !(rejectTempCandidates && isLikelyTempPath(candidate))) {
+      if (fileExists(candidate) && !(rejectTempCandidates && isLikelyTempPath(candidate, env))) {
         return { binaryPath: candidate, source: 'workspace-build' };
       }
     }
@@ -110,7 +111,7 @@ function resolveCortexBinary({
   if (!fileExists(bundled) && typeof ensureBundled === 'function') {
     ensureBundled();
   }
-  if (rejectTempCandidates && isLikelyTempPath(bundled)) {
+  if (rejectTempCandidates && isLikelyTempPath(bundled, env)) {
     try {
       const canonicalInstalled = ensureCanonicalInstallFromSource(bundled, binaryName);
       if (!isLikelyTempPath(canonicalInstalled) && fileExists(canonicalInstalled)) {

@@ -207,3 +207,49 @@ test("recallForPrompt reuses recall payload", async () => {
   }
   assert.equal(calls.length, 1);
 });
+
+test("operations post to /op/{operation} and return envelope status verbatim", async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    calls.push({ input, init });
+    return new Response(JSON.stringify({ status: "invalid_request", error: "need is required" }), {
+      status: 422,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const client = new CortexClient({ baseUrl: "http://127.0.0.1:7437", token: "ctx_test_token" });
+    const result = await client.query("");
+    assert.equal(result.status, "invalid_request");
+    assert.equal(new URL(String(calls[0].input)).pathname, "/op/query");
+    assert.deepEqual(JSON.parse(calls[0].init.body), { need: "" });
+    assert.equal(calls[0].init.headers.Authorization, "Bearer ctx_test_token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("commit and checkpoint shape their arguments; local transport is explicit", async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    calls.push({ input, init });
+    return okJson({ status: "ok", receipt: { request_id: "r1" } });
+  };
+  try {
+    const client = new CortexClient({ baseUrl: "http://127.0.0.1:7437", token: "ctx_test_token" });
+    assert.equal(client.transport, "http");
+    const receipt = await client.commit({ decision: "PAY-77 retries are idempotent", idempotency_key: "k1" });
+    await client.checkpoint("session:1", { action: "status" });
+    assert.equal(receipt.receipt.request_id, "r1");
+    assert.equal(new URL(String(calls[0].input)).pathname, "/op/commit");
+    assert.deepEqual(JSON.parse(calls[1].init.body), { thread: "session:1", action: "status" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.throws(
+    () => new CortexClient({ baseUrl: "http://127.0.0.1:7437", token: "t", transport: "local" }),
+    /native package entry/
+  );
+});

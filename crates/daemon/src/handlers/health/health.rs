@@ -1,14 +1,7 @@
 use super::*;
-use crate::handlers::{client_ip, ensure_ssrf_protection, json_response};
 use crate::state::RuntimeState;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
 use chrono::Utc;
 use serde_json::{json, Value};
-pub(crate) fn include_private_runtime_details(headers: &HeaderMap) -> bool {
-    ensure_ssrf_protection(headers).is_ok() && client_ip(headers).is_loopback()
-}
 pub(crate) fn redact_private_runtime_details(payload: &mut Value) {
     if let Some(runtime) = payload.get_mut("runtime").and_then(Value::as_object_mut) {
         runtime.remove("db_path");
@@ -23,11 +16,19 @@ pub(crate) fn redact_private_runtime_details(payload: &mut Value) {
         stats.remove("home");
     }
 }
-pub async fn build_health_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
+/// Bounded semantic health from the read pool.
+async fn brain_health_snapshot(cx: &asupersync::Cx, state: &RuntimeState) -> Result<Value, String> {
+    let conn = state.db_read.lock(cx).await.map_err(|err| err.to_string())?;
+    if !crate::db::table_exists(&conn, "outbox") {
+        return Ok(json!({"status": "schema_pending"}));
+    }
+    Ok(crate::db::outbox::brain_health(&conn, &state.home))
+}
+pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, include_private_runtime: bool) -> Result<Value, String> {
     let now_unix_secs = Utc::now().timestamp();
     let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let (memories, decisions, embeddings_count, events, db_freelist_pages, retrieval) = {
-        let conn = state.db_read.lock().await;
+        let conn = state.db_read.lock(cx).await.map_err(|err| err.to_string())?;
         let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap_or(0);
         let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0)).unwrap_or(0);
         let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).unwrap_or(0);
@@ -79,7 +80,10 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
     let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let ipc_kind = if ipc_endpoint.is_some() { Some(if cfg!(windows) { "named-pipe" } else { "unix-socket" }) } else { None };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
-    let budgets = state.rate_limiter.budget_status().to_health_json(state.rate_limiter.recent_budget_denials().await);
+    let budgets = state
+        .rate_limiter
+        .budget_status()
+        .to_health_json(state.rate_limiter.recent_budget_denials(cx).await.map_err(|err| err.to_string())?);
     let mut payload = json!({
         "status": if degraded || db_corrupted { "degraded" } else { "ok" },
         "ready": ready,
@@ -96,6 +100,10 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
         "db_soft_utilization": db_soft_utilization,
         "storage_bytes": storage_bytes,
         "backup_count": backup_count,
+        "last_verified_restore": crate::db::backup::last_verified_restore(&state.home),
+        "brain": brain_health_snapshot(cx, state).await?,
+        "durability_profile": crate::db::DurabilityProfile::from_env().as_str(),
+        "sqlite_version": crate::db::sqlite_version(),
         "log_bytes": log_bytes,
         "health_heavy_metrics": {
             "source": heavy_metrics_source,
@@ -125,13 +133,9 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
     if !include_private_runtime {
         redact_private_runtime_details(&mut payload);
     }
-    payload
+    Ok(payload)
 }
-pub async fn handle_health(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    let include_private_runtime = include_private_runtime_details(&headers);
-    json_response(StatusCode::OK, build_health_payload(&state, include_private_runtime).await)
-}
-pub async fn build_readiness_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
+pub fn build_readiness_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
     let executable = std::env::current_exe().ok().map(|path| path.display().to_string()).unwrap_or_default();
     let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
@@ -145,11 +149,4 @@ pub async fn build_readiness_payload(state: &RuntimeState, include_private_runti
         redact_private_runtime_details(&mut payload);
     }
     payload
-}
-pub async fn handle_readiness(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    let include_private_runtime = include_private_runtime_details(&headers);
-    let payload = build_readiness_payload(&state, include_private_runtime).await;
-    let ready = payload.get("ready").and_then(|value| value.as_bool()).unwrap_or(false);
-    let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
-    json_response(status, payload)
 }

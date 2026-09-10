@@ -67,7 +67,7 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
         return ( setHealthMeta(EMPTY_HEALTH_META), setStats({ memories: "--", decisions: "--", events: "--" }), readinessReady );
       }
       const status = String(health?.status || "unknown").toLowerCase(), runtimeVersion = String(health?.runtime?.version || "");
-      if ( (setHealthMeta({ status, degraded: !!health?.degraded, dbCorrupted: !!health?.db_corrupted, runtimeVersion, budgets: health?.budgets || null, }),
+      if ( (setHealthMeta({ status, degraded: !!health?.degraded, dbCorrupted: !!health?.db_corrupted, runtimeVersion, budgets: health?.budgets || null, brain: health?.brain || null, }),
         !health?.stats) )
         return (setStats({ memories: "--", decisions: "--", events: "--" }), isReachableHealthPayload(health));
       const next = health.stats;
@@ -272,7 +272,10 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
         } catch (err) { setBudgetConfigMessage(`Budget save failed: ${err?.message || String(err)}`);
         } finally { setBudgetConfigBusy(!1);
         } }, [budgetDraft, call], );
-  return { ...ctx, api, postApi, call, readAuthToken, refreshDaemonState, probeReadiness,
+  const setCapturePolicy = useCallback(async (state, scope) => { const body = { state }; if (scope) body.scope = scope;
+      await postApi("/capture/policy", body); await refreshHealth(); }, [postApi, refreshHealth]),
+    rebuildReflex = useCallback(async () => { await postApi("/reflex/rebuild", {}); await refreshHealth(); }, [postApi, refreshHealth]);
+  return { ...ctx, api, postApi, call, readAuthToken, refreshDaemonState, probeReadiness, setCapturePolicy, rebuildReflex,
     refreshHealth, refreshCoreData, refreshFeed, refreshMessages, refreshActivity, refreshSavings, refreshConflicts, refreshPermissions,
     refreshSecondaryData, refreshProtectedData, refreshSecondaryDataInBackground, refreshProtectedDataForStartup,
     clearStartupCoreReady, handleResolveConflict, handleResolveDraftChange, handleGrantPermission,

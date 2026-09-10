@@ -162,3 +162,41 @@ def test_recall_for_prompt_uses_recall_response(httpx_mock):
     context = client.recall_for_prompt("what happened", include_metrics=False)
     assert "Prompt-ready excerpt" in context
     assert "[retrieval-metrics]" not in context
+
+
+def test_operation_posts_to_op_route_and_returns_envelope_status_verbatim(httpx_mock):
+    httpx_mock.add_response(status_code=422, json={"status": "invalid_request", "error": "need is required"})
+    client = CortexClient(base_url="http://127.0.0.1:7437", token="ctx_test_token")
+
+    result = client.query("")
+
+    req = httpx_mock.get_requests()[0]
+    assert req.url.path == "/op/query"
+    assert json.loads(req.content) == {"need": ""}
+    assert req.headers["Authorization"] == "Bearer ctx_test_token"
+    assert result["status"] == "invalid_request"
+
+
+def test_commit_and_checkpoint_shape_arguments(httpx_mock):
+    httpx_mock.add_response(json={"status": "ok", "receipt": {"request_id": "r1"}})
+    httpx_mock.add_response(json={"status": "ok"})
+    client = CortexClient(base_url="http://127.0.0.1:7437", token="ctx_test_token")
+
+    receipt = client.commit(decision="PAY-77 retries are idempotent", idempotency_key="k1")
+    client.checkpoint("session:1", action="status")
+
+    reqs = httpx_mock.get_requests()
+    assert reqs[0].url.path == "/op/commit"
+    assert json.loads(reqs[0].content)["idempotency_key"] == "k1"
+    assert reqs[1].url.path == "/op/checkpoint"
+    assert json.loads(reqs[1].content) == {"thread": "session:1", "action": "status"}
+    assert receipt["receipt"]["request_id"] == "r1"
+
+
+def test_local_transport_is_explicit_and_never_an_http_wrapper():
+    import pytest
+
+    with pytest.raises(ValueError, match="native package entry"):
+        CortexClient(base_url="http://127.0.0.1:7437", token="t", transport="local")
+    with pytest.raises(ValueError, match="unknown operation"):
+        CortexClient(base_url="http://127.0.0.1:7437", token="t").operation("recall")

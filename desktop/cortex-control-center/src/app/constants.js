@@ -14,7 +14,7 @@ const DEFAULT_CORTEX_PORT = 7437, DEFAULT_CORTEX_BASE = "http://127.0.0.1:7437",
 function panelIndex(panelKey) { return PANEL_SEQUENCE_INDEX.get(panelKey) ?? -1;
 }
 const EMPTY_DAEMON = { running: !1, reachable: !1, managed: !1, authTokenReady: !1, pid: null, message: "Checking daemon...", },
-  EMPTY_HEALTH_META = { status: "unknown", degraded: !1, dbCorrupted: !1, runtimeVersion: "", budgets: null, }, CONTROL_CENTER_VERSION = "0.6.0",
+  EMPTY_HEALTH_META = { status: "unknown", degraded: !1, dbCorrupted: !1, runtimeVersion: "", budgets: null, brain: null, }, CONTROL_CENTER_VERSION = "0.6.0",
   RECALL_HEADLINE_MIN_QUERIES = 20, CORTEX_BASE_STORAGE_KEY = "cortex_base",
   CORTEX_AUTH_STORAGE_KEY = "cortex_auth_token", LEGACY_CORTEX_AUTH_STORAGE_KEYS = ["cortex_token"],
   CORTEX_OPERATOR_STORAGE_KEY = "cortex_operator", CORTEX_PANEL_STORAGE_KEY = "cortex_panel",

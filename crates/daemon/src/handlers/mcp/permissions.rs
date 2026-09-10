@@ -27,32 +27,23 @@ pub(crate) fn parse_client_permission(raw: &str) -> Option<ClientPermission> {
     }
 }
 pub(crate) fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
+    // Only names with a real dispatcher path. Removed historical tools
+    // (diary, forget, reconnect, boot_audit, …) return None and surface as
+    // UNKNOWN_TOOL instead of a half-advertised "recognised" dead end.
     match tool_name {
-        "cortex_boot"
-        | "cortex_boot_audit"
-        | "cortex_reconnect"
-        | "cortex_peek"
-        | "cortex_recall"
-        | "cortex_recall_policy_explain"
-        | "cortex_semantic_recall"
-        | "cortex_agent_feedback_stats"
-        | "cortex_health"
-        | "cortex_digest"
-        | "cortex_unfold"
-        | "cortex_focus_status"
-        | "cortex_lastCall" => Some(ClientPermission::Read),
-        "cortex_store" | "cortex_agent_feedback_record" | "cortex_focus_start" | "cortex_focus_end" | "cortex_diary" => Some(ClientPermission::Write),
-        "cortex_forget"
-        | "cortex_resolve"
-        | "cortex_conflicts_list"
-        | "cortex_conflicts_get"
-        | "cortex_conflicts_resolve"
-        | "cortex_permissions_list"
-        | "cortex_permissions_grant"
-        | "cortex_permissions_revoke"
-        | "cortex_consensus_promote"
-        | "cortex_memory_decay_run"
-        | "cortex_eval_run" => Some(ClientPermission::Admin),
+        // Canonical eight operations
+        "cortex_capabilities" | "cortex_orient" | "cortex_query" | "cortex_expand" => Some(ClientPermission::Read),
+        "cortex_commit" | "cortex_checkpoint" | "cortex_feedback" => Some(ClientPermission::Write),
+        "cortex_resolve" => Some(ClientPermission::Admin),
+        // Working aliases of the eight
+        "cortex_boot" | "cortex_unfold" => Some(ClientPermission::Read),
+        "cortex_store" | "cortex_focus_start" | "cortex_focus_end" => Some(ClientPermission::Write),
+        "cortex_conflicts_resolve" => Some(ClientPermission::Admin),
+        // Specialised legacy surfaces that still dispatch
+        "cortex_recall" | "cortex_peek" | "cortex_semantic_recall" | "cortex_health" | "cortex_digest" | "cortex_lastCall" | "cortex_agent_feedback_stats" => Some(ClientPermission::Read),
+        "cortex_agent_feedback_record" => Some(ClientPermission::Write),
+        "cortex_permissions_list" => Some(ClientPermission::Read),
+        "cortex_permissions_grant" | "cortex_permissions_revoke" => Some(ClientPermission::Admin),
         _ => None,
     }
 }
@@ -111,14 +102,14 @@ pub(crate) fn caller_has_team_admin_role(conn: &rusqlite::Connection, caller_id:
     Ok(matches!(role.as_deref(), Some("owner" | "admin")))
 }
 pub(crate) async fn enforce_client_permission(
-    state: &RuntimeState, caller_id: Option<i64>, tool_name: &str, args: &Value, source: Option<&SourceIdentity>,
+    cx: &asupersync::Cx, state: &RuntimeState, caller_id: Option<i64>, tool_name: &str, args: &Value, source: Option<&SourceIdentity>,
 ) -> Result<(), String> {
     let Some(required) = required_permission_for_tool(tool_name) else {
         return Ok(());
     };
     let owner_id = if state.team_mode { caller_id.unwrap_or_default() } else { 0 };
     let client_id = source_client_for_permissions(source, args);
-    let conn = state.db_read.lock().await;
+    let conn = state.db_read.lock(cx).await.map_err(|err| err.to_string())?;
     if state.team_mode && required == ClientPermission::Admin && !caller_has_team_admin_role(&conn, owner_id)? {
         return Err(format!("Permission denied: team admin role required for '{tool_name}'"));
     }

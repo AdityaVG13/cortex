@@ -1,31 +1,33 @@
 pub const DEFAULT_CORTEX_PORT: u16 = 7437;
 
-pub mod aging;
-pub mod auth;
+pub use cortex_kernel::aging;
+pub use cortex_kernel::auth;
 pub mod cli;
-pub mod compaction;
-pub mod compiler;
-pub mod crystallize;
-pub mod daemon_lifecycle;
-pub mod db;
-pub mod export_data;
-pub mod focus;
+pub use cortex_kernel::compaction;
+pub use cortex_kernel::compiler;
+pub use cortex_kernel::crystallize;
+
+pub use cortex_kernel::db;
+pub use cortex_kernel::export_data;
+pub use cortex_kernel::focus;
 pub mod handlers;
 pub mod hook_boot;
-pub mod indexer;
-pub mod mcp_proxy;
+pub use cortex_kernel::hook_event;
+pub use cortex_kernel::indexer;
+pub mod mcp_native;
 pub mod prompt_inject;
-pub mod server;
-pub mod service;
-pub mod setup;
-pub mod state;
-pub mod tls;
-pub mod transport;
-pub mod workspace;
+pub use cortex_kernel::reflex;
+pub use cortex_kernel::runtime;
 
-pub use cortex_logic::{api_types, budgets, clockwork, conflict, eval, graph, rate_limit, traces};
+pub mod setup;
+pub use cortex_kernel::state;
+pub use cortex_kernel::store_spi;
+pub use cortex_kernel::workspace;
+
+pub use cortex_logic::{adapter, api_types, budgets, capture, clockwork, conflict, eval, graph, lens, presence, protocol, rate_limit, recipe, traces};
 
 pub use cli::run_daemon;
+pub use cortex_kernel::{CortexError, CortexRuntime};
 
 use chrono::Utc;
 use std::io::Write as _;

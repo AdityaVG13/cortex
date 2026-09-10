@@ -50,7 +50,10 @@ fn leading_version(version: &str) -> i32 {
 }
 
 fn declared_versions() -> Vec<&'static str> {
-    db::migration_definitions().iter().map(|(version, _)| *version).collect()
+    db::migration_definitions()
+        .iter()
+        .map(|(version, _)| *version)
+        .collect()
 }
 
 /// P1 — the declared table itself is the invariant carrier.
@@ -63,8 +66,14 @@ fn declared_migration_versions_are_strictly_increasing_and_unique() {
     let mut parsed: Vec<i32> = Vec::with_capacity(defs.len());
     for (version, name) in defs {
         let n = leading_version(version);
-        assert!(n > 0, "version {version:?} must carry a positive numeric prefix");
-        assert!(seen_versions.insert(version), "duplicate migration version {version:?}");
+        assert!(
+            n > 0,
+            "version {version:?} must carry a positive numeric prefix"
+        );
+        assert!(
+            seen_versions.insert(version),
+            "duplicate migration version {version:?}"
+        );
         assert!(seen_names.insert(name), "duplicate migration name {name:?}");
         parsed.push(n);
     }
@@ -88,8 +97,10 @@ fn seeded_file_conn(dir: &std::path::Path) -> Connection {
 }
 
 fn recorded_count(conn: &Connection) -> i64 {
-    conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
-        .expect("count schema_migrations")
+    conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+        row.get(0)
+    })
+    .expect("count schema_migrations")
 }
 
 /// P3a — full run records each migration exactly once; re-running the boot
@@ -103,14 +114,22 @@ fn full_run_records_each_migration_once_and_reinitialize_applies_zero() {
     let conn = seeded_file_conn(&dir);
 
     let first = db::run_pending_migrations(&conn);
-    assert_eq!(first, defs.len(), "first run must apply every declared migration");
+    assert_eq!(
+        first,
+        defs.len(),
+        "first run must apply every declared migration"
+    );
     let recorded = db::applied_migration_versions(&conn).expect("read applied");
     assert_eq!(
         recorded, declared,
         "schema_migrations must record the declared list in application order"
     );
     let count = recorded_count(&conn);
-    assert_eq!(count as usize, defs.len(), "each migration recorded exactly once");
+    assert_eq!(
+        count as usize,
+        defs.len(),
+        "each migration recorded exactly once"
+    );
     assert_eq!(
         db::current_schema_user_version(&conn).expect("user_version"),
         leading_version(declared.last().expect("non-empty table")),
@@ -120,8 +139,15 @@ fn full_run_records_each_migration_once_and_reinitialize_applies_zero() {
     // Idempotence: second boot init + migration sweep is a no-op.
     db::initialize_schema(&conn).expect("second initialize_schema");
     let second = db::run_pending_migrations(&conn);
-    assert_eq!(second, 0, "second initialize + run must apply zero migrations");
-    assert_eq!(recorded_count(&conn), count, "schema_migrations count must not change");
+    assert_eq!(
+        second, 0,
+        "second initialize + run must apply zero migrations"
+    );
+    assert_eq!(
+        recorded_count(&conn),
+        count,
+        "schema_migrations count must not change"
+    );
 }
 
 /// P3b — a mid-version DB (seeded through declared entry K) is brought to
@@ -152,7 +178,11 @@ fn mid_version_db_applies_only_versions_above_k_in_declared_order() {
     assert_eq!(applied, defs.len() - k, "only versions above K may apply");
 
     let recorded = db::applied_migration_versions(&conn).expect("read applied after run");
-    assert_eq!(recorded.len(), defs.len(), "all migrations recorded after catch-up");
+    assert_eq!(
+        recorded.len(),
+        defs.len(),
+        "all migrations recorded after catch-up"
+    );
     assert_eq!(
         &recorded[k..],
         expected_suffix.as_slice(),
@@ -160,7 +190,10 @@ fn mid_version_db_applies_only_versions_above_k_in_declared_order() {
     );
     let recorded_set: HashSet<&str> = recorded.iter().map(|s| s.as_str()).collect();
     for (version, _) in defs {
-        assert!(recorded_set.contains(version), "migration {version:?} missing after catch-up");
+        assert!(
+            recorded_set.contains(version),
+            "migration {version:?} missing after catch-up"
+        );
     }
     assert_eq!(
         db::current_schema_user_version(&conn).expect("user_version after catch-up"),
@@ -192,7 +225,10 @@ fn pending_migrations_depends_only_on_applied_set_not_insertion_order() {
         // Dedupe preserving first occurrence: unique applied set + generated
         // (permuted) insertion order.
         let mut seen: HashSet<u32> = HashSet::new();
-        let indices: Vec<u32> = raw_indices.into_iter().filter(|i| seen.insert(*i)).collect();
+        let indices: Vec<u32> = raw_indices
+            .into_iter()
+            .filter(|i| seen.insert(*i))
+            .collect();
         let applied: HashSet<&str> = indices.iter().map(|&i| defs[i as usize].0).collect();
 
         let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -214,7 +250,11 @@ fn pending_migrations_depends_only_on_applied_set_not_insertion_order() {
         let expected_len = expected.len();
         let pending = db::pending_migration_versions(&conn).expect("pending");
         let parsed_pending: Vec<i32> = pending.iter().map(|v| leading_version(v)).collect();
-        prop_assert_eq!(pending, expected, "pending must depend only on the applied SET");
+        prop_assert_eq!(
+            pending,
+            expected,
+            "pending must depend only on the applied SET"
+        );
         for pair in parsed_pending.windows(2) {
             prop_assert!(
                 pair[0] < pair[1],
@@ -225,13 +265,28 @@ fn pending_migrations_depends_only_on_applied_set_not_insertion_order() {
         }
 
         let catch_up = db::run_pending_migrations(&conn);
-        prop_assert_eq!(catch_up, expected_len, "catch-up must apply exactly the pending set");
-        prop_assert_eq!(db::run_pending_migrations(&conn), 0, "replay must apply zero");
+        prop_assert_eq!(
+            catch_up,
+            expected_len,
+            "catch-up must apply exactly the pending set"
+        );
+        prop_assert_eq!(
+            db::run_pending_migrations(&conn),
+            0,
+            "replay must apply zero"
+        );
         let recorded = db::applied_migration_versions(&conn).expect("recorded");
-        prop_assert_eq!(recorded.len(), defs.len(), "each migration recorded exactly once");
+        prop_assert_eq!(
+            recorded.len(),
+            defs.len(),
+            "each migration recorded exactly once"
+        );
         let recorded_set: HashSet<String> = recorded.into_iter().collect();
         for (version, _) in defs {
-            prop_assert!(recorded_set.contains(*version), "migration {version:?} missing");
+            prop_assert!(
+                recorded_set.contains(*version),
+                "migration {version:?} missing"
+            );
         }
         prop_assert_eq!(
             db::current_schema_user_version(&conn).expect("user_version"),

@@ -6,7 +6,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, RwLock};
-use tokio::sync::{broadcast, Mutex};
+use asupersync::{channel::broadcast, sync::Mutex, Budget, Cx};
+use std::future::Future;
+
+/// Execute a contract with a capability owned by the runtime driving its future.
+pub fn run_with_cx<F, Fut>(test: F) -> Fut::Output
+where
+    F: FnOnce(Cx) -> Fut,
+    Fut: Future,
+{
+    let runtime = asupersync::runtime::RuntimeBuilder::new()
+        .build()
+        .expect("test runtime");
+    let cx = runtime.request_cx_with_budget(Budget::INFINITE);
+    runtime.block_on(test(cx))
+}
 
 pub fn test_conn() -> Connection {
     let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -73,6 +87,7 @@ pub fn runtime_state(
         mcp_calls: Arc::new(AtomicU64::new(0)),
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
         served_content: Arc::new(Mutex::new(HashMap::new())),
+        deferred_side_effects: Arc::new(std::sync::Mutex::new(Vec::new())),
         shutdown_tx: Arc::new(Mutex::new(None)),
         home: PathBuf::from("."),
         db_path: PathBuf::from(":memory:"),

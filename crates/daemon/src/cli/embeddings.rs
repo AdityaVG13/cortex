@@ -2,12 +2,12 @@ use super::common::parse_flag_usize;
 use crate::auth;
 use crate::state;
 use serde_json::json;
-pub async fn run_embeddings_cli(paths: &auth::CortexPaths, args: &[String]) {
+pub async fn run_embeddings_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[String]) {
     let subcmd = args.first().map(|s| s.as_str()).unwrap_or("");
     match subcmd {
         "status" => {
             let json_output = args.iter().any(|arg| arg == "--json");
-            run_embeddings_status_cli(paths, json_output).await;
+            run_embeddings_status_cli(cx, paths, json_output).await;
         }
         "drain" | "rebuild" | "re-embed" | "reembed" => {
             eprintln!("Clock-Quorum Recall is model-free. Embedding backfill commands are removed.");
@@ -22,7 +22,7 @@ pub async fn run_embeddings_cli(paths: &auth::CortexPaths, args: &[String]) {
         }
     }
 }
-pub(crate) async fn run_embeddings_status_cli(paths: &auth::CortexPaths, json_output: bool) {
+pub(crate) async fn run_embeddings_status_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, json_output: bool) {
     let (state, _shutdown_rx) = match state::initialize(paths, false) {
         Ok(initialized) => initialized,
         Err(err) => {
@@ -30,7 +30,13 @@ pub(crate) async fn run_embeddings_status_cli(paths: &auth::CortexPaths, json_ou
             std::process::exit(1);
         }
     };
-    let conn = state.db.lock().await;
+    let conn = match state.db.lock(cx).await {
+        Ok(conn) => conn,
+        Err(err) => {
+            eprintln!("[cortex] {err}");
+            std::process::exit(1);
+        }
+    };
     let anchors: i64 = conn.query_row("SELECT COUNT(*) FROM clock_anchors", [], |row| row.get(0)).unwrap_or(0);
     let links: i64 = conn.query_row("SELECT COUNT(*) FROM clock_links", [], |row| row.get(0)).unwrap_or(0);
     let inert: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0)).unwrap_or(0);
@@ -44,10 +50,10 @@ pub(crate) async fn run_embeddings_status_cli(paths: &auth::CortexPaths, json_ou
         println!("inert embedding rows: {inert} (preserved, unread)");
     }
 }
-pub async fn run_rebuild_anchors_cli(paths: &auth::CortexPaths, args: &[String]) {
-    run_clock_rebuild_cli(paths, args).await;
+pub async fn run_rebuild_anchors_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[String]) {
+    run_clock_rebuild_cli(cx, paths, args).await;
 }
-async fn run_clock_rebuild_cli(paths: &auth::CortexPaths, args: &[String]) {
+async fn run_clock_rebuild_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[String]) {
     let json_output = args.iter().any(|arg| arg == "--json");
     let batch = match parse_flag_usize(args, "--batch-size") {
         Ok(Some(value)) => value.clamp(16, 10_000),
@@ -64,7 +70,13 @@ async fn run_clock_rebuild_cli(paths: &auth::CortexPaths, args: &[String]) {
             std::process::exit(1);
         }
     };
-    let conn = state.db.lock().await;
+    let conn = match state.db.lock(cx).await {
+        Ok(conn) => conn,
+        Err(err) => {
+            eprintln!("[cortex] {err}");
+            std::process::exit(1);
+        }
+    };
     match crate::clockwork::rebuild_clock_projections(&conn, batch) {
         Ok(projected) => {
             if json_output {

@@ -24,8 +24,9 @@ Do not copy `test_state()` / `spawn_daemon()` blocks into new tests — extend t
 | **Smoke / first-run** | Proves install → status → store → recall | `tests/scripts/first-run-smoke.sh`, `tests/smoke_test.sh` |
 | **CLI goldens** | Stable operator-facing output | `tests/contracts/cli_goldens.rs` |
 | **Wire contracts** | MCP/HTTP shapes clients depend on | `adapter_conformance.rs`, `mcp_transport.rs`, `mcp_rpc_headers.rs` |
-| **Product boundaries** | Desktop IPC, SDK auth/headers, plugin attach | `api-client.test.js`, SDK client tests, `run-mcp.contract.test.cjs` |
+| **Product boundaries** | Desktop IPC, SDK auth/headers, plugin local MCP/boot bridges | `api-client.test.js`, SDK client tests, `run-mcp.contract.test.cjs`, `hook-boot.contract.test.cjs` |
 | **Clock-Quorum Recall** | Admit, abstain, as-of, morph/cluster paraphrase | `tests/contracts/clock_quorum.rs` |
+| **Recall quality harness** | Situational admit/abstain/as-of/conflict/paraphrase-lite; fails empty-agree tautologies | `tests/contracts/recall_quality.rs` |
 | **Data integrity** | Migrations, retention, team scoping where users lose data | Selected handler tests (store/recall visibility, compaction prune) |
 
 Run these before a release or when you touch the corresponding boundary.

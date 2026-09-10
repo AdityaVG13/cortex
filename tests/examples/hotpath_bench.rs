@@ -234,7 +234,11 @@ fn rfc3339_now() -> String {
     let days = secs.div_euclid(86_400);
     let secs_of_day = secs.rem_euclid(86_400);
     let (year, month, day) = civil_from_days(days);
-    let (hh, mm, ss) = (secs_of_day / 3600, (secs_of_day % 3600) / 60, secs_of_day % 60);
+    let (hh, mm, ss) = (
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60,
+        secs_of_day % 60,
+    );
     format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
 }
 
@@ -254,7 +258,10 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 fn print_header(mode: &str, profile: &str, rounds: usize) {
     println!("hotpath_bench — {BENCH_NAME} latency ratchet (lib-level smoke)");
-    println!("mode={mode} profile={profile} rounds={rounds}");
+    println!(
+        "mode={mode} profile={profile} rounds={rounds} durability={}",
+        cortex_daemon::db::DurabilityProfile::from_env().as_str()
+    );
     println!("runner command:");
     println!("  CORTEX_BENCH_PROFILE=release-perf cargo run --quiet -p cortex-tests --example hotpath_bench --profile release-perf");
     println!(
@@ -282,7 +289,7 @@ struct OpAgg {
     round_medians: Vec<f64>,
 }
 
-async fn measure(rounds: usize) -> (Vec<OpAgg>, Vec<f64>) {
+async fn measure(cx: &asupersync::Cx, rounds: usize) -> (Vec<OpAgg>, Vec<f64>) {
     let mut aggs: Vec<OpAgg> = Vec::new();
     let mut round_totals = Vec::with_capacity(rounds);
 
@@ -362,7 +369,7 @@ async fn measure(rounds: usize) -> (Vec<OpAgg>, Vec<f64>) {
             "boot capsule compile budget",
         ];
         for _ in 0..RECALL_WARMUP {
-            execute_unified_recall(&state, queries[0], 320, 12, "hotpath-bench", &ctx, None)
+            execute_unified_recall(cx, &state, queries[0], 320, 12, "hotpath-bench", &ctx, None)
                 .await
                 .expect("recall warmup");
         }
@@ -370,7 +377,7 @@ async fn measure(rounds: usize) -> (Vec<OpAgg>, Vec<f64>) {
         for i in 0..RECALL_ITERS {
             let query = queries[i % queries.len()];
             let t0 = Instant::now();
-            execute_unified_recall(&state, query, 320, 12, "hotpath-bench", &ctx, None)
+            execute_unified_recall(cx, &state, query, 320, 12, "hotpath-bench", &ctx, None)
                 .await
                 .expect("recall");
             recall_samples.push(t0.elapsed().as_secs_f64() * 1e3);
@@ -416,7 +423,15 @@ async fn measure(rounds: usize) -> (Vec<OpAgg>, Vec<f64>) {
 fn print_table(aggs: &[OpAgg], round_totals: &[f64]) {
     println!(
         "{:<17} {:>9} {:>6} {:>9} {:>9} {:>9} {:>9} {:>8} {:>6}",
-        "workload", "ops/round", "rounds", "mean_ms", "p50_ms", "p95_ms", "p99_ms", "cv_pct", "gate"
+        "workload",
+        "ops/round",
+        "rounds",
+        "mean_ms",
+        "p50_ms",
+        "p95_ms",
+        "p99_ms",
+        "cv_pct",
+        "gate"
     );
     for agg in aggs {
         let sorted = sorted_copy(&agg.pooled);
@@ -568,7 +583,10 @@ fn write_baseline(aggs: &[OpAgg], round_totals: &[f64], rounds: usize, profile: 
     }
     let rendered = serde_json::to_string_pretty(&doc).expect("serialize baseline") + "\n";
     std::fs::write(&path, rendered).unwrap_or_else(|err| {
-        eprintln!("setup error: cannot write baseline {}: {err}", path.display());
+        eprintln!(
+            "setup error: cannot write baseline {}: {err}",
+            path.display()
+        );
         std::process::exit(2);
     });
     println!("baseline written: {}", path.display());
@@ -588,13 +606,20 @@ fn compare_and_gate(aggs: &[OpAgg], round_totals: &[f64]) -> ! {
         std::process::exit(2);
     };
     let base: Value = serde_json::from_str(&text).unwrap_or_else(|err| {
-        eprintln!("setup error: baseline {} is not valid JSON: {err}", path.display());
+        eprintln!(
+            "setup error: baseline {} is not valid JSON: {err}",
+            path.display()
+        );
         std::process::exit(2);
     });
 
     let gate = &base["regression_gate"];
-    let warn_at = gate["latency_ratio"]["warning"].as_f64().unwrap_or(DEFAULT_WARN_RATIO);
-    let fail_at = gate["latency_ratio"]["critical"].as_f64().unwrap_or(DEFAULT_FAIL_RATIO);
+    let warn_at = gate["latency_ratio"]["warning"]
+        .as_f64()
+        .unwrap_or(DEFAULT_WARN_RATIO);
+    let fail_at = gate["latency_ratio"]["critical"]
+        .as_f64()
+        .unwrap_or(DEFAULT_FAIL_RATIO);
     let cv_max = gate["cv_pct_max"].as_f64().unwrap_or(DEFAULT_CV_PCT_MAX);
 
     let base_medians: Vec<(String, f64)> = base["workloads"]
@@ -622,7 +647,10 @@ fn compare_and_gate(aggs: &[OpAgg], round_totals: &[f64]) -> ! {
         }
     }
 
-    println!("{:<17} {:>10} {:>10} {:>7} {:>6} {:>8}", "workload", "base_p50", "cand_p50", "ratio", "cv%", "gate");
+    println!(
+        "{:<17} {:>10} {:>10} {:>7} {:>6} {:>8}",
+        "workload", "base_p50", "cand_p50", "ratio", "cv%", "gate"
+    );
     let mut fails = Vec::new();
     let mut warns = Vec::new();
     for agg in aggs {
@@ -636,7 +664,11 @@ fn compare_and_gate(aggs: &[OpAgg], round_totals: &[f64]) -> ! {
             );
             continue;
         };
-        let ratio = if *base_p50 > 0.0 { cand / base_p50 } else { f64::INFINITY };
+        let ratio = if *base_p50 > 0.0 {
+            cand / base_p50
+        } else {
+            f64::INFINITY
+        };
         let chip = if ratio > fail_at {
             "FAIL"
         } else if ratio > warn_at {
@@ -649,7 +681,10 @@ fn compare_and_gate(aggs: &[OpAgg], round_totals: &[f64]) -> ! {
             agg.name, base_p50, cand, ratio, cv, chip
         );
         if ratio > fail_at {
-            fails.push(format!("{} ratio={ratio:.3} (> {fail_at}x median)", agg.name));
+            fails.push(format!(
+                "{} ratio={ratio:.3} (> {fail_at}x median)",
+                agg.name
+            ));
         } else if ratio > warn_at {
             warns.push(format!("{} ratio={ratio:.3}", agg.name));
         }
@@ -674,20 +709,38 @@ fn compare_and_gate(aggs: &[OpAgg], round_totals: &[f64]) -> ! {
     }
     if !fails.is_empty() {
         println!("verdict=fail");
-        println!("latency regression vs {}: {}", path.display(), fails.join("; "));
+        println!(
+            "latency regression vs {}: {}",
+            path.display(),
+            fails.join("; ")
+        );
         std::process::exit(1);
     }
     if !warns.is_empty() {
         println!("verdict=warn");
-        println!("advisory (> {warn_at}x median, <= {fail_at}x): {}", warns.join("; "));
+        println!(
+            "advisory (> {warn_at}x median, <= {fail_at}x): {}",
+            warns.join("; ")
+        );
         std::process::exit(0);
     }
     println!("verdict=pass");
     std::process::exit(0);
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // The ratchet measures the warm hot path under the process-crash profile.
+    // Durable (synchronous=FULL) commits are fsync-bound and are measured
+    // separately (see docs/internal/perf-baseline.md, "Durable commit cost");
+    // an explicit CORTEX_DURABILITY in the environment is respected.
+    if std::env::var_os("CORTEX_DURABILITY").is_none() {
+        let status = Command::new(std::env::current_exe().expect("bench executable"))
+            .args(std::env::args_os().skip(1))
+            .env("CORTEX_DURABILITY", "fast")
+            .status()
+            .expect("run bench with process-local durability");
+        std::process::exit(status.code().unwrap_or(2));
+    }
     let profile = match profile_guard() {
         Ok(profile) => profile,
         Err(message) => {
@@ -710,7 +763,8 @@ async fn main() {
     let mode = if update { "update-baseline" } else { "compare" };
     print_header(mode, &profile, rounds);
 
-    let (aggs, round_totals) = measure(rounds).await;
+    let (aggs, round_totals) =
+        cortex_tests::support::run_with_cx(|cx| async move { measure(&cx, rounds).await });
     print_table(&aggs, &round_totals);
 
     if update {

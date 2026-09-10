@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "adapter": "claude-code-plugin",
+  "observe_prompt_delta": true,
+  "observe_tool_result": true,
+  "observe_artifact_revision": false,
+  "inject_context": true,
+  "attest_context_presence": false,
+  "observe_compaction": true,
+  "checkpoint_on_transition": true,
+  "replace_context_spans": false,
+  "emit_outcome_receipts": true,
+  "native_in_process": false,
+  "durable_local_capture": true,
+  "cancellation": false,
+  "read_only": false,
+  "max_input_bytes": 262144,
+  "max_delivery_bytes": 16384
+}

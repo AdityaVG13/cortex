@@ -1,3 +1,59 @@
+# Current source: local runtime migration
+
+The current Rust workspace uses **asupersync**, in-process kernel calls, CLI and MCP stdio. It no longer builds an HTTP listener, network proxy, or Tokio runtime. Start with `cargo build -p cortex-daemon`, `cortex setup`, then `cortex mcp --agent <name>` or `cortex op <operation>`. `cortex serve` is an optional bounded maintenance worker, not a server.
+
+The Control Center, HTTP SDKs, downloads, and HTTP/service instructions below describe the **earlier tagged product** and are not compatible with this source runtime. No external installations or existing memory databases are migrated by changing this repository. See [ARCHITECTURE.md](ARCHITECTURE.md) and crate contracts for the current API and cancellation boundaries.
+
+## V5 automatic observation cycle (unreleased)
+
+The local operator can register a logical source, then submit normalized observations without any model-generated diary:
+
+```sh
+cortex capture register --source worklog --scope project --role tool_report
+printf '%s\n' '{"event_key":"run-123","text":"Observed tool output, retained verbatim","observed_at":null}' |
+  cortex capture tail --source worklog --generation session-1 --offset 0
+```
+
+The receipt reports `next_offset` and accepted source IDs. Continue from that byte offset; a trailing partial JSONL record is not acknowledged. `capture put` accepts one JSON observation. `capture get --id <source_id>` returns its exact retained text. `capture disable --source worklog` revokes the source; `capture enable` explicitly reauthorizes it. `--quiet` suppresses successful output for capture-only adapters. Registration is per local principal, and normalized event bodies cannot supply their own actor or grant.
+
+V5 file intake now routes the state-file, project-memory and configured custom-source indexers through the same transactional observation capture. Register each file using `file:<canonical absolute path>` as its source key before importing it:
+
+```sh
+cortex capture register --source 'file:/absolute/canonical/path/notes.md' --scope project
+cortex capture file --path /absolute/canonical/path/notes.md --quiet
+```
+
+File capture preserves the entire UTF-8 payload, including frontmatter, whitespace and the tail. Files exceeding the registered limit or the 1 MiB file ceiling fail without acknowledging a prefix. Revision keys include file metadata and a content digest; unchanged retries replay their receipts. File modification time is retained as `observed_at`, not interpreted as the time an assertion became true. Indexer errors propagate; earlier files committed before a later failure can be safely replayed. Legacy filename-only aliases are not automatically merged or rewritten because their provenance can be ambiguous.
+
+The native cycle now includes registered-source inventory, resumable bootstrap, exact any-cue retrieval, reverse-indexed active needs, qualified delivery and opt-in scoped associations:
+
+```sh
+cortex capture inventory
+cortex capture bootstrap --revision '<revision-from-inventory>' --max-sources 16 --max-bytes 16777216
+cortex capture query --scope project --query 'retry'
+printf '%s' '{"id":"current-task","scope":"project","cues":["retry"],"max_results":32,"max_bytes":32768,"ttl_seconds":3600}' | cortex capture subscribe
+cortex capture prepare --id current-task --context context-epoch-1 --payload
+```
+
+`prepare` without `--payload` returns evidence, exact source references, coverage and a delivery ID. Supply `--present <delivery_id>` only when the host establishes that delivery remains in the **current** input; use a new context epoch after compaction/restart. Pending, unavailable, denied or oversized bundles do not produce a misleading partial payload. `rebuild --scope project` rebuilds a bounded projection slice; later reads catch up remaining projection work. Exact source bytes survive projection replacement and retraction.
+
+`learn --scope project` explicitly enables/rebuilds scoped associations. A subscription with `"learned":true` may add separately labeled learned candidates; literal query stays the default. `learn-explain`, `learn-reset`, `assess` and `unassess` expose attribution, sticky disable and reversible named usefulness events. Copies, delivery events and unresolved agent/tool derivatives cannot become independent learning support. A successful tool call is not automatically causal credit.
+
+`host-register`, `host-put`, `host-tail` and `host-cycle` expose version-pinned host subsets. Origin policy is operator/adapter-owned, never a claim in captured prose. A fully specified `CORTEX_V5_CAPTURE` sidecar accepts `grant`, `host_version`, `session`, `generation`, `origins`, `context`, and optional `event_key`/`present`.
+
+The observed **Claude Code 2.1.260** user/Bash shapes additionally support a static operator opt-in:
+
+```sh
+printf '%s\n' '{"key":"claude-native","scope":"project","host_version":"2.1.260","adapter_version":"claude-code-2.1.260-v1","max_bytes":65536,"live":true,"history":true}' | cortex capture host-register
+export CORTEX_V5_CAPTURE='{"grant":"claude-native","host_version":"2.1.260","native_user_prompts":true,"native_bash_results":true}'
+```
+
+Set that environment only in an approved hook runner; no host configuration is installed here. The bridge derives session, stable event identity and fresh context identity from native user/Bash invocation metadata. Other hooks keep their existing path. Native `prompt_id` corresponds to historical `promptId`, not transcript `uuid`; native Bash response fields are preserved rather than reduced to a stdout preview. Known non-evidence transcript control records receive transactional metadata markers, so they neither stall backfill nor reinforce memory. Unknown shapes still block the cursor. Stop does not carry the final-message UUID: live final capture still needs an explicit trusted identity, or subsequent transcript catch-up.
+
+These are **attributed observations**, not automatic verified facts or new CQR witnesses. Existing semantic CQR APIs remain separate. No host configuration is installed. The 2.1.260 protocol probe used isolated settings and deterministic loopback inference, not a real-model task evaluation. Broader installed-host compatibility, held-out task quality, model-token savings, power-loss durability and a release-performance acceptance band remain unverified; this is not a declaration that every V5 design-pack release gate has passed.
+
+---
+
 <p align="center">
   <img src="assets/cortex-header.gif" alt="Cortex" width="100%">
 </p>
@@ -389,7 +445,7 @@ claude plugin marketplace add AdityaVG13/cortex
 claude plugin install cortex@cortex-marketplace
 ```
 
-<p align="center">The plugin attaches to a running Cortex runtime. If Cortex is not ready, it reports <code>APP_INIT_REQUIRED</code>; open Control Center or start the local runtime, then retry.</p>
+<p align="center">The plugin spawns a local <code>cortex</code> binary over MCP stdio. If no binary is found, install one or set <code>CORTEX_APP_BINARY</code>, then restart the session.</p>
 
 ---
 
@@ -518,7 +574,7 @@ No. In solo mode, Cortex runs entirely on localhost. No telemetry, no phone-home
 <details>
 <summary>What happens if the daemon crashes mid-session?</summary>
 <br>
-The MCP proxy detects daemon death and restarts automatically (bounded to 3 attempts with backoff). SQLite WAL mode ensures no data corruption. Sessions survive transient crashes.
+The MCP proxy detects daemon death and restarts automatically (bounded to 4 attempts with 250 ms × n backoff, pinned by `tests/contracts/mcp_proxy_durability.rs`). SQLite WAL mode ensures no data corruption. Sessions survive transient crashes.
 </details>
 
 <details>

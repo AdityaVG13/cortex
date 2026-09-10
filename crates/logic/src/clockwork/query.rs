@@ -45,6 +45,10 @@ pub struct QueryFrame {
     pub quoted_phrases: Vec<String>,
     pub anchors: Vec<QueryAnchor>,
     pub entity_ids: Vec<i64>,
+    /// Entities that came in through query expansion (stems, lexicon,
+    /// sibling anchors). Expansion is an access aid: these can support a
+    /// vote but are never a hard anchor.
+    pub expanded_entity_ids: Vec<i64>,
     pub temporal_mode: TemporalMode,
     pub as_of: Option<String>,
     pub owner_id: Option<i64>,
@@ -155,6 +159,7 @@ pub fn parse_query_frame(
         quoted_phrases,
         anchors,
         entity_ids: Vec::new(),
+        expanded_entity_ids: Vec::new(),
         temporal_mode,
         as_of: inferred_as_of,
         owner_id,

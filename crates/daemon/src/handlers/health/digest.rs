@@ -1,20 +1,6 @@
-use crate::handlers::{ensure_auth_rated, json_response, truncate_chars};
-use crate::state::RuntimeState;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use crate::handlers::truncate_chars;
 use rusqlite::params;
 use serde_json::{json, Value};
-pub async fn handle_digest(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
-        return resp;
-    }
-    let conn = state.db_read.lock().await;
-    match build_digest(&conn) {
-        Ok(payload) => json_response(StatusCode::OK, payload),
-        Err(err) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Digest failed: {err}")})),
-    }
-}
 pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let today_like = format!("{today}%");

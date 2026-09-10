@@ -1,0 +1,15 @@
+Q: PAY-77
+  PAY-77 retry incident: never retry after the ledger commit succeeded in src/pay/retry.rs | admittedBy=hard_anchor arms=lexical+anchor+truth hops=0
+Q: "ledger commit"
+  PAY-77 retry incident: never retry after the ledger commit succeeded in src/pay/retry.rs | admittedBy=clock_quorum arms=lexical+anchor+truth hops=0
+  src/pay/retry.rs handles idempotent replay for the payments gateway | admittedBy=clock_quorum arms=anchor+truth hops=0
+Q: src/pay/retry.rs
+  src/pay/retry.rs handles idempotent replay for the payments gateway | admittedBy=hard_anchor arms=lexical+anchor+truth+task hops=0
+  PAY-77 retry incident: never retry after the ledger commit succeeded in src/pay/retry.rs | admittedBy=hard_anchor arms=lexical+anchor+truth+task hops=0
+Q: what did Jake propose
+  Jake proposed the DB move | admittedBy=clock_quorum arms=lexical+anchor+truth hops=0
+  the DB move is the Postgres migration | admittedBy=clock_quorum arms=anchor+truth hops=0
+Q: Stripe Billing API
+  billing invoices use Stripe Billing API in payments | admittedBy=hard_anchor arms=lexical+anchor+truth hops=0
+Q: payments gateway as of 2020-01-01
+  billing invoices use Stripe Billing API in payments | admittedBy=hard_anchor arms=lexical+anchor+truth+history hops=0

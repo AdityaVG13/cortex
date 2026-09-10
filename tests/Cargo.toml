@@ -1,7 +1,7 @@
 [package]
 name = "cortex-tests"
 version = "0.6.0"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "MIT"
 
@@ -10,14 +10,13 @@ path = "src/lib.rs"
 
 [dependencies]
 cortex-daemon = { path = "../crates/daemon" }
-axum = "0.8"
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+cortex-kernel = { path = "../crates/kernel" }
+asupersync = "0.4.10"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3.27"
 proptest = "1"
-tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tower = { version = "0.5", features = ["util"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 
 [[test]]
 name = "adapter_conformance"
@@ -32,12 +31,24 @@ name = "auth"
 path = "contracts/auth.rs"
 
 [[test]]
+name = "baseline_fixtures"
+path = "contracts/baseline_fixtures.rs"
+
+[[test]]
+name = "backup_restore"
+path = "contracts/backup_restore.rs"
+
+[[test]]
 name = "boot_determinism"
 path = "contracts/boot_determinism.rs"
 
 [[test]]
 name = "budget_denial"
 path = "contracts/budget_denial.rs"
+
+[[test]]
+name = "capture"
+path = "contracts/capture.rs"
 
 [[test]]
 name = "cli_goldens"
@@ -69,6 +80,10 @@ name = "crystallize"
 path = "contracts/crystallize.rs"
 
 [[test]]
+name = "deposit_durability"
+path = "contracts/deposit_durability.rs"
+
+[[test]]
 name = "db_repair"
 path = "contracts/db_repair.rs"
 
@@ -87,6 +102,10 @@ path = "contracts/fault_matrix.rs"
 [[test]]
 name = "history"
 path = "contracts/history.rs"
+
+[[test]]
+name = "lineage"
+path = "contracts/lineage.rs"
 
 [[test]]
 name = "maintenance_errors"
@@ -109,8 +128,40 @@ name = "migration_property"
 path = "contracts/migration_property.rs"
 
 [[test]]
+name = "presence"
+path = "contracts/presence.rs"
+
+[[test]]
+name = "promotion"
+path = "contracts/promotion.rs"
+
+[[test]]
+name = "protocol_types"
+path = "contracts/protocol_types.rs"
+
+[[test]]
+name = "operations"
+path = "contracts/operations.rs"
+
+[[test]]
+name = "outbox"
+path = "contracts/outbox.rs"
+
+[[test]]
 name = "perf_smoke"
 path = "contracts/perf_smoke.rs"
+
+[[test]]
+name = "recall_decomposition"
+path = "contracts/recall_decomposition.rs"
+
+[[test]]
+name = "recall_quality"
+path = "contracts/recall_quality.rs"
+
+[[test]]
+name = "recipes"
+path = "contracts/recipes.rs"
 
 [[test]]
 name = "recall_truth"
@@ -121,8 +172,20 @@ name = "redaction_store"
 path = "contracts/redaction_store.rs"
 
 [[test]]
+name = "revisions_heads"
+path = "contracts/revisions_heads.rs"
+
+[[test]]
+name = "retention"
+path = "contracts/retention.rs"
+
+[[test]]
 name = "route_coverage"
 path = "contracts/route_coverage.rs"
+
+[[test]]
+name = "store_spi"
+path = "contracts/store_spi.rs"
 
 [[test]]
 name = "store_recall"
@@ -133,5 +196,61 @@ name = "temporal"
 path = "contracts/temporal.rs"
 
 [[test]]
+name = "threads"
+path = "contracts/threads.rs"
+
+[[test]]
 name = "wire_error_contract"
 path = "contracts/wire_error_contract.rs"
+
+[[test]]
+name = "store_conformance"
+path = "contracts/store_conformance.rs"
+
+[[test]]
+name = "host_events"
+path = "contracts/host_events.rs"
+
+[[test]]
+name = "native_entry"
+path = "contracts/native_entry.rs"
+
+[[test]]
+name = "reflex"
+path = "contracts/reflex.rs"
+
+[[test]]
+name = "replication_erasure"
+path = "contracts/replication_erasure.rs"
+
+[[test]]
+name = "trust_boundaries"
+path = "contracts/trust_boundaries.rs"
+
+[[test]]
+name = "falsifiers"
+path = "contracts/falsifiers.rs"
+
+[[test]]
+name = "kernel_embed"
+path = "contracts/kernel_embed.rs"
+
+[[test]]
+name = "observation_capture"
+path = "contracts/observation_capture.rs"
+
+[[test]]
+name = "observation_cycle"
+path = "contracts/observation_cycle.rs"
+
+[[test]]
+name = "observation_inventory"
+path = "contracts/observation_inventory.rs"
+
+[[test]]
+name = "host_capture"
+path = "contracts/host_capture.rs"
+
+[[test]]
+name = "observation_associations"
+path = "contracts/observation_associations.rs"

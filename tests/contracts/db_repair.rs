@@ -1,637 +1,251 @@
-//! Contracts for the boot-time DB auto-repair / degraded-mode paths.
-//!
-//! Spec under test (crates/daemon/src/state/init.rs + crates/daemon/src/db/maintenance.rs):
-//! - `PRAGMA quick_check` failure followed by `PRAGMA integrity_check` failure
-//!   triggers `auto_repair` (dump-and-rebuild salvage).
-//! - Repair success must boot FULLY healthy (db_corrupted stays false) after
-//!   quarantining the corrupt file as `cortex.corrupt.<timestamp>`
-//!   (`Path::with_extension` REPLACES the "db" suffix) and must preserve
-//!   readable row data.
-//! - Repair failure with a still-openable DB boots degraded
-//!   (`db_corrupted=true` -> /health status "degraded") without quarantining.
-//!
-//! Poisoning targets derived/index b-tree pages, never the repo, and only in
-//! per-test unique temp homes.
-
-#[path = "../support/mod.rs"]
-mod support;
-
-use serde_json::json;
+//! Real on-disk corruption, repair/quarantine, and degraded-mode contracts.
+//! Retired: listener startup, health polling and HTTP status assertions.
+//! Runtime open exercises the same production initialization/repair branch.
+use cortex_daemon::handlers::health::{build_health_payload, build_readiness_payload};
+use cortex_daemon::{CortexRuntime, runtime::LensInput};
+use cortex_tests::support::run_with_cx;
 use std::fs;
-use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::time::Duration;
-use support::{
-    read_token, request_json, reserve_port, shutdown_daemon, spawn_daemon, unique_temp_dir,
-    wait_for_exit, wait_for_health,
-};
 
-// Three topically distinct decisions (store writes to the `decisions` table,
-// which auto_repair counts as decisions_recovered). Distinct tokens so the
-// agreement-merge dedupe cannot fold them.
 const SENTINELS: [&str; 3] = [
     "Auto-repair salvage sentinel one: the archive rotator keeps seven nightly snapshots on the vault volume.",
     "Auto-repair salvage sentinel two: the checksum auditor rejects any tile whose crc32 mismatches the manifest.",
     "Auto-repair salvage sentinel three: the replication lag alarm fires when the follower falls 900 seconds behind.",
 ];
 
-// Derived structure that quick_check/integrity_check walk but the salvage
-// export (SELECT per DATA_TABLE) never reads. Destroying it must trip the
-// repair trigger without making the row data itself unreadable.
-const DERIVED_INDEX: &str = "idx_memories_status";
-
-fn store_sentinel(port: u16, token: &str, text: &str) {
-    let resp = request_json(
-        port,
-        "POST",
-        "/store",
-        Some(token),
-        Some(json!({
-            "decision": text,
-            "type": "decision",
-            "source_agent": "db-repair",
-            "confidence": 0.9,
-        })),
-    )
-    .unwrap_or_else(|e| panic!("store {text:?} failed: {e}"));
-    assert_eq!(
-        resp.status, 200,
-        "store must ack 200, got {} body {}",
-        resp.status, resp.body
-    );
-    assert_eq!(
-        resp.body["stored"].as_bool(),
-        Some(true),
-        "store must ack stored:true for {text:?}, got {}",
-        resp.body
-    );
-}
-
-fn recall_exact(port: u16, token: &str, expected: &str) {
-    let encoded: String = expected
-        .bytes()
-        .flat_map(|b| {
-            if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
-                vec![b as char]
-            } else {
-                format!("%{b:02X}").chars().collect()
-            }
+fn archives(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fs::read_dir(home)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("cortex.corrupt.")
         })
-        .collect();
-    let resp = request_json(
-        port,
-        "GET",
-        &format!("/recall?q={encoded}&k=10&budget=320"),
-        Some(token),
-        None,
-    )
-    .unwrap_or_else(|e| panic!("recall for {expected:?} failed: {e}"));
-    assert_eq!(
-        resp.status, 200,
-        "recall must return 200, got {} body {}",
-        resp.status, resp.body
-    );
-    let results = resp.body["results"]
-        .as_array()
-        .unwrap_or_else(|| panic!("recall results missing: {}", resp.body));
-    let hit = results
-        .iter()
-        .any(|item| item["excerpt"].as_str() == Some(expected));
-    assert!(
-        hit,
-        "recall must return the exact stored text {expected:?}, got {results:?}"
-    );
+        .collect()
 }
 
-/// Fold any WAL frames into the main db file so the poison lands on the
-/// authoritative page images a fresh boot will read.
-fn checkpoint_wal_into_main(db_path: &std::path::Path) {
-    let conn = rusqlite::Connection::open(db_path).expect("open db for wal checkpoint");
-    let _ = conn.busy_timeout(Duration::from_secs(2));
-    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-        row.get::<_, i64>(0)
-    });
-}
-
-/// Overwrite one b-tree root page with 0xFF bytes, then PROVE the poison
-/// trips both init.rs gates (quick_check AND integrity_check) before any
-/// daemon boots on it.
-fn poison_btree_root_page(home_dir: &std::path::Path, btree: &str) {
-    let db_path = home_dir.join("cortex.db");
-    let conn = rusqlite::Connection::open(&db_path).expect("open db to locate poison target");
-    let _ = conn.busy_timeout(Duration::from_secs(2));
-    let page_size: u64 =
-        conn.query_row("PRAGMA page_size", [], |row| row.get::<_, i64>(0)).expect("page_size") as u64;
-    let root: u64 = conn
+fn poison_index(path: &std::path::Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    let page_size: u32 = conn
+        .query_row("PRAGMA page_size", [], |r| r.get(0))
+        .unwrap();
+    let root: u32 = conn
         .query_row(
-            "SELECT rootpage FROM sqlite_master WHERE name = ?1",
-            [btree],
-            |row| row.get::<_, i64>(0),
+            "SELECT rootpage FROM sqlite_master WHERE name = 'idx_memories_status'",
+            [],
+            |r| r.get(0),
         )
-        .unwrap_or_else(|e| panic!("poison target btree {btree:?} missing from sqlite_master: {e}"))
-        as u64;
+        .unwrap();
     drop(conn);
-
-    let offset = root * page_size;
-    let mut file = OpenOptions::new()
+    // SQLite rootpage numbers are ONE based; never poison the adjacent data page.
+    assert!(root > 1);
+    let offset = u64::from(root - 1) * u64::from(page_size);
+    let mut file = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(&db_path)
-        .expect("open cortex.db for poisoning");
-    let file_len = file.metadata().expect("db metadata").len();
-    assert!(
-        offset + page_size <= file_len,
-        "poison offset {offset}+{page_size} beyond file length {file_len}"
-    );
-    file.seek(SeekFrom::Start(offset)).expect("seek to poison offset");
-    let garbage = vec![0xFFu8; page_size as usize];
-    file.write_all(&garbage).expect("write poison bytes");
-    file.sync_all().expect("flush poison bytes");
-
-    let conn = rusqlite::Connection::open(&db_path).expect("reopen poisoned db");
-    let _ = conn.busy_timeout(Duration::from_secs(2));
-    let quick_ok = conn
-        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
-        .map(|s| s.trim().eq_ignore_ascii_case("ok"))
-        .unwrap_or(false);
-    assert!(
-        !quick_ok,
-        "poison of {btree:?} root page must trip PRAGMA quick_check (init.rs repair trigger)"
-    );
-    let integrity_ok = conn
-        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
-        .map(|s| s.trim().eq_ignore_ascii_case("ok"))
-        .unwrap_or(false);
-    assert!(
-        !integrity_ok,
-        "poison of {btree:?} root page must trip PRAGMA integrity_check (init.rs repair gate)"
-    );
-}
-
-/// Quarantine naming per maintenance.rs: db_path.with_extension(format!(
-/// "corrupt.{timestamp}")) on "cortex.db" REPLACES the extension, yielding
-/// "cortex.corrupt.<timestamp>".
-fn corrupt_archive_entries(home_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut hits: Vec<std::path::PathBuf> = fs::read_dir(home_dir)
-        .expect("read home dir")
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("cortex.corrupt."))
-                .unwrap_or(false)
-        })
-        .collect();
-    hits.sort();
-    hits
-}
-
-/// Boot once, store the three sentinels, shut down cleanly, checkpoint WAL.
-fn seed_home(home_dir: &std::path::Path) -> String {
-    let port = reserve_port();
-    let home = home_dir.to_string_lossy().to_string();
-    let mut daemon = spawn_daemon(&home, port);
-    wait_for_health(port, &mut daemon);
-    let token = read_token(home_dir);
-    for text in &SENTINELS {
-        store_sentinel(port, &token, text);
+        .open(path)
+        .unwrap();
+    assert!(offset + u64::from(page_size) <= file.metadata().unwrap().len());
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&vec![0xff; page_size as usize]).unwrap();
+    file.sync_all().unwrap();
+    let conn = rusqlite::Connection::open(path).unwrap();
+    for pragma in ["PRAGMA quick_check", "PRAGMA integrity_check"] {
+        let ok = conn
+            .query_row(pragma, [], |r| r.get::<_, String>(0))
+            .map(|s| s.eq_ignore_ascii_case("ok"))
+            .unwrap_or(false);
+        assert!(!ok, "poison must trip {pragma}");
     }
-    shutdown_daemon(port, home_dir);
-    wait_for_exit(&mut daemon, Duration::from_secs(10));
-    checkpoint_wal_into_main(&home_dir.join("cortex.db"));
-    home
 }
 
 #[test]
 fn poisoned_db_boots_via_auto_repair() {
-    let home_dir = unique_temp_dir("dbrepair_salvage");
-    fs::create_dir_all(&home_dir).expect("create temp home");
-    let home = seed_home(&home_dir);
-    poison_btree_root_page(&home_dir, DERIVED_INDEX);
-
-    // Fresh daemon on the SAME home must self-heal via auto_repair.
-    let port = reserve_port();
-    let mut daemon = spawn_daemon(&home, port);
-    wait_for_health(port, &mut daemon);
-    let token = read_token(&home_dir);
-
-    // Repair success boots FULLY healthy: init.rs never sets db_corrupted on
-    // the auto_repair Ok path.
-    let health = request_json(port, "GET", "/health", None, None).expect("health after repair boot");
-    assert_eq!(
-        health.status, 200,
-        "health must be served after repair, got {} body {}",
-        health.status, health.body
-    );
-    assert_eq!(
-        health.body["status"].as_str(),
-        Some("ok"),
-        "successful auto-repair must boot with status ok, got {}",
-        health.body
-    );
-    assert_eq!(
-        health.body["degraded"].as_bool(),
-        Some(false),
-        "successful auto-repair must not set degraded, got {}",
-        health.body
-    );
-    assert_eq!(
-        health.body["db_corrupted"].as_bool(),
-        Some(false),
-        "successful auto-repair must not set db_corrupted, got {}",
-        health.body
-    );
-
-    // Quarantine contract: exactly one timestamped archive of the corrupt file.
-    let archives = corrupt_archive_entries(&home_dir);
-    assert_eq!(
-        archives.len(),
-        1,
-        "auto-repair must quarantine exactly one corrupt db archive, got {archives:?}"
-    );
-    let mut header = [0u8; 16];
-    fs::File::open(&archives[0])
-        .and_then(|mut file| file.read_exact(&mut header))
-        .expect("read quarantined archive header");
-    assert_eq!(
-        &header, b"SQLite format 3\0",
-        "quarantined archive must be the original sqlite file, got header {header:?}"
-    );
-
-    // Salvage contract: every acked store must survive the dump-and-rebuild.
-    for text in &SENTINELS {
-        recall_exact(port, &token, text);
-    }
-    let health2 = request_json(port, "GET", "/health", None, None).expect("health stats after repair");
-    assert_eq!(
-        health2.body["stats"]["decisions"].as_i64(),
-        Some(3),
-        "salvage must keep exactly the 3 stored decisions, got {}",
-        health2.body
-    );
-
-    // The repaired database must be structurally sound, not merely readable.
-    let conn = rusqlite::Connection::open(home_dir.join("cortex.db"))
-        .expect("open repaired db");
-    let quick: String = conn
-        .query_row("PRAGMA quick_check", [], |row| row.get(0))
-        .expect("quick_check on repaired db");
-    assert_eq!(
-        quick.trim().to_lowercase(),
-        "ok",
-        "repaired db must pass quick_check, got {quick:?}"
-    );
-
-    shutdown_daemon(port, &home_dir);
-    wait_for_exit(&mut daemon, Duration::from_secs(10));
-    let _ = fs::remove_dir_all(&home_dir);
-}
-
-/// Journey contract (fresh-eyes round 4, corrupt->repair leg): a team-mode
-/// database that goes through auto_repair must keep its team identity.
-/// auto_repair rebuilds the DB from initialize_schema only, which knows
-/// nothing about the team tables (config/users/teams/team_members), so before
-/// this contract the repaired DB silently came back in SOLO mode with every
-/// user credential hash destroyed -- members' ctx_ keys all died with no
-/// warning while the daemon kept serving. The repaired DB must retain
-/// mode='team', the user rows (credential hashes), and salvage-able data.
-#[test]
-fn auto_repair_preserves_team_mode_and_credentials() {
-    let home_dir = unique_temp_dir("dbrepair_team");
-    fs::create_dir_all(&home_dir).expect("create temp home");
-    let db_path = home_dir.join("cortex.db");
-    {
-        let conn = rusqlite::Connection::open(&db_path).expect("open fresh db");
-        cortex_daemon::db::configure(&conn).expect("configure db");
-        cortex_daemon::db::initialize_schema(&conn).expect("initialize schema");
-        cortex_daemon::crystallize::migrate_crystal_tables(&conn);
-        cortex_daemon::db::create_team_mode_tables(&conn).expect("create team tables");
-        let owner_id = cortex_daemon::db::upsert_owner_user(&conn, "repair-owner", None, "hash-owner-r4")
-            .expect("seed owner user");
-        cortex_daemon::db::migrate_to_team_mode(&conn, owner_id).expect("migrate to team mode");
-        conn.execute(
-            "INSERT INTO decisions (decision, type, status) VALUES ('team salvage sentinel r4', 'decision', 'active')",
-            [],
-        )
-        .expect("seed one salvage-able decision row");
-    }
-    let corrupt_mode = {
-        let conn = rusqlite::Connection::open(&db_path).expect("reopen seeded db");
-        cortex_daemon::db::current_mode(&conn)
-    };
-    assert_eq!(
-        corrupt_mode, "team",
-        "seed must produce a team-mode DB before repair"
-    );
-
-    let result = cortex_daemon::db::auto_repair(&db_path, "gauntletr4").expect("auto_repair must succeed");
-    assert_eq!(
-        result.decisions_recovered, 1,
-        "salvage must keep the seeded decision row, got {result:?}"
-    );
-
-    let conn = rusqlite::Connection::open(&db_path).expect("open repaired db");
-    assert_eq!(
-        cortex_daemon::db::current_mode(&conn),
-        "team",
-        "auto-repair must preserve team mode -- a silent solo flip kills every member credential"
-    );
-    let (users, hash): (i64, String) = conn
-        .query_row(
-            "SELECT COUNT(*), COALESCE((SELECT api_key_hash FROM users WHERE username = 'repair-owner'), '') FROM users",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("query repaired users");
-    assert_eq!(
-        users, 1,
-        "auto-repair must preserve the team user roster, got {users} users"
-    );
-    assert_eq!(
-        hash, "hash-owner-r4",
-        "auto-repair must preserve user credential hashes verbatim, got {hash:?}"
-    );
-    let _ = fs::remove_dir_all(&home_dir);
-}
-
-/// Round-5 completeness contract for the bed9809 team-salvage fix: PARTIAL
-/// identity damage must be handled in both directions, not only a fully
-/// readable config.
-/// - Case A: config damaged (its rows unreadable/lost) while users survive.
-///   The mode row falling back to "solo" must not exclude the identity tables
-///   from salvage -- silently dropping the roster repeats the exact credential
-///   loss bed9809 fixed, only with a different damaged table. The repair must
-///   keep users/teams/team_members (credential hashes stay recoverable via
-///   `cortex setup --team`) and honestly downgrade to solo.
-/// - Case B: config intact (mode='team') while users are lost. The guard must
-///   downgrade to solo instead of booting a team-mode DB with an empty
-///   roster (every ctx_ key would fail with no admin left to fix it).
-#[test]
-fn auto_repair_handles_partially_damaged_team_identity() {
-    // ---- Case A: config lost, users intact.
-    let home_a = unique_temp_dir("dbrepair_team_partial_a");
-    fs::create_dir_all(&home_a).expect("create temp home a");
-    let db_a = home_a.join("cortex.db");
-    {
-        let conn = rusqlite::Connection::open(&db_a).expect("open db a");
-        cortex_daemon::db::configure(&conn).expect("configure db a");
-        cortex_daemon::db::initialize_schema(&conn).expect("init schema a");
-        cortex_daemon::crystallize::migrate_crystal_tables(&conn);
-        cortex_daemon::db::create_team_mode_tables(&conn).expect("create team tables a");
-        let owner_id = cortex_daemon::db::upsert_owner_user(&conn, "partial-owner", None, "hash-partial-r5")
-            .expect("seed owner user a");
-        cortex_daemon::db::migrate_to_team_mode(&conn, owner_id).expect("migrate team a");
-        conn.execute(
-            "INSERT INTO decisions (decision, type, status) VALUES ('partial identity sentinel r5', 'decision', 'active')",
-            [],
-        )
-        .expect("seed decision a");
-        // Observable state of single-page damage to config: the table shell
-        // survives, its rows (mode, owner_user_id) are gone.
-        conn.execute("DELETE FROM config", []).expect("damage config a");
-    }
-    let result_a = cortex_daemon::db::auto_repair(&db_a, "gauntletr5a").expect("auto_repair a must succeed");
-    assert_eq!(
-        result_a.decisions_recovered, 1,
-        "data salvage must be unaffected by identity damage, got {result_a:?}"
-    );
-    {
-        let conn = rusqlite::Connection::open(&db_a).expect("open repaired a");
-        let (users, hash): (i64, String) = conn
-            .query_row(
-                "SELECT COUNT(*), COALESCE((SELECT api_key_hash FROM users WHERE username = 'partial-owner'), '') FROM users",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("query repaired users a");
-        assert_eq!(
-            users, 1,
-            "auto-repair must salvage the users roster even when config is damaged -- dropping it silently destroys every credential hash"
-        );
-        assert_eq!(
-            hash, "hash-partial-r5",
-            "salvaged credential hash must be verbatim, got {hash:?}"
-        );
-        let teams: i64 = conn
-            .query_row("SELECT COUNT(*) FROM teams", [], |row| row.get(0))
-            .expect("query repaired teams a");
-        let memberships: i64 = conn
-            .query_row("SELECT COUNT(*) FROM team_members", [], |row| row.get(0))
-            .expect("query repaired team_members a");
-        assert_eq!(teams, 1, "teams table must be salvaged alongside users");
-        assert_eq!(memberships, 1, "team_members must be salvaged alongside users");
-        assert_eq!(
-            cortex_daemon::db::current_mode(&conn),
-            "solo",
-            "with the mode flag unrecoverable the repaired DB must honestly boot solo (recoverable via setup --team), not claim team"
-        );
-    }
-    let _ = fs::remove_dir_all(&home_a);
-
-    // ---- Case B: config intact, users lost.
-    let home_b = unique_temp_dir("dbrepair_team_partial_b");
-    fs::create_dir_all(&home_b).expect("create temp home b");
-    let db_b = home_b.join("cortex.db");
-    {
-        let conn = rusqlite::Connection::open(&db_b).expect("open db b");
-        cortex_daemon::db::configure(&conn).expect("configure db b");
-        cortex_daemon::db::initialize_schema(&conn).expect("init schema b");
-        cortex_daemon::crystallize::migrate_crystal_tables(&conn);
-        cortex_daemon::db::create_team_mode_tables(&conn).expect("create team tables b");
-        let owner_id = cortex_daemon::db::upsert_owner_user(&conn, "partial-owner-b", None, "hash-partial-b")
-            .expect("seed owner user b");
-        cortex_daemon::db::migrate_to_team_mode(&conn, owner_id).expect("migrate team b");
-        conn.execute(
-            "INSERT INTO decisions (decision, type, status) VALUES ('partial identity sentinel b r5', 'decision', 'active')",
-            [],
-        )
-        .expect("seed decision b");
-        conn.execute("DROP TABLE users", []).expect("drop users b");
-    }
-    let result_b = cortex_daemon::db::auto_repair(&db_b, "gauntletr5b").expect("auto_repair b must succeed");
-    assert_eq!(
-        result_b.decisions_recovered, 1,
-        "data salvage must survive user-roster loss, got {result_b:?}"
-    );
-    {
-        let conn = rusqlite::Connection::open(&db_b).expect("open repaired b");
-        assert_eq!(
-            cortex_daemon::db::current_mode(&conn),
-            "solo",
-            "a team-mode DB whose users roster did not survive must downgrade to solo, never boot team with zero users"
-        );
-    }
-    let _ = fs::remove_dir_all(&home_b);
-}
-
-/// Round-6 completeness case for the users-table inference: the mode row is
-/// READABLE but its value garbled by payload-level damage. Every writer stores
-/// exactly 'team' or 'solo' (create_team_mode_tables seeds 'solo',
-/// migrate_to_team_mode flips to 'team', the post-salvage guard downgrades to
-/// 'solo'), so a readable value that is neither is damage to that cell, not a
-/// verdict. Trusting it classifies the DB as solo, excludes the identity
-/// tables from salvage, and silently drops the credential roster with no
-/// warning -- the post-salvage guard never runs because it is gated on
-/// corrupt_team_mode. The users-table inference must cover this branch exactly
-/// like the unreadable-row branch (round-5 Case A), with the honest loud solo
-/// downgrade when the team flag itself is unrecoverable.
-#[test]
-fn auto_repair_handles_garbled_but_readable_mode_value() {
-    let home_dir = unique_temp_dir("dbrepair_team_garbled");
-    fs::create_dir_all(&home_dir).expect("create temp home");
-    let db_path = home_dir.join("cortex.db");
-    {
-        let conn = rusqlite::Connection::open(&db_path).expect("open db");
-        cortex_daemon::db::configure(&conn).expect("configure db");
-        cortex_daemon::db::initialize_schema(&conn).expect("init schema");
-        cortex_daemon::crystallize::migrate_crystal_tables(&conn);
-        cortex_daemon::db::create_team_mode_tables(&conn).expect("create team tables");
-        let owner_id = cortex_daemon::db::upsert_owner_user(&conn, "garbled-owner", None, "hash-garbled-r6")
-            .expect("seed owner user");
-        cortex_daemon::db::migrate_to_team_mode(&conn, owner_id).expect("migrate team");
-        conn.execute(
-            "INSERT INTO decisions (decision, type, status) VALUES ('garbled mode sentinel r6', 'decision', 'active')",
-            [],
-        )
-        .expect("seed decision");
-        // Observable state of payload-level damage to the mode cell: the row
-        // is structurally readable, its value is no longer a legal mode.
-        conn.execute(
-            "UPDATE config SET value = 'corrupted' WHERE key = 'mode'",
-            [],
-        )
-        .expect("garble mode value");
-    }
-    // Prove the damage is of the readable-but-illegal class, not the
-    // unreadable class round-5 Case A covers: the query must SUCCEED and
-    // return a value that is neither 'team' nor 'solo'.
-    {
-        let conn = rusqlite::Connection::open(&db_path).expect("reopen garbled db");
-        let value: String = conn
-            .query_row("SELECT value FROM config WHERE key = 'mode' LIMIT 1", [], |row| row.get(0))
-            .expect("mode row must still be readable");
-        assert_ne!(value, "team", "seed must not leave a legal team value");
-        assert_ne!(value, "solo", "seed must not leave a legal solo value");
-    }
-    let result = cortex_daemon::db::auto_repair(&db_path, "gauntletr6").expect("auto_repair must succeed");
-    assert_eq!(
-        result.decisions_recovered, 1,
-        "data salvage must be unaffected by the garbled mode value, got {result:?}"
-    );
-    {
-        let conn = rusqlite::Connection::open(&db_path).expect("open repaired db");
-        let (users, hash): (i64, String) = conn
-            .query_row(
-                "SELECT COUNT(*), COALESCE((SELECT api_key_hash FROM users WHERE username = 'garbled-owner'), '') FROM users",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("query repaired users");
-        assert_eq!(
-            users, 1,
-            "a garbled-but-readable mode value must not silently drop the credential roster"
-        );
-        assert_eq!(
-            hash, "hash-garbled-r6",
-            "salvaged credential hash must be verbatim, got {hash:?}"
-        );
-        assert_eq!(
-            cortex_daemon::db::current_mode(&conn),
-            "solo",
-            "with the team flag itself garbled beyond recognition the repaired DB must honestly boot solo (recoverable via setup --team), not claim team"
-        );
-    }
-    let _ = fs::remove_dir_all(&home_dir);
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("cortex.db");
+        let runtime = CortexRuntime::open_db(&path).unwrap();
+        for (i, text) in SENTINELS.iter().enumerate() {
+            runtime
+                .deposit(&cx, &format!("seed-{i}"), text, "db-repair", None)
+                .await
+                .unwrap();
+        }
+        drop(runtime);
+        poison_index(&path);
+        let runtime = CortexRuntime::open_db(&path).expect("production auto-repair boot");
+        let health = build_health_payload(&cx, runtime.state(), false)
+            .await
+            .unwrap();
+        assert_eq!(health["status"], "ok");
+        assert_eq!(health["degraded"], false);
+        assert_eq!(health["db_corrupted"], false);
+        assert_eq!(health["stats"]["decisions"], 3);
+        let archived = archives(home.path());
+        assert_eq!(archived.len(), 1);
+        let mut header = [0; 16];
+        fs::File::open(&archived[0])
+            .unwrap()
+            .read_exact(&mut header)
+            .unwrap();
+        assert_eq!(&header, b"SQLite format 3\0");
+        for text in SENTINELS {
+            let recall = runtime
+                .lens(
+                    &cx,
+                    LensInput {
+                        query: text.into(),
+                        k: 10,
+                        budget: 320,
+                        agent: "db-repair".into(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(
+                recall["results"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["excerpt"] == text),
+                "{recall}"
+            );
+        }
+        let conn = runtime.state().db.lock(&cx).await.unwrap();
+        let quick: String = conn
+            .query_row("PRAGMA quick_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(quick, "ok");
+    });
 }
 
 #[test]
 fn repair_failure_degrades_predictably() {
-    let home_dir = unique_temp_dir("dbrepair_degraded");
-    fs::create_dir_all(&home_dir).expect("create temp home");
-    let home = seed_home(&home_dir);
-    poison_btree_root_page(&home_dir, DERIVED_INDEX);
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("cortex.db");
+        let runtime = CortexRuntime::open_db(&path).unwrap();
+        for (i, text) in SENTINELS.iter().enumerate() {
+            runtime
+                .deposit(&cx, &format!("seed-{i}"), text, "db-repair", None)
+                .await
+                .unwrap();
+        }
+        drop(runtime);
+        poison_index(&path);
+        fs::create_dir(home.path().join("cortex.repair_tmp")).unwrap();
+        let runtime =
+            CortexRuntime::open_db(&path).expect("repair failure must still open degraded");
+        for _ in 0..2 {
+            let health = build_health_payload(&cx, runtime.state(), false)
+                .await
+                .unwrap();
+            assert_eq!(health["status"], "degraded");
+            assert_eq!(health["degraded"], true);
+            assert_eq!(health["db_corrupted"], true);
+            assert_eq!(health["ready"], true);
+        }
+        assert_eq!(
+            build_readiness_payload(runtime.state(), false)["ready"],
+            true
+        );
+        assert!(
+            archives(home.path()).is_empty(),
+            "failed repair must not quarantine"
+        );
+    });
+}
 
-    // Repair can never succeed: auto_repair builds the fresh db at
-    // <home>/cortex.repair_tmp (with_extension REPLACES "db"). A DIRECTORY at
-    // that exact path makes Connection::open fail -> RepairError::OpenFresh,
-    // while cortex.db itself stays openable so init.rs takes the
-    // failed-repair branch instead of failing boot.
-    fs::create_dir_all(home_dir.join("cortex.repair_tmp"))
-        .expect("create repair blocker directory");
+#[test]
+fn auto_repair_preserves_identity_or_honestly_downgrades() {
+    // Retain all former identity cases: intact, missing config, missing users,
+    // and a structurally readable but illegal mode value.
+    for damage in ["intact", "config", "users", "garbled"] {
+        run_with_cx(|cx| async move {
+            let home = tempfile::tempdir().unwrap();
+            let path = home.path().join("cortex.db");
+            {
+                let conn = cortex_tests::support::open_file_db(&path);
+                cortex_daemon::db::create_team_mode_tables(&conn).unwrap();
+                let owner = cortex_daemon::db::upsert_owner_user(
+                    &conn,
+                    "repair-owner",
+                    None,
+                    "hash-owner-verbatim",
+                )
+                .unwrap();
+                cortex_daemon::db::migrate_to_team_mode(&conn, owner).unwrap();
+                conn.execute("INSERT INTO decisions (decision, type, status) VALUES ('team salvage sentinel', 'decision', 'active')", []).unwrap();
+                assert_eq!(cortex_daemon::db::current_mode(&conn), "team");
+                match damage {
+                    "config" => {
+                        conn.execute("DELETE FROM config", []).unwrap();
+                    }
+                    "users" => {
+                        conn.execute("DROP TABLE users", []).unwrap();
+                    }
+                    "garbled" => {
+                        conn.execute(
+                            "UPDATE config SET value = 'corrupted' WHERE key = 'mode'",
+                            [],
+                        )
+                        .unwrap();
+                        let value: String = conn
+                            .query_row("SELECT value FROM config WHERE key = 'mode'", [], |r| {
+                                r.get(0)
+                            })
+                            .unwrap();
+                        assert_eq!(value, "corrupted");
+                    }
+                    _ => {}
+                }
+            }
+            let result = cortex_daemon::db::auto_repair(&path, damage).unwrap();
+            assert_eq!(result.decisions_recovered, 1);
+            let runtime = CortexRuntime::open_db(&path).unwrap();
+            let conn = runtime.state().db.lock(&cx).await.unwrap();
+            assert_eq!(
+                cortex_daemon::db::current_mode(&conn),
+                if damage == "intact" { "team" } else { "solo" }
+            );
+            if damage != "users" {
+                let (users, hash): (i64, String) = conn.query_row("SELECT COUNT(*), COALESCE((SELECT api_key_hash FROM users WHERE username = 'repair-owner'), '') FROM users", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                assert_eq!(users, 1);
+                assert_eq!(hash, "hash-owner-verbatim");
+                if damage == "config" {
+                    for table in ["teams", "team_members"] {
+                        let count: i64 = conn
+                            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                            .unwrap();
+                        assert_eq!(count, 1);
+                    }
+                }
+            }
+        });
+    }
+}
 
-    // init.rs failed-repair path must still boot the server (degraded), not
-    // exit: db_corrupted=true is set AFTER initialize_with_conn succeeds.
-    let port = reserve_port();
-    let mut daemon = spawn_daemon(&home, port);
-    wait_for_health(port, &mut daemon);
-
-    let health = request_json(port, "GET", "/health", None, None).expect("degraded health");
-    assert_eq!(
-        health.status, 200,
-        "degraded daemon must still serve /health with 200, got {} body {}",
-        health.status, health.body
-    );
-    assert_eq!(
-        health.body["status"].as_str(),
-        Some("degraded"),
-        "failed repair must surface status degraded, got {}",
-        health.body
-    );
-    assert_eq!(
-        health.body["degraded"].as_bool(),
-        Some(true),
-        "failed repair must set degraded, got {}",
-        health.body
-    );
-    assert_eq!(
-        health.body["db_corrupted"].as_bool(),
-        Some(true),
-        "failed repair must set db_corrupted, got {}",
-        health.body
-    );
-    assert_eq!(
-        health.body["ready"].as_bool(),
-        Some(true),
-        "degraded boot must still reach ready, got {}",
-        health.body
-    );
-
-    // A failed repair must NOT quarantine: the corrupt file stays in place.
-    let archives = corrupt_archive_entries(&home_dir);
-    assert!(
-        archives.is_empty(),
-        "failed repair must not quarantine the corrupt db, found {archives:?}"
-    );
-
-    // Serving must be sustained, not a one-shot: a second health read and the
-    // readiness gate must both answer normally.
-    let again = request_json(port, "GET", "/health", None, None).expect("second health read");
-    assert_eq!(
-        again.status, 200,
-        "second health read must still be 200, got {} body {}",
-        again.status, again.body
-    );
-    assert_eq!(
-        again.body["status"].as_str(),
-        Some("degraded"),
-        "second health read must still report degraded, got {}",
-        again.body
-    );
-    let readiness = request_json(port, "GET", "/readiness", None, None).expect("readiness");
-    assert_eq!(
-        readiness.status, 200,
-        "readiness must be served with 200 in degraded mode, got {} body {}",
-        readiness.status, readiness.body
-    );
-    assert_eq!(
-        readiness.body["ready"].as_bool(),
-        Some(true),
-        "degraded daemon must report ready=true on /readiness, got {}",
-        readiness.body
-    );
-
-    shutdown_daemon(port, &home_dir);
-    wait_for_exit(&mut daemon, Duration::from_secs(10));
-    let _ = fs::remove_dir_all(&home_dir);
+#[test]
+fn sqlite_wal_reset_gate_matches_documented_fix_set() {
+    use cortex_daemon::db::{sqlite_version, sqlite_wal_reset_fixed};
+    for (version, fixed) in [
+        ("3.51.2", false),
+        ("3.51.3", true),
+        ("3.52.0", true),
+        ("3.44.5", false),
+        ("3.44.6", true),
+        ("3.45.0", false),
+        ("3.50.6", false),
+        ("3.50.7", true),
+        ("garbage", false),
+        ("4.0.0", true),
+    ] {
+        assert_eq!(sqlite_wal_reset_fixed(version), fixed, "{version}");
+    }
+    assert!(sqlite_version().starts_with("3."));
 }

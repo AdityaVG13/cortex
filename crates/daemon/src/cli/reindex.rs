@@ -36,7 +36,7 @@ decisions_fts,}})
     println!("memories: base={memories_base}, fts={memories_fts}");
     println!("decisions: base={decisions_base}, fts={decisions_fts}");
 }
-pub async fn run_recrystallize_cli(paths: &auth::CortexPaths, json_output: bool) {
+pub async fn run_recrystallize_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, json_output: bool) {
     let (state, _shutdown_rx) = match state::initialize(paths, false) {
         Ok(initialized) => initialized,
         Err(err) => {
@@ -45,7 +45,13 @@ pub async fn run_recrystallize_cli(paths: &auth::CortexPaths, json_output: bool)
         }
     };
     let result_payload = {
-        let conn = state.db.lock().await;
+        let conn = match state.db.lock(cx).await {
+            Ok(conn) => conn,
+            Err(err) => {
+                eprintln!("[cortex] {err}");
+                std::process::exit(1);
+            }
+        };
         let crystals_before: i64 = conn.query_row("SELECT COUNT(*) FROM memory_clusters", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
         let members_before: i64 = conn.query_row("SELECT COUNT(*) FROM cluster_members", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
         let embeddings_before: i64 = conn
@@ -54,7 +60,13 @@ pub async fn run_recrystallize_cli(paths: &auth::CortexPaths, json_output: bool)
         let removed_embeddings = 0usize;
         let removed_crystals = conn.execute("DELETE FROM memory_clusters", []).unwrap_or(0);
         let brain_sender = Some(state.brain_firing.clone());
-        let pass = crystallize::run_crystallize_pass_with_brain(&conn, state.default_owner_id, &brain_sender);
+        let pass = match crystallize::run_crystallize_pass_with_brain(cx, &conn, state.default_owner_id, &brain_sender) {
+            Ok(pass) => pass,
+            Err(err) => {
+                eprintln!("[cortex] {err}");
+                std::process::exit(1);
+            }
+        };
         let crystals_after: i64 = conn.query_row("SELECT COUNT(*) FROM memory_clusters", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
         let members_after: i64 = conn.query_row("SELECT COUNT(*) FROM cluster_members", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
         let embeddings_after: i64 = conn

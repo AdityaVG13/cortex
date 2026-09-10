@@ -115,8 +115,18 @@ fn aging_pass_denied_updates_are_reported_and_not_counted_as_work() {
         report.failures
     );
     for failure in &report.failures {
-        assert!(failure.op.contains("decisions"), "failure must name its decisions op: {:?}", failure);
-        assert!(failure.error.contains("denied by maintenance-errors test trigger"), "failure must carry the driver error: {:?}", failure);
+        assert!(
+            failure.op.contains("decisions"),
+            "failure must name its decisions op: {:?}",
+            failure
+        );
+        assert!(
+            failure
+                .error
+                .contains("denied by maintenance-errors test trigger"),
+            "failure must carry the driver error: {:?}",
+            failure
+        );
     }
 }
 
@@ -125,7 +135,8 @@ fn aging_pass_missing_table_is_reported_not_success_shaped() {
     let conn = open_fresh_db();
     seed_memory(&conn, "fresh", 0.9);
     seed_decision(&conn, "fresh", 0.9);
-    conn.execute_batch("DROP TABLE decisions;").expect("drop decisions table");
+    conn.execute_batch("DROP TABLE decisions;")
+        .expect("drop decisions table");
 
     let report = aging::run_aging_pass(&conn);
 
@@ -138,11 +149,22 @@ fn aging_pass_missing_table_is_reported_not_success_shaped() {
         report.failures
     );
     for failure in &report.failures {
-        assert!(failure.op.contains("decisions"), "failure must name its decisions op: {:?}", failure);
-        assert!(failure.error.contains("no such table"), "failure must carry the driver error: {:?}", failure);
+        assert!(
+            failure.op.contains("decisions"),
+            "failure must name its decisions op: {:?}",
+            failure
+        );
+        assert!(
+            failure.error.contains("no such table"),
+            "failure must carry the driver error: {:?}",
+            failure
+        );
     }
     // The surviving memories path must still do and report its real work.
-    assert_eq!(report.compressed, 1, "memories compression must still be counted");
+    assert_eq!(
+        report.compressed, 1,
+        "memories compression must still be counted"
+    );
     assert_eq!(report.archived, 0, "no archive candidates seeded");
 }
 
@@ -156,7 +178,11 @@ fn aging_pass_healthy_db_has_zero_failures_and_exact_counts() {
 
     let report = aging::run_aging_pass(&conn);
 
-    assert!(report.failures.is_empty(), "healthy db must produce zero failures: {:?}", report.failures);
+    assert!(
+        report.failures.is_empty(),
+        "healthy db must produce zero failures: {:?}",
+        report.failures
+    );
     assert_eq!(report.compressed, 2, "one memory + one decision compress");
     assert_eq!(report.archived, 2, "one memory + one decision archive");
 }
@@ -188,8 +214,11 @@ fn compaction_failed_singleton_delete_is_reported_and_not_counted() {
         .find(|f| f.op.contains("co_occurrence"))
         .expect("run_compaction must report the failed co_occurrence prune in result.failures");
     assert!(
-        failure.error.contains("denied by maintenance-errors test trigger"),
-        "failure must carry the driver error, got: {:?}", failure
+        failure
+            .error
+            .contains("denied by maintenance-errors test trigger"),
+        "failure must carry the driver error, got: {:?}",
+        failure
     );
 }
 
@@ -203,8 +232,15 @@ fn compaction_healthy_pass_has_zero_failures_and_exact_prune_count() {
 
     let result = compaction::run_compaction(&conn);
 
-    assert!(result.failures.is_empty(), "healthy db must produce zero failures: {:?}", result.failures);
-    assert_eq!(result.co_occurrence_pruned, 2, "both singleton pairs must be pruned");
+    assert!(
+        result.failures.is_empty(),
+        "healthy db must produce zero failures: {:?}",
+        result.failures
+    );
+    assert_eq!(
+        result.co_occurrence_pruned, 2,
+        "both singleton pairs must be pruned"
+    );
 }
 
 #[test]
@@ -240,7 +276,10 @@ fn compaction_events_prune_failures_are_reported_and_not_counted() {
     let denied: Vec<_> = result
         .failures
         .iter()
-        .filter(|f| f.error.contains("denied by maintenance-errors test trigger"))
+        .filter(|f| {
+            f.error
+                .contains("denied by maintenance-errors test trigger")
+        })
         .collect();
     assert!(
         denied.len() >= 2,
@@ -248,10 +287,16 @@ fn compaction_events_prune_failures_are_reported_and_not_counted() {
         result.failures
     );
     for failure in &denied {
-        assert!(failure.op.contains("DELETE events"), "failure must name its events DELETE op: {:?}", failure);
+        assert!(
+            failure.op.contains("DELETE events"),
+            "failure must name its events DELETE op: {:?}",
+            failure
+        );
     }
     assert!(
-        denied.iter().any(|f| f.op.contains("rollup_old_savings_events")),
+        denied
+            .iter()
+            .any(|f| f.op.contains("rollup_old_savings_events")),
         "the savings-rollup events DELETE failure must be reported, got {:?}",
         result.failures
     );
@@ -302,7 +347,9 @@ fn compaction_archived_and_expired_failures_are_reported_and_not_counted() {
         .find(|f| f.op.contains("strip_archived_text") && f.op.contains("memories"))
         .expect("denied strip_archived_text UPDATE must be reported in result.failures");
     assert!(
-        strip.error.contains("denied by maintenance-errors test trigger"),
+        strip
+            .error
+            .contains("denied by maintenance-errors test trigger"),
         "failure must carry the driver error, got: {:?}",
         strip
     );
@@ -312,7 +359,9 @@ fn compaction_archived_and_expired_failures_are_reported_and_not_counted() {
         .find(|f| f.op.contains("prune_expired_entries") && f.op.contains("memories"))
         .expect("denied expired-memory DELETE must be reported in result.failures");
     assert!(
-        expired.error.contains("denied by maintenance-errors test trigger"),
+        expired
+            .error
+            .contains("denied by maintenance-errors test trigger"),
         "failure must carry the driver error, got: {:?}",
         expired
     );
@@ -341,7 +390,10 @@ fn compaction_orphan_cluster_member_failures_are_reported_and_not_counted() {
     let denied: Vec<_> = result
         .failures
         .iter()
-        .filter(|f| f.error.contains("denied by maintenance-errors test trigger"))
+        .filter(|f| {
+            f.error
+                .contains("denied by maintenance-errors test trigger")
+        })
         .collect();
     assert!(
         denied.len() >= 2,
@@ -350,7 +402,8 @@ fn compaction_orphan_cluster_member_failures_are_reported_and_not_counted() {
     );
     for failure in &denied {
         assert!(
-            failure.op.contains("prune_orphan_cluster_members") && failure.op.contains("cluster_members"),
+            failure.op.contains("prune_orphan_cluster_members")
+                && failure.op.contains("cluster_members"),
             "failure must name the orphan cluster_members prune op: {:?}",
             failure
         );
@@ -402,7 +455,9 @@ fn benchmark_purge_denied_decision_deletes_are_reported_additively() {
         failure
     );
     assert!(
-        failure.error.contains("denied by maintenance-errors test trigger"),
+        failure
+            .error
+            .contains("denied by maintenance-errors test trigger"),
         "failure must carry the driver error, got: {:?}",
         failure
     );
@@ -422,6 +477,13 @@ fn benchmark_purge_healthy_has_zero_failures_and_exact_counts() {
         "healthy purge must produce zero failures: {:?}",
         result.failures
     );
-    assert_eq!(result.decisions_deleted, 2, "both benchmark decisions must be purged");
-    assert_eq!(result.total_deleted(), 2, "total must count exactly the committed deletions");
+    assert_eq!(
+        result.decisions_deleted, 2,
+        "both benchmark decisions must be purged"
+    );
+    assert_eq!(
+        result.total_deleted(),
+        2,
+        "total must count exactly the committed deletions"
+    );
 }

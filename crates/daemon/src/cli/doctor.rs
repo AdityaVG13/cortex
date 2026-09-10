@@ -17,6 +17,12 @@ pub fn run_doctor_cli(paths: &auth::CortexPaths) {
         eprintln!("[doctor] FAIL configure: {e}");
         std::process::exit(1);
     }
+    let sqlite_version = db::sqlite_version();
+    if db::sqlite_wal_reset_fixed(&sqlite_version) {
+        println!("[doctor] OK sqlite {sqlite_version}: WAL-reset race fixed; concurrent-local use permitted");
+    } else {
+        println!("[doctor] WARN sqlite {sqlite_version}: predates the WAL-reset fix (3.51.3 / 3.44.6 / 3.50.7); multi-connection use is not certified");
+    }
     let expected_tables = [
         "memories",
         "decisions",
@@ -41,6 +47,14 @@ pub fn run_doctor_cli(paths: &auth::CortexPaths) {
         "cluster_members",
         "memories_fts",
         "decisions_fts",
+        "brain_meta",
+        "records",
+        "revisions",
+        "record_heads",
+        "commits",
+        "change_items",
+        "outbox",
+        "operation_ledger",
     ];
     let missing_tables: Vec<&str> = expected_tables.iter().copied().filter(|table| !db::table_exists(&conn, table)).collect();
     if missing_tables.is_empty() {

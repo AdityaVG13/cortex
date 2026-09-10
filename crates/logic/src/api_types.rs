@@ -124,6 +124,10 @@ pub struct StoreRequest {
     pub goal_id: Option<i64>,
     #[serde(default, rename = "supersedesId")]
     pub supersedes_id: Option<i64>,
+    /// Principal-scoped idempotency key; `Idempotency-Key` header is the
+    /// transport equivalent.
+    #[serde(default, alias = "idempotencyKey")]
+    pub idempotency_key: Option<String>,
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportPayload {
@@ -186,4 +190,8 @@ impl Default for ImportOptions {
 pub struct ImportCounts {
     pub memories: usize,
     pub decisions: usize,
+    /// Rows whose text was changed by secret redaction before persist.
+    pub redacted: usize,
+    /// Rows skipped: empty after redaction/trim.
+    pub excluded: usize,
 }

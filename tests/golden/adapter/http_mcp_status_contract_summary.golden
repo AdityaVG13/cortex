@@ -130,9 +130,11 @@
           "policyMode",
           "rerankRoute",
           "results",
+          "routes",
           "saved",
           "semanticRoute",
           "spent",
+          "status",
           "tier",
           "tokenUsageLine"
         ],
@@ -142,7 +144,9 @@
           "method",
           "relevance",
           "source",
+          "status",
           "tokens",
+          "validFrom",
           "why"
         ],
         "resultCount": 1,
@@ -169,9 +173,11 @@
           "policyMode",
           "rerankRoute",
           "results",
+          "routes",
           "saved",
           "semanticRoute",
           "spent",
+          "status",
           "tier",
           "tokenUsageLine"
         ],
@@ -181,7 +187,9 @@
           "method",
           "relevance",
           "source",
+          "status",
           "tokens",
+          "validFrom",
           "why"
         ],
         "resultCount": 1,
@@ -201,6 +209,7 @@
         "fieldKeys": [
           "count",
           "matches",
+          "status",
           "tokenUsage",
           "tokenUsageLine"
         ],
@@ -234,15 +243,21 @@
           "capsules",
           "profile",
           "savings",
+          "status",
           "tokenEstimate",
           "tokenUsage",
           "tokenUsageLine"
         ],
         "savingsKeys": [
+          "baseline",
           "percent",
+          "quantity",
           "rawBaseline",
+          "reasoning_tokens",
           "saved",
-          "served"
+          "served",
+          "tokenizer",
+          "unit"
         ],
         "tokenEstimateKind": "number",
         "tokenUsageKeys": [
@@ -275,6 +290,7 @@
           "mode",
           "next_decisions_offset",
           "next_memories_offset",
+          "status",
           "truncated",
           "version"
         ],
@@ -322,7 +338,9 @@
         "decisionsImportedAtLeastOne": true,
         "decisionsImportedKind": "number",
         "fieldKeys": [
-          "imported"
+          "capture",
+          "imported",
+          "status"
         ],
         "importedKeys": [
           "decisions",
@@ -349,9 +367,11 @@
           "policyMode",
           "rerankRoute",
           "results",
+          "routes",
           "saved",
           "semanticRoute",
           "spent",
+          "status",
           "tier",
           "tokenUsageLine"
         ],
@@ -361,7 +381,9 @@
           "method",
           "relevance",
           "source",
+          "status",
           "tokens",
+          "validFrom",
           "why"
         ],
         "resultCount": 1,
@@ -384,37 +406,16 @@
         "resultKeys": [
           "tools"
         ],
-        "toolCount": 29,
+        "toolCount": 8,
         "toolNames": [
-          "cortex_agent_feedback_record",
-          "cortex_agent_feedback_stats",
-          "cortex_boot",
-          "cortex_boot_audit",
-          "cortex_conflicts_get",
-          "cortex_conflicts_list",
-          "cortex_conflicts_resolve",
-          "cortex_consensus_promote",
-          "cortex_diary",
-          "cortex_digest",
-          "cortex_eval_run",
-          "cortex_focus_end",
-          "cortex_focus_start",
-          "cortex_focus_status",
-          "cortex_forget",
-          "cortex_health",
-          "cortex_lastCall",
-          "cortex_memory_decay_run",
-          "cortex_peek",
-          "cortex_permissions_grant",
-          "cortex_permissions_list",
-          "cortex_permissions_revoke",
-          "cortex_recall",
-          "cortex_recall_policy_explain",
-          "cortex_reconnect",
-          "cortex_resolve",
-          "cortex_semantic_recall",
-          "cortex_store",
-          "cortex_unfold"
+          "cortex_capabilities",
+          "cortex_checkpoint",
+          "cortex_commit",
+          "cortex_expand",
+          "cortex_feedback",
+          "cortex_orient",
+          "cortex_query",
+          "cortex_resolve"
         ]
       },
       "id": "mcp-tools-list",
@@ -500,7 +501,8 @@
         "body": {
           "error": "Unauthorized",
           "fieldKeys": [
-            "error"
+            "error",
+            "status"
           ]
         },
         "id": "http-store-missing-auth",
@@ -513,7 +515,8 @@
         "body": {
           "error": "Unauthorized",
           "fieldKeys": [
-            "error"
+            "error",
+            "status"
           ]
         },
         "id": "http-export-missing-auth",
@@ -526,7 +529,8 @@
         "body": {
           "error": "Unauthorized",
           "fieldKeys": [
-            "error"
+            "error",
+            "status"
           ]
         },
         "id": "http-import-missing-auth",

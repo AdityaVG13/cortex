@@ -2,80 +2,101 @@
 
 # MCP Tool Reference
 
-> All 29 tools exposed by the Cortex MCP server. Source of truth: `crates/daemon/src/handlers/mcp/`.
+> `tools/list` advertises the **eight semantic operations** below. Source of truth:
+> `crates/daemon/src/handlers/operations/`. A small set of legacy names remains
+> callable by exact name and routes onto those operations or a specialised
+> dispatcher. Removed historical names return `UNKNOWN_TOOL` with a replacement
+> hint — they are never half-advertised.
 
----
+There is **no HTTP listener** in this runtime. MCP is local stdio
+(`cortex mcp --agent <name>`).
 
-## Core
-
-| Tool | Required | Optional | What it does |
-|---|---|---|---|
-| `cortex_boot` | — | `agent`, `budget`, `profile` | Session boot prompt from identity, delta, and current-truth capsules |
-| `cortex_boot_audit` | — | `agent`, `limit` | Read recent boot audit rows and token/capsule metadata |
-| `cortex_peek` | `query` | `limit` | Headline-only relevance check (~80% cheaper than recall; declared target, not yet measured/pinned — no claim) |
-| `cortex_recall` | `query` | `budget`, `policyMode`, `k`, `agent`, `taskClass`, `adaptive` | Clock-Quorum Recall over write, truth, task, and history clocks |
-| `cortex_semantic_recall` | `query` | `budget`, `k`, `agent` | Named CQR surface; same engine as `cortex_recall`, no embedding model |
-| `cortex_recall_policy_explain` | `query` | `budget`, `policyMode`, `k`, `pool_k`, `agent` | Explain ranking: why these results, in this order |
-| `cortex_store` | `decision` | `context`, `type`, `source_agent`, `confidence`, `reasoning_depth` | Persist a decision with conflict detection |
-| `cortex_unfold` | `sources` | — | Expand memory sources to full text (use after peek) |
-| `cortex_health` | — | — | System health, DB stats, memory counts |
-| `cortex_digest` | — | — | Daily summary: activity, savings, top recalls |
-
-## Memory management
+## The eight operations
 
 | Tool | Required | Optional | What it does |
 |---|---|---|---|
-| `cortex_forget` | `source` | — | Decay matching entries (score × 0.3) |
-| `cortex_resolve` | `keepId`, `action` | `supersededId` | Resolve a disputed decision pair (keep or merge) |
-| `cortex_memory_decay_run` | — | `includeAging`, `cleanupExpired` | Run maintenance: decay, aging, expired cleanup |
-| `cortex_lastCall` | — | `kind`, `agent` | Fetch most recent memory, decision, or event |
+| `cortex_capabilities` | — | — | Operations, Lens profiles, statuses, brain epochs, aliases, removed-tool map |
+| `cortex_orient` | — | `task`, `thread`, `budget`, `evidence`, `observation_scope`, `observations` | Situation brief + optional attributed V5 observations |
+| `cortex_query` | `need` | `profile`, `needs[]`, `thread`, `time`, `budget`, `evidence`, `paths[]`, `symbols[]`, `observation_scope`, `observations` | A View of Cards plus a separate `observations` section for V5 capture hits |
+| `cortex_expand` | `alias`+`receipt` or `reference` | — | Exact source for a Card alias, `decision::N`, or V5 `obs:<source_id>` |
+| `cortex_commit` | `entries[]` or `decision` | `idempotency_key`, `return_view`, `retention_class` | Atomic deposit; Receipt with durability vector; same key + same payload replays |
+| `cortex_checkpoint` | `thread` | `goal`, `state`, `note`, `action` | Durable Thread checkpoint / obligations / attempts |
+| `cortex_resolve` | `record`+`rationale` (or legacy `keepId`+`action`) | `considered[]`, `body` | Resolution revision over competing heads; rejected evidence kept |
+| `cortex_feedback` | `outcome` | `taskClass`, `memorySources[]`, `qualityScore`, `notes` | Outcome telemetry; usefulness stays separate from truth |
 
-## Conflicts
+Every response carries a protocol `status`: `ok`, `partial`, `no_match`,
+`ambiguous`, `needs_more_budget` (+`required_plan_bytes`), `projection_pending`,
+`resnapshot_required`, `unavailable`, `denied`, `outcome_unknown`,
+`invalid_request`.
 
-| Tool | Required | Optional | What it does |
-|---|---|---|---|
-| `cortex_conflicts_list` | — | `status`, `classification`, `conflictId`, `limit` | List conflicts with filters |
-| `cortex_conflicts_get` | `conflictId` | — | Fetch one conflict by ID |
-| `cortex_conflicts_resolve` | `action` | `winnerId`, `keepId`, `supersededId`, `loserId`, `conflictId`, `classification`, `similarity`, `notes`, `resolvedBy` | Resolve with winner + metadata |
-| `cortex_consensus_promote` | — | `limit`, `minMargin`, `dryRun` | Auto-resolve when trust margin is clear |
+## Working legacy aliases (callable, not advertised)
 
-## Focus sessions
+| Legacy name | Routes to | Notes |
+|---|---|---|
+| `cortex_boot` | orient | Situation brief (not a separate boot compiler tool) |
+| `cortex_recall` / `cortex_peek` / `cortex_semantic_recall` | query (legacy shapes) | CQR result envelopes preserved |
+| `cortex_store` | commit | |
+| `cortex_unfold` | expand | |
+| `cortex_conflicts_resolve` | resolve | |
+| `cortex_focus_start` / `cortex_focus_end` | checkpoint | |
+| `cortex_agent_feedback_record` | feedback (legacy shape) | |
+| `cortex_health` | specialised health payload | Not the capabilities envelope |
 
-| Tool | Required | Optional | What it does |
-|---|---|---|---|
-| `cortex_focus_start` | `label` | `agent` | Start focus session (context checkpoint) |
-| `cortex_focus_end` | `label` | `agent` | End session, consolidate into summary |
-| `cortex_focus_status` | — | `agent` | Active/recent sessions and savings |
+## Specialised legacy surfaces that still dispatch
 
-## Agent telemetry
+| Tool | What it does |
+|---|---|
+| `cortex_health` | DB stats / memory counts |
+| `cortex_digest` | Daily activity digest |
+| `cortex_lastCall` | Latest memory/decision/event |
+| `cortex_agent_feedback_stats` | Reliability trends |
+| `cortex_permissions_list` / `_grant` / `_revoke` | Client permission ACL |
 
-| Tool | Required | Optional | What it does |
-|---|---|---|---|
-| `cortex_agent_feedback_record` | `outcome` | `agent`, `taskClass`, `outcomeScore`, `qualityScore`, `latencyMs`, `retries`, `tokensUsed`, `memorySources`, `notes` | Record task outcome with metrics |
-| `cortex_agent_feedback_stats` | — | `horizonDays`, `limit`, `taskClass`, `agent` | Reliability trends from outcomes |
-| `cortex_eval_run` | — | `horizonDays` | Conflict pressure + resolution snapshot |
+## Removed names (UNKNOWN_TOOL)
 
-## Permissions
+These no longer have a dispatcher. `cortex_capabilities.removed_tools` maps
+each to a replacement:
 
-| Tool | Required | Optional | What it does |
-|---|---|---|---|
-| `cortex_permissions_list` | — | — | List permission grants |
-| `cortex_permissions_grant` | `client`, `permission` | `scope` | Grant read / write / admin |
-| `cortex_permissions_revoke` | `client`, `permission` | `scope` | Revoke a grant |
+`cortex_boot_audit`, `cortex_diary`, `cortex_forget`, `cortex_reconnect`,
+`cortex_recall_policy_explain`, `cortex_focus_status`, `cortex_conflicts_list`,
+`cortex_conflicts_get`, `cortex_consensus_promote`, `cortex_memory_decay_run`,
+`cortex_eval_run`.
 
-## Session
+Calling a removed name never returns a fabricated success.
 
-| Tool | Required | Optional | What it does |
-|---|---|---|---|
-| `cortex_diary` | — | `accomplished`, `nextSteps`, `decisions`, `pending`, `knownIssues` | Write session state for cross-session continuity |
-| `cortex_reconnect` | — | `agent`, `model` | Re-register after daemon restart or disconnect |
+## V5 observation bridge
 
----
+`cortex_query` / `cortex_orient` attach a separate `observations` object when
+registered capture sources exist. Hits are **attributed observations**, never
+CQR Cards:
+
+```json
+"observations": {
+  "status": "ready",
+  "scope": "project",
+  "count": 1,
+  "projection_pending": 0,
+  "items": [{
+    "source_id": "…",
+    "source_key": "worklog",
+    "role": "tool_report",
+    "preview": "…",
+    "expand": "obs:…",
+    "trust": {"kind": "attributed_observation", "instruction": false, "privilege": "none", "provenance": "worklog"}
+  }],
+  "note": "Attributed observations, not CQR facts. Expand obs:<source_id> for exact text."
+}
+```
+
+- Default scope is `project` (`observation_scope` overrides).
+- Opt out with `observations: false`.
+- `cortex_expand` `{"reference":"obs:<source_id>"}` returns the exact retained text with the same trust envelope.
+- Capture never changes CQR admission, status, or Card epistemic state.
 
 ## Quick reference
 
-- **Recall budget** defaults to `200` tokens. Policy modes: `fast`, `balanced`, `deep`.
+- **Recall budget** defaults to `200` tokens on legacy recall surfaces.
 - **Conflict classes**: `AGREES`, `CONTRADICTS`, `REFINES`, `UNRELATED`.
 - **Feedback outcomes**: `success`, `partial`, `failure`.
 - **Permission levels**: `read`, `write`, `admin`. Default scope: `*`.
-- **Progressive disclosure**: `peek` (headlines) → `unfold` (full text of selected items) → `recall` (full search).
+- **Progressive disclosure**: `cortex_query` (View + aliases) → `cortex_expand` (exact source).

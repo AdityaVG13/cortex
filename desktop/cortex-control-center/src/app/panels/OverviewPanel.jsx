@@ -10,12 +10,16 @@ import { TaskItem } from "../components/TaskItem.jsx";
 import { LockItem } from "../components/LockItem.jsx";
 import { FeedItem } from "../components/FeedItem.jsx";
 import { ActivityItem } from "../components/ActivityItem.jsx";
+import { BrainHealthStrip } from "../components/BrainHealthStrip.jsx";
+import { normalizeBrainHealth } from "../brain-health.js";
 function OverviewPanel() { const { panel, stats, tasks, locks, savings, conflictPairs,
     editorSetup, showMissionMetricLegend, setShowMissionMetricLegend, showMissionCompactUnits,
     setShowMissionCompactUnits, isSettingUpEditors, effectiveReducedMotion, invokeRef, changePanel, normalizedSessions, editorSetupSummary, memoryLoad,
     formatCurrency, formatMissionTokenValue, runRefreshAll, openEditorSetupWizard, daemonSysStatus, pendingTasks, claimedTasks, monteCarloProjection,
     bootSavingsMomentum, latestRecallHitRate, recallWindowAverage, recallWindowSpread,
-    topActivityEntries, topFeedEntries, recentOverviewTasks, firstRunReadiness, handleFirstRunAction, hostLabel, canSetupEditors, } = useDashboard();
+    topActivityEntries, topFeedEntries, recentOverviewTasks, firstRunReadiness, handleFirstRunAction, hostLabel, canSetupEditors,
+    healthMeta, setCapturePolicy, rebuildReflex, } = useDashboard();
+  const brainHealth = normalizeBrainHealth(healthMeta?.brain);
   const setupTitle = invokeRef.current
       ? "Preview and register Cortex MCP in supported clients"
       : "Setup MCP requires the desktop app IPC bridge", metricCards = [ ["cyan", "memory", "Memories", typeof stats.memories == "number" ? stats.memories : 0],
@@ -121,6 +125,7 @@ function OverviewPanel() { const { panel, stats, tasks, locks, savings, conflict
               </span>
             </button>
           </div>
+          <BrainHealthStrip brainHealth={brainHealth} onCapturePolicy={setCapturePolicy} onReflexRebuild={rebuildReflex} />
           {editorSetupSummary.results.length ? ( <div className="editor-setup-panel">
               <div className="editor-setup-header">
                 <div>

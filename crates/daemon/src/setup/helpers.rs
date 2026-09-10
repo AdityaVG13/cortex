@@ -2,15 +2,7 @@ use super::types::StepResult;
 use crate::auth;
 use std::fs;
 use std::path::{Path, PathBuf};
-pub(crate) fn daemon_port() -> u16 {
-    auth::CortexPaths::resolve().port
-}
-pub(crate) fn daemon_base_url() -> String {
-    format!("http://localhost:{}", daemon_port())
-}
-pub(crate) fn daemon_url(path: &str) -> String {
-    format!("{}{}", daemon_base_url(), path)
-}
+
 pub(crate) fn rollback_team_setup(conn: &rusqlite::Connection) {
     let _ = conn.execute_batch("ROLLBACK");
 }

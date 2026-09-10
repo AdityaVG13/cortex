@@ -255,3 +255,4 @@ tests/artifacts/perf/
 
 # Cursor/agent upgrade scratch artifacts
 claude-upgrade-progress.json
+.empryo

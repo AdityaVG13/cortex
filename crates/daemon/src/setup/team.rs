@@ -2,16 +2,45 @@ use super::helpers::{arg_value, persist_team_owner_token, restore_previous_token
 use crate::auth;
 use crate::db;
 use std::fs;
+
+/// Coherent copy of the target database (WAL included via the online backup
+/// API) in a temporary directory. Returns the directory guard and the copy path.
+fn dry_run_copy(real_db_path: &std::path::Path) -> Result<(tempfile::TempDir, std::path::PathBuf), String> {
+    let dir = tempfile::Builder::new().prefix("cortex-migrate-dry-run-").tempdir().map_err(|e| e.to_string())?;
+    let copy = dir.path().join("cortex.db");
+    if real_db_path.exists() {
+        let source = db::open(real_db_path).map_err(|e| e.to_string())?;
+        let mut dest = rusqlite::Connection::open(&copy).map_err(|e| e.to_string())?;
+        let backup = rusqlite::backup::Backup::new(&source, &mut dest).map_err(|e| e.to_string())?;
+        backup.run_to_completion(64, std::time::Duration::from_millis(5), None).map_err(|e| e.to_string())?;
+    }
+    Ok((dir, copy))
+}
 pub async fn run_setup_team(args: &[String], dry_run: bool) {
     // Resolve from the CLI args (falling back to env/defaults) so the global
     // `--home`/`--db` flags the validator accepts actually select the target.
     // The previous env-only resolution silently migrated the default home
     // while `--home` pointed elsewhere.
     let paths = auth::CortexPaths::resolve_from_args(args);
-    let db_path = paths.db.clone();
-    if let Some(parent) = db_path.parent() {
+    let real_db_path = paths.db.clone();
+    if let Some(parent) = real_db_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    // A dry run never touches the real database: schema initialization and
+    // migrations below are real writes, so the preview runs against a coherent
+    // online-backup copy in a scratch directory that is removed afterwards.
+    let scratch = if dry_run {
+        match dry_run_copy(&real_db_path) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                eprintln!("  [FAIL] Cannot prepare dry-run copy: {e}");
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let db_path = scratch.as_ref().map(|(_, path)| path.clone()).unwrap_or_else(|| real_db_path.clone());
     let conn = match db::open(&db_path) {
         Ok(v) => v,
         Err(e) => {
@@ -60,24 +89,21 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     eprintln!("  Owner username: {owner}");
     eprintln!();
     if !dry_run && db_path.exists() {
+        // Coherent pre-migration backup through the online backup API; a raw
+        // file copy can miss WAL state.
         let bak_path = db_path.with_extension("db.bak");
         eprint!("  Backing up database to {}... ", bak_path.display());
+        let backup_result = rusqlite::Connection::open(&bak_path).map_err(|e| e.to_string()).and_then(|mut dest| {
+            let backup = rusqlite::backup::Backup::new(&conn, &mut dest).map_err(|e| e.to_string())?;
+            backup.run_to_completion(64, std::time::Duration::from_millis(5), None).map_err(|e| e.to_string())
+        });
         drop(conn);
-        if let Err(e) = fs::copy(&db_path, &bak_path) {
+        if let Err(e) = backup_result {
             eprintln!("FAILED");
             eprintln!("  [FAIL] Backup failed: {e}  -- aborting migration.");
             return;
         }
         eprintln!("done");
-        let wal = db_path.with_extension("db-wal");
-        let shm = db_path.with_extension("db-shm");
-        if wal.exists() {
-            let _ = fs::copy(&wal, bak_path.with_extension("db.bak-wal"));
-        }
-        if shm.exists() {
-            let _ = fs::copy(&shm, bak_path.with_extension("db.bak-shm"));
-        }
-    } else if !dry_run {
     }
     let conn = match db::open(&db_path) {
         Ok(v) => v,

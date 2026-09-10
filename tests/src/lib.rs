@@ -30,5 +30,5 @@ pub fn cortex_bin() -> std::path::PathBuf {
         })
 }
 
-pub use env::{lock, lock_async, ScopedEnvVar};
+pub use env::{in_subprocess, lock, lock_async};
 pub use support::{runtime_state, solo_state, team_state, test_conn};

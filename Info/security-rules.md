@@ -141,7 +141,7 @@ Cortex does not execute outbound HTTP requests from user-provided memory payload
 | No at-rest encryption by default | SQLCipher requires custom build |
 | No binary code signing | Targeted for future release |
 | Token protection = filesystem permissions | `cortex.token` relies on OS-level file access control |
-| No built-in API rate limiting | Optimized for trusted local/team deployments |
+| Rate limiting is per-IP sliding-window only (Default/Recall/Store/Boot classes; 100/min non-loopback, 10 000/min loopback, 10 auth failures/min; every auth path including `?token=` SSE routes is charged) | No per-user or per-token quotas; tune with `CORTEX_RATE_LIMIT_*` |
 | No dedicated access audit log | Planned for future version |
 
 ---

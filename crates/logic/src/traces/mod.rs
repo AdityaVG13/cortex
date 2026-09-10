@@ -56,7 +56,7 @@ pub fn migrate_history_tables(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn content_hash(text: &str) -> String {
+pub fn content_hash(text: &str) -> String {
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);
     format!("{:016x}", hasher.finish())

@@ -28,19 +28,12 @@ pub(crate) fn mcp_resources() -> Vec<Value> {
 }
 pub(crate) fn mcp_tool_cluster(tool_name: &str) -> &'static str {
     match tool_name {
-        "cortex_boot" | "cortex_boot_audit" | "cortex_reconnect" => "session",
-        "cortex_peek" | "cortex_recall" | "cortex_recall_policy_explain" | "cortex_semantic_recall" | "cortex_unfold" => "recall",
-        "cortex_store"
-        | "cortex_forget"
-        | "cortex_resolve"
-        | "cortex_conflicts_list"
-        | "cortex_conflicts_get"
-        | "cortex_conflicts_resolve"
-        | "cortex_consensus_promote"
-        | "cortex_memory_decay_run"
-        | "cortex_eval_run" => "memory-governance",
-        "cortex_focus_start" | "cortex_focus_end" | "cortex_focus_status" | "cortex_diary" => "continuity",
-        "cortex_agent_feedback_record" | "cortex_agent_feedback_stats" | "cortex_health" | "cortex_digest" | "cortex_lastCall" => "observability",
+        "cortex_boot" => "orient",
+        "cortex_orient" => "orient",
+        "cortex_peek" | "cortex_recall" | "cortex_semantic_recall" | "cortex_unfold" | "cortex_query" | "cortex_expand" => "recall",
+        "cortex_store" | "cortex_commit" | "cortex_resolve" | "cortex_conflicts_resolve" => "memory-governance",
+        "cortex_focus_start" | "cortex_focus_end" | "cortex_checkpoint" => "continuity",
+        "cortex_agent_feedback_record" | "cortex_agent_feedback_stats" | "cortex_feedback" | "cortex_health" | "cortex_digest" | "cortex_lastCall" => "observability",
         "cortex_permissions_list" | "cortex_permissions_grant" | "cortex_permissions_revoke" => "admin",
         _ => "other",
     }
@@ -106,10 +99,24 @@ pub(crate) fn tool_name_suggestions(provided: &str) -> Vec<String> {
     if needle.is_empty() {
         return Vec::new();
     }
-    let mut scored = mcp_tools()
+    let mut candidates: Vec<String> = mcp_tools()
         .into_iter()
-        .filter_map(|tool| {
-            let name = tool.get("name").and_then(Value::as_str)?.to_string();
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    candidates.extend(
+        crate::handlers::mcp::legacy_mcp_tools()
+            .into_iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string)),
+    );
+    if let Some(replacement) = crate::handlers::mcp::removed_tool_replacements()
+        .get(&needle)
+        .and_then(Value::as_str)
+    {
+        candidates.push(replacement.to_string());
+    }
+    let mut scored = candidates
+        .into_iter()
+        .filter_map(|name| {
             let lower = name.to_ascii_lowercase();
             let short = lower.strip_prefix("cortex_").unwrap_or(&lower);
             let score = if lower == needle || short == needle {

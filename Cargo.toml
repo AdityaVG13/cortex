@@ -3,7 +3,7 @@ members = ["crates/*", "tests"]
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 # Profilable release: symbols + frame pointers stay; default `release` stays size-optimized.

@@ -2,7 +2,7 @@
 
 # Connecting to Cortex
 
-> One daemon, one brain, every tool. Connect any AI that speaks HTTP or MCP.
+> One local `cortex` binary, one brain, every tool. Connect any AI that speaks MCP or CLI.
 
 ---
 
@@ -42,7 +42,7 @@ claude plugin install cortex@cortex-marketplace
 cortex status --json
 ```
 
-Expected status: `ready`. Repair: if the plugin reports `APP_INIT_REQUIRED`, open Cortex Control Center or start your explicit local runtime, then retry the MCP tool.
+Expected status: `ready`. Repair: if the plugin reports a missing binary, build/install `cortex` or set `CORTEX_APP_BINARY`, then restart the MCP client. SessionStart boots and MCP tools both spawn local `cortex` — they do not need an HTTP daemon.
 
 </details>
 
@@ -70,7 +70,7 @@ cortex status --json
 ```
 Use `--agent gemini` for Gemini, `--agent cline` for Cline. The proxy also infers the parent client automatically, but explicit `--agent` is the stable path.
 
-Expected status: `ready`; repair is `APP_INIT_REQUIRED` -> start/open Cortex first, then restart the MCP client.
+Expected status: `ready`; repair is a missing/unready local brain via `cortex status --json`, then restart the MCP client.
 
 </details>
 
@@ -285,7 +285,7 @@ curl http://localhost:7437/readiness
 | **Connection refused** | Run `cortex status --json` and follow `nextAction`; open Control Center or run `cortex serve` for CLI-only local mode. |
 | **403 Missing X-Cortex-Request** | Add `X-Cortex-Request: true` header to every non-health request. |
 | **401 Unauthorized** | Refresh token from `~/.cortex/cortex.token`. |
-| **APP_INIT_REQUIRED** | The client is attach-only. Open Cortex Control Center or explicitly start the local runtime, then retry. |
+| **No local cortex binary** | Plugin MCP/boot spawn a local `cortex` binary. Build/install one (`cargo build -p cortex-daemon`) or set `CORTEX_APP_BINARY`. |
 | **MCP tools missing after add** | Restart your MCP client. Servers added mid-session take effect next session. |
 | **Empty boot prompt** | No memories stored yet. Store some context and boot again. |
 | **Honest miss / no results** | CQR does not return a plausible neighbor without lexical, alias, task, history, or graph evidence. Add a path, symbol, alias, or citation rather than expecting paraphrase match. |
@@ -298,7 +298,7 @@ curl http://localhost:7437/readiness
 ```
 cortex/
 ├─ crates/
-│  ├─ daemon/           HTTP, MCP, SQLite, CQR collection, boot compiler
+│  ├─ daemon/           CLI, MCP stdio, hooks, SQLite, CQR collection, boot compiler
 │  └─ logic/            clocks, graph, traces, conflict, budgets
 ├─ tests/contracts/     public daemon contracts
 ├─ desktop/cortex-control-center/

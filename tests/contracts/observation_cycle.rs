@@ -1,0 +1,303 @@
+use cortex_daemon::runtime::{
+    CortexRuntime,
+    cycle::NeedSpec,
+    observation::{ObservationEvent, SourceSpec},
+};
+use cortex_tests::support::run_with_cx;
+
+fn need() -> NeedSpec {
+    NeedSpec {
+        id: "active".into(),
+        scope: "repo".into(),
+        cues: vec!["retry".into()],
+        max_results: 128,
+        max_bytes: 65536,
+        ttl_seconds: 3600,
+        learned: false,
+    }
+}
+#[test]
+fn ready_literal_pull_does_not_wait_for_an_unrelated_writer() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("brain.db");
+        let runtime = CortexRuntime::open_db(&path).unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes", "repo"))
+            .await
+            .unwrap();
+        let receipt = runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                ObservationEvent {
+                    event_key: "one".into(),
+                    text: "retry evidence".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .state()
+            .db
+            .lock(&cx)
+            .await
+            .unwrap()
+            .busy_timeout(std::time::Duration::ZERO)
+            .unwrap();
+        let mut other = rusqlite::Connection::open(&path).unwrap();
+        let writer = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let pull = runtime
+            .query_observations(&cx, "repo", "retry", 128, 65536, false)
+            .await
+            .unwrap();
+        assert_eq!(pull.status, "ready");
+        assert_eq!(pull.source_refs, vec![receipt.source_id]);
+        writer.rollback().unwrap();
+    });
+}
+#[test]
+fn ready_literal_pull_does_not_write_subscription_state() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes", "repo"))
+            .await
+            .unwrap();
+        runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                ObservationEvent {
+                    event_key: "one".into(),
+                    text: "retry requires idempotency".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let active = runtime.subscribe_observations(&cx, need()).await.unwrap();
+        let changes = {
+            let conn = runtime.state().db.lock(&cx).await.unwrap();
+            conn.execute_batch("CREATE TEMP TRIGGER reject_pull_registration BEFORE INSERT ON observation_needs BEGIN SELECT RAISE(ABORT,'pull attempted subscription write'); END;").unwrap();
+            conn.total_changes()
+        };
+        let pull = runtime
+            .query_observations(&cx, "repo", "retry", 128, 65536, false)
+            .await
+            .unwrap();
+        assert_eq!(pull.status, "ready");
+        assert_eq!(pull.source_refs, active.source_refs);
+        assert_eq!(pull.payload, active.payload);
+        let conn = runtime.state().db.lock(&cx).await.unwrap();
+        assert_eq!(
+            conn.total_changes(),
+            changes,
+            "ready literal pull must not write or churn subscriptions"
+        );
+        let needs: i64 = conn
+            .query_row("SELECT count(*) FROM observation_needs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(needs, 1, "the existing subscription must remain intact");
+    });
+}
+
+#[test]
+fn capture_updates_reverse_need_index_in_its_transaction() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes", "repo"))
+            .await
+            .unwrap();
+        runtime.subscribe_observations(&cx, need()).await.unwrap();
+        runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                ObservationEvent {
+                    event_key: "one".into(),
+                    text: "retry requires idempotency".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let conn = runtime.state().db.lock(&cx).await.unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM observation_matches WHERE need_id='active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "capture must maintain already active reverse subscriptions before acknowledgement"
+        );
+    });
+}
+
+#[test]
+fn delta_views_equal_full_recomputation_and_presence_never_survives_changes() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes", "repo"))
+            .await
+            .unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("foreign", "elsewhere"))
+            .await
+            .unwrap();
+        runtime.subscribe_observations(&cx, need()).await.unwrap();
+        let mut expected = std::collections::BTreeSet::new();
+        let mut sources = Vec::new();
+        for i in 0..80 {
+            let text = if i % 3 == 0 {
+                "retry exception"
+            } else {
+                "unrelated artifact"
+            };
+            let receipt = runtime
+                .observe(
+                    &cx,
+                    "notes",
+                    "g",
+                    ObservationEvent {
+                        event_key: i.to_string(),
+                        text: text.into(),
+                        observed_at: None,
+                    },
+                )
+                .await
+                .unwrap();
+            if i % 3 == 0 {
+                expected.insert(receipt.source_id.clone());
+            }
+            sources.push(receipt.source_id);
+            if i % 7 == 0 {
+                let id = &sources[i / 2];
+                runtime
+                    .retract_observation(&cx, id, "withdrawn")
+                    .await
+                    .unwrap();
+                expected.remove(id);
+            }
+            let view = runtime
+                .prepare_observations(&cx, "active", "context-1", None)
+                .await
+                .unwrap();
+            assert_eq!(view.status, "ready");
+            assert_eq!(
+                view.evidence
+                    .iter()
+                    .map(|e| e.source_id.clone())
+                    .collect::<std::collections::BTreeSet<_>>(),
+                expected
+            );
+        }
+        let foreign = runtime
+            .observe(
+                &cx,
+                "foreign",
+                "g",
+                ObservationEvent {
+                    event_key: "f".into(),
+                    text: "retry foreign secret".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let initial = runtime
+            .prepare_observations(&cx, "active", "context-1", None)
+            .await
+            .unwrap();
+        assert!(
+            initial
+                .evidence
+                .iter()
+                .all(|e| e.source_id != foreign.source_id)
+        );
+        let present = runtime
+            .prepare_observations(&cx, "active", "context-1", initial.delivery_id.as_deref())
+            .await
+            .unwrap();
+        assert_eq!(present.payload_bytes, 0);
+        let compacted = runtime
+            .prepare_observations(&cx, "active", "context-2", initial.delivery_id.as_deref())
+            .await
+            .unwrap();
+        assert!(compacted.payload_bytes > 0);
+        runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                ObservationEvent {
+                    event_key: "new-exception".into(),
+                    text: "retry must stop on revoked permit".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let changed = runtime
+            .prepare_observations(&cx, "active", "context-1", initial.delivery_id.as_deref())
+            .await
+            .unwrap();
+        assert!(changed.payload.contains("revoked permit"));
+        assert_ne!(initial.fingerprint, changed.fingerprint);
+        runtime
+            .set_source_enabled(&cx, "notes", false)
+            .await
+            .unwrap();
+        let revoked = runtime
+            .prepare_observations(&cx, "active", "context-1", changed.delivery_id.as_deref())
+            .await
+            .unwrap();
+        assert!(revoked.evidence.is_empty());
+        assert_eq!(revoked.payload_bytes, 0);
+    });
+}
+
+#[test]
+fn bounded_views_disclose_incomplete_results_instead_of_delivering_prefixes() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes", "repo"))
+            .await
+            .unwrap();
+        runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                ObservationEvent {
+                    event_key: "a".into(),
+                    text: "retry long evidence must remain exact".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut spec = need();
+        spec.max_bytes = 5;
+        let view = runtime.subscribe_observations(&cx, spec).await.unwrap();
+        assert_eq!(view.status, "quota_blocked");
+        assert_eq!(view.payload_bytes, 0);
+        assert!(view.evidence.is_empty());
+    });
+}

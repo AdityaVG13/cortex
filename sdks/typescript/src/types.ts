@@ -229,6 +229,68 @@ export interface CortexForgetResult {
   affected: number;
 }
 
+/** The eight protocol operations. */
+export type CortexOperation =
+  | "capabilities"
+  | "orient"
+  | "query"
+  | "expand"
+  | "commit"
+  | "checkpoint"
+  | "resolve"
+  | "feedback";
+
+/** Response envelope statuses. */
+export type CortexResponseStatus =
+  | "ok"
+  | "partial"
+  | "no_match"
+  | "ambiguous"
+  | "needs_more_budget"
+  | "projection_pending"
+  | "resnapshot_required"
+  | "unavailable"
+  | "denied"
+  | "outcome_unknown"
+  | "invalid_request";
+
+export interface CortexFrontier {
+  provider: string;
+  restore_epoch: string;
+  opaque: string;
+}
+
+export interface CortexDurabilityVector {
+  accepted: boolean;
+  local_commit: CortexFrontier | null;
+  projected_through: Record<string, CortexFrontier>;
+  replicated_through: Record<string, CortexFrontier>;
+  payload_availability: "retained" | "pending" | "unavailable";
+  ack_profile: JsonValue;
+}
+
+export interface CortexReceipt {
+  receipt_id: { namespace: string; value: string };
+  request_id: string;
+  durability: CortexDurabilityVector;
+  entries: Record<string, { namespace: string; value: string }>;
+  aliases: Record<string, { namespace: string; value: string }>;
+  omissions: string[];
+  unresolved_needs: string[];
+}
+
+/** Any operation result: an envelope with a status plus the operation payload. */
+export interface CortexOperationResult {
+  status?: CortexResponseStatus;
+  receipt?: CortexReceipt;
+  [key: string]: unknown;
+}
+
+/** How the client reaches a brain. `http` talks to a daemon; `local` runs
+ *  `cortex --native` style in-process access through a subprocess and never
+ *  wraps HTTP. The choice is explicit, never inferred from a URL. */
+export type CortexTransport = "http" | "local";
+
 export interface CortexShutdownResult {
   shutdown: boolean;
 }

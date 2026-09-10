@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 
 class RecallResultItemBase(TypedDict):
@@ -247,3 +247,40 @@ class ForgetResponse(TypedDict):
 
 class ShutdownResponse(TypedDict):
     shutdown: bool
+
+
+class Frontier(TypedDict):
+    provider: str
+    restore_epoch: str
+    opaque: str
+
+
+class DurabilityVector(TypedDict, total=False):
+    accepted: bool
+    local_commit: Optional[Frontier]
+    projected_through: dict[str, Frontier]
+    replicated_through: dict[str, Frontier]
+    payload_availability: str
+    ack_profile: object
+
+
+class LogicalId(TypedDict):
+    namespace: str
+    value: str
+
+
+class Receipt(TypedDict, total=False):
+    receipt_id: LogicalId
+    request_id: str
+    durability: DurabilityVector
+    entries: dict[str, LogicalId]
+    aliases: dict[str, LogicalId]
+    omissions: list[str]
+    unresolved_needs: list[str]
+
+
+class OperationResult(TypedDict, total=False):
+    """Envelope of one of the eight operations: ``status`` plus payload."""
+
+    status: str
+    receipt: Receipt

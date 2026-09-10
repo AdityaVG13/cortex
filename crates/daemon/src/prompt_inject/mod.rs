@@ -60,7 +60,7 @@ fn output_path_for(file_path: &Path) -> PathBuf {
     out.push(".injected");
     PathBuf::from(out)
 }
-pub async fn run(args: &[String]) {
+pub async fn run(cx: &asupersync::Cx, args: &[String]) {
     if args.iter().any(|arg| matches!(arg.as_str(), "--help" | "-h" | "help")) {
         println!("{USAGE}");
         return;
@@ -73,39 +73,37 @@ pub async fn run(args: &[String]) {
         }
     };
     if config.watch {
-        run_watch_loop(&config.file_path, &config.agent, config.budget).await;
+        run_watch_loop(cx, &config.file_path, &config.agent, config.budget).await;
     } else {
-        if let Err(e) = inject_once(&config.file_path, &config.agent, config.budget).await {
+        if let Err(e) = inject_once(cx, &config.file_path, &config.agent, config.budget).await {
             eprintln!("[prompt-inject] Error: {e}");
             std::process::exit(1);
         }
     }
 }
-async fn inject_once(file_path: &Path, agent: &str, budget: u32) -> Result<(), String> {
+async fn inject_once(cx: &asupersync::Cx, file_path: &Path, agent: &str, budget: u32) -> Result<(), String> {
     let base_prompt = std::fs::read_to_string(file_path).map_err(|e| format!("Failed to read {}: {e}", file_path.display()))?;
-    let cortex_context = fetch_boot_context(agent, budget).await;
+    let cortex_context = fetch_boot_context(cx, agent, budget).await;
     let output = compose_injected_prompt(&base_prompt, &cortex_context);
     let out_path = output_path_for(file_path);
     std::fs::write(&out_path, &output).map_err(|e| format!("Failed to write {}: {e}", out_path.display()))?;
     eprintln!("[prompt-inject] Wrote {} ({} bytes)", out_path.display(), output.len());
     Ok(())
 }
-async fn run_watch_loop(file_path: &Path, agent: &str, budget: u32) {
-    eprintln!("[prompt-inject] Watching {} for changes (Ctrl+C to stop)", file_path.display());
-    let mut last_modified = file_modified(file_path);
-    if let Err(e) = inject_once(file_path, agent, budget).await {
-        eprintln!("[prompt-inject] Initial inject error: {e}");
-    }
+async fn run_watch_loop(cx: &asupersync::Cx, file_path: &Path, agent: &str, budget: u32) {
+    let mut last_modified = None;
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let current = file_modified(file_path);
-        if current != last_modified {
-            last_modified = current;
-            eprintln!("[prompt-inject] File changed, re-injecting...");
-            if let Err(e) = inject_once(file_path, agent, budget).await {
-                eprintln!("[prompt-inject] Re-inject error: {e}");
-            }
+        if cx.checkpoint().is_err() {
+            return;
         }
+        let current = file_modified(file_path);
+        if last_modified != Some(current) {
+            if let Err(err) = inject_once(cx, file_path, agent, budget).await {
+                eprintln!("[prompt-inject] {err}");
+            }
+            last_modified = Some(current);
+        }
+        asupersync::time::sleep(cx.now(), std::time::Duration::from_secs(2)).await;
     }
 }
 fn file_modified(path: &Path) -> u128 {
@@ -116,56 +114,24 @@ fn file_modified(path: &Path) -> u128 {
         .map(|d| d.as_nanos())
         .unwrap_or(0)
 }
-async fn fetch_boot_context(agent: &str, budget: u32) -> String {
-    let token = read_auth_token();
-    let client = match reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(3))
-        .timeout(std::time::Duration::from_secs(7))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return format!("<!-- Cortex: failed to create HTTP client ({e}) -->"),
+async fn fetch_boot_context(cx: &asupersync::Cx, agent: &str, budget: u32) -> String {
+    let paths = crate::auth::CortexPaths::resolve();
+    let runtime = match crate::CortexRuntime::open(&paths) {
+        Ok(runtime) => runtime,
+        Err(e) => return format!("<!-- Cortex: local runtime unavailable ({e}) -->"),
     };
-    let port = crate::auth::CortexPaths::resolve().port;
-    let mut url = match reqwest::Url::parse(&format!("http://127.0.0.1:{port}/boot")) {
-        Ok(u) => u,
-        Err(e) => return format!("<!-- Cortex: invalid boot URL ({e}) -->"),
-    };
+    let state = runtime.state();
+    if state.team_mode && state.default_owner_id.is_none() {
+        return "<!-- Cortex: boot requires a local owner in team mode -->".to_string();
+    }
+    match runtime
+        .boot(cx, crate::runtime::BootInput { agent: agent.to_string(), max_tokens: budget as usize, owner_id: state.default_owner_id })
+        .await
     {
-        let mut query = url.query_pairs_mut();
-        query.append_pair("agent", agent);
-        query.append_pair("budget", &budget.to_string());
-    }
-    let mut req = client.get(url).header("x-cortex-request", "true");
-    if let Some(t) = &token {
-        req = req.header("Authorization", format!("Bearer {t}"));
-    }
-    match req.send().await {
-        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(data) => {
-                let boot = data.get("bootPrompt").and_then(|v| v.as_str()).unwrap_or("(no boot prompt)");
-                format!("<!-- Cortex context (auto-injected) -->\n{boot}\n<!-- end Cortex context -->")
-            }
-            Err(_) => "<!-- Cortex: boot response parse error -->".to_string(),
-        },
-        Ok(resp) => format!("<!-- Cortex: boot returned {} -->", resp.status()),
-        Err(e) => format!("<!-- Cortex: daemon unreachable ({e}) -->"),
-    }
-}
-fn read_auth_token_from_path(path: &Path) -> Option<String> {
-    match std::fs::read_to_string(path) {
-        Ok(token) => {
-            let trimmed = token.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
+        Ok(result) => {
+            let boot = result.boot_prompt;
+            format!("<!-- Cortex context (auto-injected) -->\n{boot}\n<!-- end Cortex context -->")
         }
-        Err(_) => None,
+        Err(e) => format!("<!-- Cortex: boot failed ({e}) -->"),
     }
-}
-fn read_auth_token() -> Option<String> {
-    let path = crate::auth::CortexPaths::resolve().token;
-    read_auth_token_from_path(&path)
 }

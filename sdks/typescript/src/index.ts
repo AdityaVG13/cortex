@@ -15,6 +15,9 @@ import type {
   CortexShutdownResult as ShutdownResult,
   CortexStoreRequest as StoreRequest,
   CortexStoreResult as StoreResult,
+  CortexOperation as Operation,
+  CortexOperationResult as OperationResult,
+  CortexTransport as Transport,
   JsonObject,
   JsonPrimitive,
   JsonValue,
@@ -48,6 +51,11 @@ export type {
   CortexDiaryResult as DiaryResult,
   CortexForgetResult as ForgetResult,
   CortexShutdownResult as ShutdownResult,
+  CortexOperation as Operation,
+  CortexOperationResult as OperationResult,
+  CortexReceipt as Receipt,
+  CortexResponseStatus as ResponseStatus,
+  CortexTransport as Transport,
 } from "./types.js";
 
 const DEFAULT_BASE = "http://127.0.0.1:7437";
@@ -98,7 +106,15 @@ export class CortexClient {
   private timeout: number;
   private sourceAgent: string;
 
-  constructor(options?: { baseUrl?: string; token?: string; timeout?: number; sourceAgent?: string }) {
+  readonly transport: Transport;
+
+  constructor(options?: { baseUrl?: string; token?: string; timeout?: number; sourceAgent?: string; transport?: Transport }) {
+    this.transport = options?.transport ?? "http";
+    if (this.transport !== "http") {
+      throw new Error(
+        "CortexClient over the local transport is provided by the native package entry (cortex mcp --native / hook-event); this HTTP client never wraps a local runtime."
+      );
+    }
     this.baseUrl = normalizeBaseUrl(options?.baseUrl ?? DEFAULT_BASE);
     if (options?.token) {
       this.token = options.token;
@@ -263,5 +279,46 @@ export class CortexClient {
 
   async shutdown(): Promise<ShutdownResult> {
     return this.post("/shutdown");
+  }
+
+  /** One of the eight operations over `POST /op/{operation}`. The envelope
+   *  status is returned verbatim; a non-`ok` status is data, not an exception. */
+  async operation(operation: Operation, args?: JsonObject): Promise<OperationResult> {
+    const resp = await fetch(`${this.baseUrl}/op/${operation}`, {
+      method: "POST",
+      headers: { ...this.headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(args ?? {}),
+      signal: AbortSignal.timeout(this.timeout),
+    });
+    const body = (await resp.json().catch(() => ({}))) as OperationResult;
+    if (!resp.ok && !body.status) {
+      throw new Error(`Cortex /op/${operation}: ${resp.status} ${resp.statusText}`);
+    }
+    return body;
+  }
+
+  capabilities(): Promise<OperationResult> {
+    return this.operation("capabilities");
+  }
+  orient(args: JsonObject = {}): Promise<OperationResult> {
+    return this.operation("orient", args);
+  }
+  query(need: string, args: JsonObject = {}): Promise<OperationResult> {
+    return this.operation("query", { need, ...args });
+  }
+  expand(args: JsonObject): Promise<OperationResult> {
+    return this.operation("expand", args);
+  }
+  commit(args: JsonObject): Promise<OperationResult> {
+    return this.operation("commit", args);
+  }
+  checkpoint(thread: string, args: JsonObject = {}): Promise<OperationResult> {
+    return this.operation("checkpoint", { thread, ...args });
+  }
+  resolve(args: JsonObject): Promise<OperationResult> {
+    return this.operation("resolve", args);
+  }
+  feedback(outcome: "success" | "partial" | "failure", args: JsonObject = {}): Promise<OperationResult> {
+    return this.operation("feedback", { outcome, ...args });
   }
 }

@@ -98,6 +98,7 @@ pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
         for id in crate::graph::resolve_query(conn, &joined) {
             if !frame.entity_ids.contains(&id) {
                 frame.entity_ids.push(id);
+                frame.expanded_entity_ids.push(id);
             }
         }
     }

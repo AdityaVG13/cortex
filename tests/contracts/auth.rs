@@ -1,14 +1,20 @@
 use cortex_daemon::auth::CortexPaths;
-use cortex_tests::{lock, ScopedEnvVar};
+use cortex_tests::in_subprocess;
 use serde_json::Value;
 
 #[test]
 fn cortex_paths_resolve_and_serialize() {
-    let _guard = lock();
-    let _home = ScopedEnvVar::remove("CORTEX_HOME");
-    let _db = ScopedEnvVar::remove("CORTEX_DB");
-    let _port = ScopedEnvVar::remove("CORTEX_PORT");
-    let _bind = ScopedEnvVar::remove("CORTEX_BIND");
+    if !in_subprocess(
+        "cortex_paths_resolve_and_serialize",
+        &[
+            ("CORTEX_HOME", None),
+            ("CORTEX_DB", None),
+            ("CORTEX_PORT", None),
+            ("CORTEX_BIND", None),
+        ],
+    ) {
+        return;
+    }
 
     let paths = CortexPaths::resolve();
     let json = paths.to_json();
@@ -44,12 +50,16 @@ fn cortex_paths_resolve_and_serialize() {
 
 #[test]
 fn cortex_paths_honor_cortex_home() {
-    let _guard = lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let home = dir.path().join("custom-home");
-    let _home = ScopedEnvVar::set("CORTEX_HOME", &home);
-    let _db = ScopedEnvVar::remove("CORTEX_DB");
-
+    if !in_subprocess(
+        "cortex_paths_honor_cortex_home",
+        &[("CORTEX_HOME", Some(home.as_os_str())), ("CORTEX_DB", None)],
+    ) {
+        return;
+    }
+    let home =
+        std::path::PathBuf::from(std::env::var_os("CORTEX_HOME").expect("child home override"));
     let paths = CortexPaths::resolve();
     assert_eq!(paths.home, home, "CORTEX_HOME must become paths.home");
     assert_eq!(paths.db, home.join("cortex.db"));

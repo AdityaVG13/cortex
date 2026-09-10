@@ -427,6 +427,49 @@ pub fn lookup_targets_for_anchors(
     Ok(seen.into_iter().collect())
 }
 
+/// Like `lookup_targets_for_anchors` but reports, per target, the query
+/// anchors that actually matched it. Hardness of a match is decided by the
+/// matched anchor's specificity, never by the strongest anchor in the query.
+pub fn lookup_targets_with_matches(
+    conn: &Connection,
+    anchors: &[QueryAnchor],
+    limit: usize,
+) -> rusqlite::Result<Vec<(ClockTarget, Vec<QueryAnchor>)>> {
+    let mut matched: std::collections::BTreeMap<ClockTarget, Vec<QueryAnchor>> =
+        std::collections::BTreeMap::new();
+    for anchor in anchors {
+        let targets = lookup_targets_for_anchors(conn, std::slice::from_ref(anchor), limit)?;
+        for target in targets {
+            let entry = matched.entry(target).or_default();
+            if !entry.contains(anchor) {
+                entry.push(anchor.clone());
+            }
+        }
+        if matched.len() >= limit {
+            break;
+        }
+    }
+    Ok(matched.into_iter().take(limit).collect())
+}
+
+/// The projected anchor values of one target for a kind: the row's own
+/// namespace evidence (paths it names, hosts it cites).
+pub fn target_anchor_values(
+    conn: &Connection,
+    target: &ClockTarget,
+    kind: AnchorKind,
+) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT a.value FROM clock_anchor_evidence e JOIN clock_anchors a ON a.id = e.anchor_id
+         WHERE e.target_type = ?1 AND e.target_id = ?2 AND a.kind = ?3 ORDER BY a.value ASC LIMIT 64",
+    )?;
+    let rows = stmt.query_map(
+        params![target.target_type, target.target_id, kind.as_str()],
+        |row| row.get::<_, String>(0),
+    )?;
+    Ok(rows.flatten().collect())
+}
+
 pub fn traverse_hops(
     conn: &Connection,
     seeds: &[ClockTarget],

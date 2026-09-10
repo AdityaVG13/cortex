@@ -5,7 +5,9 @@ use super::{
 use crate::handlers::SourceIdentity;
 use crate::state::RuntimeState;
 use serde_json::{json, Value};
-pub async fn handle_mcp_message_with_caller(state: &RuntimeState, msg: &Value, caller_id: Option<i64>, source: Option<&SourceIdentity>) -> Option<Value> {
+pub async fn handle_mcp_message_with_caller(
+    cx: &asupersync::Cx, state: &RuntimeState, msg: &Value, caller_id: Option<i64>, source: Option<&SourceIdentity>,
+) -> Option<Value> {
     let id = msg.get("id").cloned().unwrap_or(Value::Null);
     if !msg.is_object() {
         return Some(mcp_error(id, -32600, "Invalid JSON-RPC request"));
@@ -64,16 +66,22 @@ true}},"serverInfo":{"name":"cortex","version":env!("CARGO_PKG_VERSION")}}),
                 ));
             }
             if required_permission_for_tool(tool_name).is_none() {
+                let mut data = json!({"errorType":"UNKNOWN_TOOL","provided":tool_name,"suggestions":tool_name_suggestions(tool_name),"discoveryHint":
+"Call tools/list for full schemas or read cortex://tooling/tools for a compact catalog.","availableToolCount":mcp_tools().len()});
+                if let Some(replacement) = super::removed_tool_replacements().get(tool_name).and_then(Value::as_str) {
+                    data["removed"] = json!(true);
+                    data["replacement"] = json!(replacement);
+                    data["fixHint"] = json!(format!("Removed tool `{tool_name}`; use `{replacement}`."));
+                }
                 return Some(mcp_error_with_data(
                     id,
                     -32601,
                     &format!("Unknown tool: {tool_name}"),
-                    json!({"errorType":"UNKNOWN_TOOL","provided":tool_name,"suggestions":tool_name_suggestions(tool_name),"discoveryHint":
-"Call tools/list for full schemas or read cortex://tooling/tools for a compact catalog.","availableToolCount":mcp_tools().len()}),
+                    data,
                 ));
             }
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-            match mcp_dispatch(state, caller_id, tool_name, &args, source).await {
+            match mcp_dispatch(cx, state, caller_id, tool_name, &args, source).await {
                 Ok(result) => {
                     let wrapped = if tool_name == "cortex_health" || tool_name == "cortex_digest" {
                         wrap_mcp_tool_result_verbose(state, result)

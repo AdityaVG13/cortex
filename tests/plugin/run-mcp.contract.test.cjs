@@ -1,232 +1,152 @@
 // SPDX-License-Identifier: MIT
 const assert = require('assert/strict');
 const test = require('node:test');
-const { Writable } = require('node:stream');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 
 const {
-  DEFAULT_LOCAL_BASE_URL,
-  resolveRoute,
+  resolveAgent,
   buildMcpArgs,
-  resolveOwnerMode,
-  buildChildEnv,
-  buildAuthHeader,
-  healthCheck,
-  forwardMcpMessage,
+  resolveBridgePlan,
   runMcpBridge
 } = require('../../plugins/cortex-plugin/scripts/run-mcp.cjs');
 
-function memoryWriter() {
-  const chunks = [];
-  const stream = new Writable({
-    write(chunk, _encoding, callback) {
-      chunks.push(chunk.toString('utf8'));
-      callback();
-    }
-  });
-  stream.lines = () => chunks.join('').trim().split(/\n/).filter(Boolean);
-  return stream;
+// Binary fixtures must live outside os.tmpdir() because the production
+// resolver rejects temporary candidate paths.
+const FIXTURE_ROOT = path.join(process.cwd(), 'target', 'plugin-bridge-fixtures');
+
+function makeBinary(name = 'cortex') {
+  fs.mkdirSync(FIXTURE_ROOT, { recursive: true });
+  const binaryPath = path.join(FIXTURE_ROOT, `${name}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  fs.writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  return binaryPath;
 }
 
-test('resolveRoute prefers explicit plugin URL over app URL', () => {
-  const route = resolveRoute(
-    { cortexUrl: 'https://team.cortex.example' },
-    { CORTEX_APP_URL: 'http://127.0.0.1:7437' }
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = () => {};
+  return child;
+}
+
+function emptyHomeEnv(extra = {}) {
+  const missingHome = path.join(FIXTURE_ROOT, `home-missing-${process.pid}`);
+  return {
+    HOME: missingHome,
+    USERPROFILE: '',
+    TEMP: '',
+    TMP: '',
+    CORTEX_APP_BINARY: '',
+    CORTEX_DAEMON_BINARY: '',
+    CORTEX_PLUGIN_CORTEX_BINARY: '',
+    CORTEX_WORKSPACE_ROOT: path.join(missingHome, 'workspace'),
+    CLAUDE_PLUGIN_DATA: path.join(missingHome, 'plugin-data'),
+    ...extra
+  };
+}
+
+test('resolveAgent defaults to claude-code and honors CORTEX_PLUGIN_AGENT', () => {
+  assert.equal(resolveAgent({}), 'claude-code');
+  assert.equal(resolveAgent({ CORTEX_PLUGIN_AGENT: 'codex' }), 'codex');
+});
+
+test('buildMcpArgs is local stdio, not an HTTP proxy', () => {
+  assert.deepEqual(buildMcpArgs('claude-code'), ['mcp', '--agent', 'claude-code']);
+});
+
+test('resolveBridgePlan uses env binary override', () => {
+  const binaryPath = makeBinary();
+  const plan = resolveBridgePlan(
+    emptyHomeEnv({ CORTEX_APP_BINARY: binaryPath, CORTEX_PLUGIN_AGENT: 'codex' })
   );
-  assert.deepEqual(route, {
-    mode: 'remote',
-    url: 'https://team.cortex.example',
-    reason: 'explicit plugin URL',
-    spawnAllowed: false
-  });
+  assert.equal(plan.binaryPath, binaryPath);
+  assert.equal(plan.agent, 'codex');
+  assert.deepEqual(plan.args, ['mcp', '--agent', 'codex']);
+  assert.equal(plan.source, 'env:CORTEX_APP_BINARY');
 });
 
-test('resolveRoute falls back to app URL when explicit URL is absent', () => {
-  const route = resolveRoute({ cortexUrl: '' }, { CORTEX_APP_URL: 'http://127.0.0.1:7437' });
-  assert.deepEqual(route, {
-    mode: 'remote',
-    url: 'http://127.0.0.1:7437',
-    reason: 'app route',
-    spawnAllowed: false
-  });
-});
-
-test('resolveRoute defaults to local HTTP attach-only with no URLs', () => {
-  const route = resolveRoute({ cortexUrl: '' }, {});
-  assert.deepEqual(route, {
-    mode: 'local',
-    url: DEFAULT_LOCAL_BASE_URL,
-    reason: 'local HTTP attach-only',
-    spawnAllowed: false
-  });
-});
-
-test('resolveRoute fails dev prefer app when CORTEX_APP_URL is absent', () => {
-  const route = resolveRoute({ cortexUrl: '' }, { CORTEX_DEV_PREFER_APP: '1' });
-  assert.equal(route.mode, 'fail');
-  assert.equal(route.spawnAllowed, false);
-  assert.match(route.reason, /CORTEX_APP_URL is not set/);
-});
-
-test('buildMcpArgs describes the node HTTP proxy contract', () => {
-  const args = buildMcpArgs(
-    { mode: 'remote', url: 'https://team.cortex.example' },
-    'claude-code'
-  );
-  assert.deepEqual(args, [
-    'http-proxy',
-    '--agent',
-    'claude-code',
-    '--url',
-    'https://team.cortex.example'
-  ]);
-});
-
-test('resolveOwnerMode maps local/team/app routes correctly', () => {
-  assert.equal(resolveOwnerMode({ mode: 'local', reason: 'local HTTP attach-only' }), 'solo-service');
-  assert.equal(resolveOwnerMode({ mode: 'remote', reason: 'explicit plugin URL' }), 'team');
-  assert.equal(resolveOwnerMode({ mode: 'remote', reason: 'app route' }), 'app');
-});
-
-test('buildChildEnv preserves no-local-spawn ownership contract for proxy context', () => {
-  const proxyEnv = buildChildEnv(
-    {
-      USERPROFILE: 'C:\\Users\\qa',
-      CORTEX_DB: 'C:\\temp\\db.sqlite'
-    },
-    { mode: 'local', reason: 'local HTTP attach-only', url: DEFAULT_LOCAL_BASE_URL },
-    'claude-code',
-    'solo-service',
-    4242,
-    ''
-  );
-  assert.equal(proxyEnv.CORTEX_DAEMON_OWNER_KIND, 'plugin');
-  assert.equal(proxyEnv.CORTEX_DAEMON_OWNER_SOURCE, 'claude-plugin');
-  assert.equal(proxyEnv.CORTEX_DAEMON_OWNER_AGENT, 'claude-code');
-  assert.equal(proxyEnv.CORTEX_DAEMON_OWNER_MODE, 'solo-service');
-  assert.equal(proxyEnv.CORTEX_DAEMON_OWNER_LOCAL_SPAWN, '0');
-  assert.equal(proxyEnv.CORTEX_DAEMON_OWNER_PARENT_PID, '4242');
-  assert.equal(proxyEnv.CORTEX_API_KEY, undefined);
-});
-
-test('buildAuthHeader reads local token only for loopback targets', () => {
-  const local = buildAuthHeader('http://127.0.0.1:7437', '', {
-    USERPROFILE: 'Z:\\missing'
-  });
-  const remote = buildAuthHeader('https://team.cortex.example', '', {
-    USERPROFILE: 'Z:\\missing'
-  });
-  assert.equal(local, '');
-  assert.equal(remote, '');
-  assert.equal(
-    buildAuthHeader('https://team.cortex.example', 'ctx_remote', {}),
-    'Bearer ctx_remote'
-  );
-});
-
-test('healthCheck accepts readiness payload and does not require auth for local probe', async () => {
-  const requests = [];
-  const health = await healthCheck('http://127.0.0.1:7437', '', {
-    env: { CORTEX_HOME: '/tmp/cortex-home' },
-    requestImpl: async (request) => {
-      requests.push(request);
-      return {
-        statusCode: 200,
-        body: JSON.stringify({
-          ready: true,
-          status: 'ready',
-          runtime: {
-            port: 7437,
-            db_path: '/tmp/cortex-home/cortex.db',
-            token_path: '/tmp/cortex-home/cortex.token',
-            pid_path: '/tmp/cortex-home/cortex.pid'
-          },
-          stats: { home: '/tmp/cortex-home', memories: 4, decisions: 1 }
-        })
-      };
-    }
-  });
-
-  assert.equal(health.ok, true);
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'http://127.0.0.1:7437/readiness');
-  assert.equal(requests[0].headers['X-Cortex-Request'], 'true');
-  assert.equal(requests[0].headers.Authorization, undefined);
-});
-
-test('forwardMcpMessage posts JSON-RPC to /mcp-rpc with Cortex headers', async () => {
-  const stdout = memoryWriter();
-  const requests = [];
-
-  const result = await forwardMcpMessage(
-    '{"jsonrpc":"2.0","id":7,"method":"ping"}',
-    {
-      baseUrl: 'http://127.0.0.1:7437',
-      apiKey: 'local_token',
-      agent: 'claude-code',
-      model: 'test-model',
-      env: {},
-      stdout
-    },
-    {
-      requestImpl: async (request) => {
-        requests.push(request);
-        return {
-          statusCode: 200,
-          body: '{"jsonrpc":"2.0","id":7,"result":{"ok":true}}'
-        };
-      }
-    }
-  );
-
-  assert.equal(result.ok, true);
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'http://127.0.0.1:7437/mcp-rpc');
-  assert.equal(requests[0].headers['X-Cortex-Request'], 'true');
-  assert.equal(requests[0].headers.Authorization, 'Bearer local_token');
-  assert.equal(requests[0].headers['X-Source-Agent'], 'claude-code');
-  assert.equal(requests[0].headers['X-Source-Model'], 'test-model');
-  assert.deepEqual(stdout.lines(), ['{"jsonrpc":"2.0","id":7,"result":{"ok":true}}']);
-});
-
-test('forwardMcpMessage returns JSON-RPC parse error locally', async () => {
-  const stdout = memoryWriter();
-  const result = await forwardMcpMessage('{bad json', {
-    baseUrl: 'http://127.0.0.1:7437',
-    apiKey: '',
-    agent: 'claude-code',
-    model: '',
-    env: {},
-    stdout
-  });
-
-  assert.equal(result.parseError, true);
-  const [line] = stdout.lines();
-  const payload = JSON.parse(line);
-  assert.equal(payload.error.code, -32700);
-  assert.equal(payload.error.message, 'Parse error');
-});
-
-test('runMcpBridge dry run returns HTTP proxy contract without binary resolution or spawn', async () => {
+test('runMcpBridge dry run reports local binary and does not spawn', async () => {
+  const binaryPath = makeBinary();
   const exits = [];
+  let spawned = false;
   const result = await runMcpBridge({
-    env: {
+    env: emptyHomeEnv({
       CORTEX_PLUGIN_DRY_RUN: '1',
       CORTEX_PLUGIN_AGENT: 'codex',
-      CORTEX_APP_URL: 'http://127.0.0.1:7441',
-      HOME: '/tmp/cortex-home'
-    },
+      CORTEX_APP_BINARY: binaryPath
+    }),
     processRef: { pid: 9, on: () => {} },
     log: () => {},
     crashLogger: () => {},
     exit: (code) => exits.push(code),
+    spawnImpl: () => {
+      spawned = true;
+      return fakeChild();
+    },
     exitOnDryRun: false
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.dryRun, true);
-  assert.equal(result.route.mode, 'remote');
-  assert.equal(result.route.reason, 'app route');
-  assert.equal(result.baseUrl, 'http://127.0.0.1:7441');
-  assert.equal(result.proxyEnv.CORTEX_DAEMON_OWNER_MODE, 'app');
+  assert.equal(result.binaryPath, binaryPath);
+  assert.deepEqual(result.args, ['mcp', '--agent', 'codex']);
+  assert.equal(spawned, false);
   assert.deepEqual(exits, []);
+});
+
+test('runMcpBridge spawns cortex mcp and forwards stdio', async () => {
+  const binaryPath = makeBinary();
+  const child = fakeChild();
+  const spawnCalls = [];
+  const stdin = new PassThrough();
+  const result = runMcpBridge({
+    env: emptyHomeEnv({ CORTEX_APP_BINARY: binaryPath, CORTEX_PLUGIN_AGENT: 'claude-code' }),
+    processRef: new EventEmitter(),
+    log: () => {},
+    crashLogger: () => {},
+    exit: () => {},
+    spawnImpl: (binary, args, opts) => {
+      spawnCalls.push({ binary, args, opts });
+      return child;
+    },
+    stdin,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    registerProcessHandlers: false,
+    exitOnChildExit: false,
+    exitOnChildSignal: false,
+    exitOnFailure: false
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.binaryPath, binaryPath);
+  assert.equal(spawnCalls.length, 1);
+  assert.equal(spawnCalls[0].binary, binaryPath);
+  assert.deepEqual(spawnCalls[0].args, ['mcp', '--agent', 'claude-code']);
+});
+
+test('runMcpBridge fails closed when no binary can be resolved', async () => {
+  const exits = [];
+  const logs = [];
+  const result = await runMcpBridge({
+    env: emptyHomeEnv({ CORTEX_PLUGIN_AGENT: 'claude-code' }),
+    processRef: { pid: 1, on: () => {} },
+    log: () => {},
+    crashLogger: (msg) => logs.push(msg),
+    exit: (code) => exits.push(code),
+    spawnImpl: () => {
+      throw new Error('should not spawn');
+    },
+    exitOnFailure: false
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /No local cortex binary/);
+  assert.equal(exits.length, 0);
+  assert.ok(logs.some((line) => /No local cortex binary/.test(line)));
 });
