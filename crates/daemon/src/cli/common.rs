@@ -6,6 +6,24 @@ use std::path::Path;
 pub fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter().position(|a| a == flag).and_then(|idx| args.get(idx + 1)).cloned()
 }
+
+pub fn parse_flag_values(args: &[String], flag: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i] == flag {
+            if let Some(value) = args.get(i + 1) {
+                if !is_cli_option_token(value) && !value.trim().is_empty() {
+                    values.push(value.clone());
+                }
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    values
+}
 const GLOBAL_VALUE_FLAGS: &[&str] = &["--home", "--db"];
 pub(crate) fn is_cli_option_token(value: &str) -> bool {
     value.starts_with("--")

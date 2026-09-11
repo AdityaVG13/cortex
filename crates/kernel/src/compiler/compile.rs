@@ -57,7 +57,7 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
             |r| r.get(0),
         )
         .unwrap_or_default();
-    let key = format!("{key}|{}", super::capsules::boot_paths().join("\u{1f}"));
+    let key = format!("{key}|{}", super::capsules::with_boot_paths(|paths| paths.join("\u{1f}")));
     if let Some((cached, omitted)) = super::cache::cache_get(conn, "constraints_capsule", &key) {
         return (cached, omitted);
     }
@@ -78,9 +78,11 @@ fn build_constraints_capsule_uncached(conn: &Connection) -> (String, usize) {
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .map(|rows| rows.flatten().collect())
         .unwrap_or_default();
+    let ids: Vec<i64> = rows.iter().map(|row| row.0).collect();
+    let allow = super::capsules::boot_scope_allowlist(conn, "decision", &ids);
     let rows: Vec<(i64, String, String)> = rows
         .into_iter()
-        .filter(|(id, ..)| super::capsules::decision_in_boot_scope(conn, *id))
+        .filter(|(id, ..)| super::capsules::keep_boot_id(&allow, *id))
         .collect();
     if rows.is_empty() {
         return (String::new(), 0);
@@ -183,11 +185,37 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
         40,
         deterministic_now(conn),
     );
-    if !super::capsules::boot_paths().is_empty() {
+    super::capsules::with_boot_paths(|paths| {
+        if paths.is_empty() {
+            return;
+        }
+        let mut decision_ids = Vec::new();
+        let mut memory_ids = Vec::new();
+        for candidate in &truth_candidates {
+            match candidate.source_kind {
+                "decision" => decision_ids.push(candidate.source_id),
+                "memory" => memory_ids.push(candidate.source_id),
+                _ => {}
+            }
+        }
+        let decisions = crate::handlers::recall::explicit_paths_by_target(conn, "decision", &decision_ids)
+            .unwrap_or_default();
+        let memories = crate::handlers::recall::explicit_paths_by_target(conn, "memory", &memory_ids)
+            .unwrap_or_default();
         truth_candidates.retain(|candidate| {
-            super::capsules::target_in_boot_scope(conn, candidate.source_kind, candidate.source_id)
+            let map = match candidate.source_kind {
+                "decision" => &decisions,
+                "memory" => &memories,
+                _ => return true,
+            };
+            crate::handlers::recall::read_path_sets(
+                paths,
+                map.get(&candidate.source_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            )
         });
-    }
+    });
     truth_candidates.truncate(boot_rank_top_n());
     if !truth_candidates.is_empty() {
         items.push(ContextItem::new(

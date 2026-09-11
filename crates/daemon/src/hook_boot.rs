@@ -17,13 +17,28 @@ struct HealthResult {
     embeddings: i64,
 }
 
-async fn fetch_boot(cx: &asupersync::Cx, agent: &str, budget: u32, runtime: &crate::CortexRuntime) -> Option<BootResult> {
+async fn fetch_boot(
+    cx: &asupersync::Cx,
+    agent: &str,
+    budget: u32,
+    runtime: &crate::CortexRuntime,
+    payload: &Value,
+) -> Option<BootResult> {
     let state = runtime.state();
     if state.team_mode && state.default_owner_id.is_none() {
         return None;
     }
     let result = runtime
-        .boot(cx, crate::runtime::BootInput { agent: agent.to_string(), max_tokens: budget as usize, owner_id: state.default_owner_id, ..Default::default() })
+        .boot(
+            cx,
+            crate::runtime::BootInput {
+                agent: agent.to_string(),
+                max_tokens: budget as usize,
+                owner_id: state.default_owner_id,
+                paths: payload_roots(payload),
+                ..Default::default()
+            },
+        )
         .await
         .ok()?;
     Some(BootResult {
@@ -31,6 +46,20 @@ async fn fetch_boot(cx: &asupersync::Cx, agent: &str, budget: u32, runtime: &cra
         token_estimate: i64::try_from(result.token_estimate).ok(),
         savings: Some(result.savings),
     })
+}
+
+/// CQR boot capsule for SessionStart fallback. Caller cwd keeps path-scoped
+/// facts in that repository; empty cwd compiles unscoped.
+pub async fn boot_capsule_for_payload(
+    cx: &asupersync::Cx,
+    runtime: &crate::CortexRuntime,
+    agent: &str,
+    payload: &Value,
+    max_tokens: usize,
+) -> Option<String> {
+    fetch_boot(cx, agent, max_tokens as u32, runtime, payload)
+        .await
+        .map(|boot| boot.boot_prompt)
 }
 
 async fn fetch_health(cx: &asupersync::Cx, runtime: &crate::CortexRuntime) -> Option<HealthResult> {
@@ -66,6 +95,40 @@ fn read_optional_payload() -> Value {
     })
 }
 
+fn payload_roots(payload: &Value) -> Vec<String> {
+    let cwd = payload
+        .get("cwd")
+        .or_else(|| payload.get("cwd_path"))
+        .or_else(|| payload.get("working_directory"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if cwd.contains('/') || cwd.contains('\\') {
+        vec![cwd.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Assembly brief for the SessionStart boot fallback. Caller cwd keeps
+/// path-scoped bundles in that repository; no cwd keeps the `project` bucket.
+pub async fn boot_assembly_brief(
+    cx: &asupersync::Cx,
+    runtime: &crate::CortexRuntime,
+    text: &str,
+    payload: &Value,
+) -> String {
+    let paths = payload_roots(payload);
+    let cues = crate::runtime::assembly::tokenize_cues(text);
+    match runtime
+        .compile_assemblies_for_paths(cx, &paths, None, &cues, 4, None, None, None, "")
+        .await
+    {
+        Ok(compiled) if !compiled.brief.is_empty() => compiled.brief,
+        _ => String::new(),
+    }
+}
+
 /// Same View as MCP `cortex_orient` / `process()` SessionStart. Empty means fall back to boot.
 pub async fn session_start_context(
     cx: &asupersync::Cx,
@@ -98,7 +161,11 @@ pub async fn run_boot(cx: &asupersync::Cx, agent: &str) {
         }
     };
     let payload = read_optional_payload();
-    let (boot, health) = futures_util::future::join(fetch_boot(cx, agent, DEFAULT_BUDGET, &runtime), fetch_health(cx, &runtime)).await;
+    let (boot, health) = futures_util::future::join(
+        fetch_boot(cx, agent, DEFAULT_BUDGET, &runtime, &payload),
+        fetch_health(cx, &runtime),
+    )
+    .await;
     if boot.is_some() {
         register_session(cx, agent, &runtime).await;
     }
@@ -112,15 +179,10 @@ pub async fn run_boot(cx: &asupersync::Cx, agent: &str) {
         None => match boot {
             Some(boot) if !boot.boot_prompt.trim().is_empty() => {
                 let mut context = boot.boot_prompt;
-                let cues = crate::runtime::assembly::tokenize_cues(&context);
-                if let Ok(compiled) = runtime
-                    .compile_assemblies(cx, "project", &cues, 4, None, None, None, "")
-                    .await
-                {
-                    if !compiled.brief.is_empty() {
-                        context.push('\n');
-                        context.push_str(&compiled.brief);
-                    }
+                let brief = boot_assembly_brief(cx, &runtime, &context, &payload).await;
+                if !brief.is_empty() {
+                    context.push('\n');
+                    context.push_str(&brief);
                 }
                 Some(context)
             }

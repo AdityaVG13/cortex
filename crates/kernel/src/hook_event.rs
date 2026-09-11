@@ -73,7 +73,8 @@ fn s<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a str> {
 }
 
 /// Build the frame from a Claude-Code-shaped payload (`hook_event_name`,
-/// `tool_name`, `tool_input`, `tool_response`, `prompt`, `session_id`, `cwd`).
+/// `tool_name`, `tool_input`, `tool_response`, `prompt`, `session_id`, `cwd`,
+/// `cwd_path`, `working_directory`).
 pub fn frame_from_host(
     kind_hint: &str,
     payload: &Value,
@@ -125,7 +126,9 @@ pub fn frame_from_host(
         input,
         needs,
         principal: "solo".into(),
-        scope: s(payload, &["cwd"]).unwrap_or("").to_string(),
+        scope: s(payload, &["cwd", "cwd_path", "working_directory"])
+            .unwrap_or("")
+            .to_string(),
         thread: s(payload, &["session_id", "thread"]).map(|t| format!("session:{t}")),
         artifact_revisions: Vec::new(),
         context_epoch: s(payload, &["context_epoch"]).map(str::to_string),
@@ -188,10 +191,7 @@ fn expand_cwd_cues(cwd: &str) -> String {
 fn session_orient_query(frame: &EventFrame) -> (String, Vec<String>) {
     let cwd = frame.scope.trim();
     let input = frame.input.trim();
-    let mut paths = Vec::new();
-    if !cwd.is_empty() && looks_like_fs_path(cwd) {
-        paths.push(cwd.to_string());
-    }
+    let paths = write_paths(frame);
     let task = if !cwd.is_empty() && looks_like_fs_path(cwd) && (input.is_empty() || input == cwd)
     {
         expand_cwd_cues(cwd)
@@ -199,6 +199,15 @@ fn session_orient_query(frame: &EventFrame) -> (String, Vec<String>) {
         frame.input.clone()
     };
     (task, paths)
+}
+
+fn write_paths(frame: &EventFrame) -> Vec<String> {
+    let cwd = frame.scope.trim();
+    if !cwd.is_empty() && looks_like_fs_path(cwd) {
+        vec![cwd.to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Execute one frame against an open brain.
@@ -278,7 +287,16 @@ pub async fn process(
                 let key = facts.idempotency_key();
                 let text = facts.statement();
                 match runtime
-                    .deposit_with_key(cx, &frame.invocation_id, Some(&key), &text, agent, None)
+                    .deposit_with_scope(
+                        cx,
+                        &frame.invocation_id,
+                        Some(&key),
+                        &text,
+                        agent,
+                        None,
+                        &write_paths(frame),
+                        frame.thread.as_deref(),
+                    )
                     .await
                 {
                     Ok(out) => {

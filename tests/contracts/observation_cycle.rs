@@ -412,3 +412,134 @@ fn exclude_cues_remove_candidates_without_deleting_sources() {
         );
     });
 }
+
+const REPO_A: &str = "/Users/x/repoa";
+const REPO_B: &str = "/Users/x/repob";
+
+#[test]
+fn path_scoped_pull_stays_in_repository_and_default_project_does_not_leak() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes-a", REPO_A))
+            .await
+            .unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes-b", REPO_B))
+            .await
+            .unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("worklog", "project"))
+            .await
+            .unwrap();
+        let in_a = runtime
+            .observe(
+                &cx,
+                "notes-a",
+                "g",
+                ObservationEvent {
+                    event_key: "a".into(),
+                    text: "PAY-OBS-1 tool reported ledger retry after crash".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let in_b = runtime
+            .observe(
+                &cx,
+                "notes-b",
+                "g",
+                ObservationEvent {
+                    event_key: "b".into(),
+                    text: "PAY-OBS-1 tool reported cache warm on boot".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let unscoped = runtime
+            .observe(
+                &cx,
+                "worklog",
+                "g",
+                ObservationEvent {
+                    event_key: "u".into(),
+                    text: "PAY-OBS-1 tool reported signing key rotation".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let project = runtime
+            .query_observations(&cx, "project", "PAY-OBS-1 tool reported", 32, 65536, false)
+            .await
+            .unwrap();
+        assert!(
+            project.source_refs.contains(&unscoped.source_id),
+            "unscoped project observation must remain on the exact project pull: {project:?}"
+        );
+        assert!(
+            !project.source_refs.contains(&in_a.source_id),
+            "path-scoped observation must not leak into an exact project pull: {project:?}"
+        );
+
+        let paths_a = vec![REPO_A.to_string()];
+        let scoped = runtime
+            .query_observations_for_paths(
+                &cx,
+                "PAY-OBS-1 tool reported",
+                &paths_a,
+                None,
+                32,
+                65536,
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(
+            scoped.source_refs.contains(&in_a.source_id),
+            "path pull must return this repo: {scoped:?}"
+        );
+        assert!(
+            scoped.source_refs.contains(&unscoped.source_id),
+            "unscoped project observations stay visible under a named root: {scoped:?}"
+        );
+        assert!(
+            !scoped.source_refs.contains(&in_b.source_id),
+            "path pull must not return a sibling repo: {scoped:?}"
+        );
+
+        let nested = runtime
+            .query_observations_for_paths(
+                &cx,
+                "PAY-OBS-1 tool reported",
+                &[format!("{REPO_A}/src")],
+                None,
+                32,
+                65536,
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(
+            nested.source_refs.contains(&in_a.source_id),
+            "a nested path under the registered root must still retrieve it: {nested:?}"
+        );
+
+        let recent = runtime
+            .recent_observations_for_paths(&cx, &paths_a, None, 8, 16 * 1024)
+            .await
+            .unwrap();
+        assert!(
+            recent.source_refs.contains(&in_a.source_id),
+            "recent-in-scope must surface this repo without cue overlap: {recent:?}"
+        );
+        assert!(
+            !recent.source_refs.contains(&in_b.source_id),
+            "recent-in-scope must not surface a sibling repo: {recent:?}"
+        );
+    });
+}

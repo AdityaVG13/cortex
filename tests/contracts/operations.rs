@@ -1343,3 +1343,212 @@ fn commit_can_cite_observation_evidence_without_auto_promotion() {
         );
     });
 }
+
+const OBS_REPO_A: &str = "/Users/x/repoa";
+const OBS_REPO_B: &str = "/Users/x/repob";
+
+fn observation_source_ids(view: &Value) -> Vec<String> {
+    view["observations"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("observations.items missing: {view}"))
+        .iter()
+        .filter_map(|item| item["source_id"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Path-scoped observation sources stay in that repository on query/orient.
+/// The unscoped `project` bucket stays visible. Capture still does not
+/// become a Card.
+#[test]
+fn query_and_orient_keep_path_scoped_observations_in_their_repository() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        use cortex_kernel::runtime::{
+            CortexRuntime,
+            observation::{ObservationEvent, SourceSpec},
+        };
+        let state = solo_state();
+        let runtime = CortexRuntime::from_state(state.clone());
+        runtime
+            .register_source(&cx, SourceSpec::document("notes-a", OBS_REPO_A))
+            .await
+            .unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes-b", OBS_REPO_B))
+            .await
+            .unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("worklog", "project"))
+            .await
+            .unwrap();
+        let in_a = runtime
+            .observe(
+                &cx,
+                "notes-a",
+                "g1",
+                ObservationEvent {
+                    event_key: "a1".into(),
+                    text: "PAY-OBS-1 tool reported ledger retry after crash".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let in_b = runtime
+            .observe(
+                &cx,
+                "notes-b",
+                "g1",
+                ObservationEvent {
+                    event_key: "b1".into(),
+                    text: "PAY-OBS-1 tool reported cache warm on boot".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let unscoped = runtime
+            .observe(
+                &cx,
+                "worklog",
+                "g1",
+                ObservationEvent {
+                    event_key: "u1".into(),
+                    text: "PAY-OBS-1 tool reported signing key rotation".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let default_project = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({
+                "need": "PAY-OBS-1 tool reported",
+                "profile": "answer",
+                "budget": 4000,
+                "observation_scope": "project"
+            }),
+        )
+        .await
+        .unwrap();
+        let default_ids = observation_source_ids(&default_project);
+        assert!(
+            default_ids.contains(&unscoped.source_id),
+            "unscoped project observation must remain on the default bucket: {default_project}"
+        );
+        assert!(
+            !default_ids.contains(&in_a.source_id),
+            "a path-scoped observation must not leak into the default project pull: {default_project}"
+        );
+        assert!(
+            !default_ids.contains(&in_b.source_id),
+            "a sibling path-scoped observation must not leak into the default project pull: {default_project}"
+        );
+
+        let in_repo_a = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({
+                "need": "PAY-OBS-1 tool reported",
+                "profile": "answer",
+                "budget": 4000,
+                "paths": [OBS_REPO_A]
+            }),
+        )
+        .await
+        .unwrap();
+        let ids_a = observation_source_ids(&in_repo_a);
+        assert!(
+            ids_a.contains(&in_a.source_id),
+            "query with this repo path must return its observation: {in_repo_a}"
+        );
+        assert!(
+            ids_a.contains(&unscoped.source_id),
+            "unscoped project observations stay visible under a project path: {in_repo_a}"
+        );
+        assert!(
+            !ids_a.contains(&in_b.source_id),
+            "query with this repo path must not return a sibling repo observation: {in_repo_a}"
+        );
+        let cards = in_repo_a["cards"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !cards.iter().any(|c| c["statement"]
+                .as_str()
+                .map(|s| s.contains("tool reported ledger retry"))
+                .unwrap_or(false)),
+            "path-scoped observation text must not become a Card: {in_repo_a}"
+        );
+
+        let in_repo_b = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({
+                "need": "PAY-OBS-1 tool reported",
+                "profile": "answer",
+                "budget": 4000,
+                "paths": [OBS_REPO_B]
+            }),
+        )
+        .await
+        .unwrap();
+        let ids_b = observation_source_ids(&in_repo_b);
+        assert!(
+            ids_b.contains(&in_b.source_id),
+            "query with the sibling repo must return its observation: {in_repo_b}"
+        );
+        assert!(
+            !ids_b.contains(&in_a.source_id),
+            "sibling repo query must not return this repo's observation: {in_repo_b}"
+        );
+
+        let nested = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({
+                "need": "PAY-OBS-1 tool reported",
+                "profile": "answer",
+                "budget": 4000,
+                "paths": [format!("{OBS_REPO_A}/src")]
+            }),
+        )
+        .await
+        .unwrap();
+        let nested_ids = observation_source_ids(&nested);
+        assert!(
+            nested_ids.contains(&in_a.source_id),
+            "a path under the registered root must still retrieve that observation: {nested}"
+        );
+        assert!(
+            !nested_ids.contains(&in_b.source_id),
+            "a nested path must not retrieve a sibling repo observation: {nested}"
+        );
+
+        let orient = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Orient,
+            &json!({"paths": [OBS_REPO_A], "budget": 4000}),
+        )
+        .await
+        .unwrap();
+        let orient_ids = observation_source_ids(&orient);
+        assert!(
+            orient_ids.contains(&in_a.source_id),
+            "cwd-only orient must surface this repo's observations: {orient}"
+        );
+        assert!(
+            !orient_ids.contains(&in_b.source_id),
+            "cwd-only orient must not surface a sibling repo observation: {orient}"
+        );
+    });
+}

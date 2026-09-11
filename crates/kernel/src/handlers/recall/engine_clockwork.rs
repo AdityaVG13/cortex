@@ -897,30 +897,78 @@ fn row_eligible(conn: &Connection, candidate: &ScoredCandidate, ctx: &RecallCont
     Ok(true)
 }
 
+pub(crate) fn normalize_query_paths(paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| normalize_task_path(path))
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+/// Read law: an unscoped row stays visible under a named project.
+pub(crate) fn read_path_sets(query_paths: &[String], candidate_paths: &[String]) -> bool {
+    if query_paths.is_empty() || candidate_paths.is_empty() {
+        return true;
+    }
+    candidate_paths
+        .iter()
+        .any(|candidate| query_paths.iter().any(|query| path_compatible(candidate, query)))
+}
+
+/// Write identity: unscoped and path-scoped facts never Jaccard-merge.
+pub(crate) fn jaccard_path_sets(incoming_paths: &[String], candidate_paths: &[String]) -> bool {
+    match (incoming_paths.is_empty(), candidate_paths.is_empty()) {
+        (true, true) => true,
+        (false, false) => candidate_paths
+            .iter()
+            .any(|candidate| incoming_paths.iter().any(|incoming| path_compatible(candidate, incoming))),
+        _ => false,
+    }
+}
+
+pub(crate) fn explicit_paths_by_target(
+    conn: &Connection,
+    target_type: &str,
+    ids: &[i64],
+) -> Result<HashMap<i64, Vec<String>>, String> {
+    let mut out: HashMap<i64, Vec<String>> = HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let list = ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT e.target_id, a.value FROM clock_anchors a
+         JOIN clock_anchor_evidence e ON e.anchor_id = a.id
+         WHERE e.target_type = ?1 AND e.target_id IN ({list}) AND a.kind = 'path' AND a.specificity >= 3"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map(params![target_type], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|err| err.to_string())?;
+    for (target_id, value) in rows.flatten() {
+        out.entry(target_id).or_default().push(value);
+    }
+    Ok(out)
+}
+
 pub(crate) fn target_scope_compatible(
     conn: &Connection,
     target_type: &str,
     target_id: i64,
     query_paths: &[String],
 ) -> Result<bool, String> {
-    if query_paths.is_empty() {
-        return Ok(true);
-    }
-    let query_paths: Vec<String> = query_paths
-        .iter()
-        .map(|p| normalize_task_path(p))
-        .filter(|p| !p.is_empty())
-        .collect();
+    let query_paths = normalize_query_paths(query_paths);
     if query_paths.is_empty() {
         return Ok(true);
     }
     let candidate_paths = explicit_path_values(conn, target_type, target_id)?;
-    if candidate_paths.is_empty() {
-        return Ok(true);
-    }
-    Ok(candidate_paths
-        .iter()
-        .any(|cp| query_paths.iter().any(|qp| path_compatible(cp, qp))))
+    Ok(read_path_sets(&query_paths, &candidate_paths))
 }
 
 fn path_context_compatible(conn: &Connection, candidate: &ScoredCandidate, frame: &QueryFrame) -> Result<bool, String> {

@@ -46,6 +46,7 @@ fn mcp_rejects_vague_decision_with_validation_evidence() {
             None,
             None,
             None,
+            &[],
         )
         .expect_err("vague input");
         match denied {

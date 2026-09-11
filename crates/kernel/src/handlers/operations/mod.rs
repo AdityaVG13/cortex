@@ -18,6 +18,7 @@ use crate::protocol::{Envelope, ResponseStatus, KNOWN_OPERATIONS};
 use crate::state::RuntimeState;
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
@@ -117,12 +118,20 @@ fn looks_like_fs_path(s: &str) -> bool {
     s.contains('/') || s.contains('\\')
 }
 
+fn cwd_root(args: &Value) -> Option<String> {
+    arg_str(args, &["cwd", "cwd_path", "working_directory"])
+        .filter(|s| looks_like_fs_path(s))
+        .map(str::to_string)
+}
+
 fn commit_paths(args: &Value, entry: &Value) -> Vec<String> {
     let mut paths = arg_list(args, &["paths"]);
     paths.extend(arg_list(entry, &["paths"]));
-    if let Some(cwd) = arg_str(args, &["cwd"]).or_else(|| arg_str(entry, &["cwd"])) {
-        if looks_like_fs_path(cwd) && !paths.iter().any(|p| p == cwd) {
-            paths.push(cwd.to_string());
+    for src in [args, entry] {
+        if let Some(cwd) = cwd_root(src) {
+            if !paths.iter().any(|p| p == &cwd) {
+                paths.push(cwd);
+            }
         }
     }
     paths
@@ -175,7 +184,7 @@ pub async fn capabilities(cx: &asupersync::Cx, state: &RuntimeState) -> Result<V
                 "relationship": "promoted_from",
                 "note": "Explicit Deposit citation only; capture never auto-promotes."
             },
-            "note": "Attributed observations are not CQR Cards and never change admission."
+            "note": "Attributed observations are not CQR Cards and never change admission. Caller paths keep path-scoped sources in that repository; the project bucket stays unscoped. Library lens attaches the same observations field beside results."
         },
         "assembly_bridge": {
             "query_orient_field": "assemblies",
@@ -183,7 +192,7 @@ pub async fn capabilities(cx: &asupersync::Cx, state: &RuntimeState) -> Result<V
             "opt_out": "assemblies=false",
             "expand_refs": ["asm:<assembly_id>", "rev:<revision_id>"],
             "enabled_by": "rebuild_assembly_routes",
-            "note": "Compiled bundles stay off until cue routes are rebuilt. Ranking does not change CQR Cards or epistemic status."
+            "note": "Compiled bundles stay off until cue routes are rebuilt. Caller paths keep path-scoped bundles in that repository; a default project compile does not leak them. Library lens attaches the same assemblies field beside results. Ranking does not change CQR Cards or epistemic status."
         },
         "removed_tools": {
             "cortex_boot_audit": "cortex_orient",
@@ -227,9 +236,9 @@ async fn run_lens(
     let mut ctx = RecallContext::from_caller(caller.owner_id, state);
     ctx.paths.extend(arg_list(args, &["paths"]));
     ctx.paths.extend(frame.handles.paths.iter().cloned());
-    if let Some(cwd) = arg_str(args, &["cwd"]) {
-        if looks_like_fs_path(cwd) && !ctx.paths.iter().any(|p| p == cwd) {
-            ctx.paths.push(cwd.to_string());
+    if let Some(cwd) = cwd_root(args) {
+        if !ctx.paths.iter().any(|p| p == &cwd) {
+            ctx.paths.push(cwd);
         }
     }
     ctx.symbols.extend(arg_list(args, &["symbols"]));
@@ -378,24 +387,52 @@ fn collect_leads(
         .collect()
 }
 
-/// V5 attributed observations, separate from CQR Cards.
+fn observation_cues(text: &str) -> BTreeSet<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn observation_cues_are_path_only(text: &str, paths: &[String]) -> bool {
+    let query_cues = observation_cues(text);
+    if query_cues.is_empty() {
+        return true;
+    }
+    if paths.is_empty() {
+        return false;
+    }
+    let mut path_cues = BTreeSet::new();
+    for path in paths {
+        path_cues.extend(observation_cues(path));
+    }
+    !path_cues.is_empty() && query_cues.is_subset(&path_cues)
+}
+
+/// Attributed observations, separate from CQR Cards.
 ///
 /// Capture is not factual endorsement: hits stay in `observations` with
 /// role/source attribution and an `obs:<source_id>` expand handle. They never
-/// enter `cards` or the admission law.
-async fn attach_observation_evidence(
+/// enter `cards` or the admission law. Caller `paths` / `cwd` restrict
+/// path-scoped sources; the unscoped `project` bucket stays visible.
+pub(crate) async fn attach_observation_evidence(
     cx: &asupersync::Cx,
     state: &RuntimeState,
     text: &str,
     args: &Value,
     out: &mut Value,
+    recent_ok: bool,
 ) {
     if arg_bool(args, &["observations", "include_observations"]).unwrap_or(true) == false {
         return;
     }
-    let scope = arg_str(args, &["observation_scope", "scope"]).unwrap_or("project");
+    let extra_scope = arg_str(args, &["observation_scope", "scope"]);
+    let scope = extra_scope.unwrap_or("project");
+    let paths = commit_paths(args, &json!({}));
     let learned = arg_bool(args, &["observations_learned"]).unwrap_or(false);
     let runtime = crate::CortexRuntime::from_state(state.clone());
+    let recent =
+        recent_ok && (text.trim().is_empty() || observation_cues_are_path_only(text, &paths));
     let query = if text.trim().is_empty() {
         arg_list(args, &["paths", "symbols"])
             .into_iter()
@@ -404,7 +441,7 @@ async fn attach_observation_evidence(
     } else {
         text.to_string()
     };
-    if query.trim().is_empty() {
+    if !recent && query.trim().is_empty() {
         out["observations"] = json!({
             "status": "no_match",
             "scope": scope,
@@ -415,10 +452,24 @@ async fn attach_observation_evidence(
         });
         return;
     }
-    match runtime
-        .query_observations(cx, scope, &query, 8, 16 * 1024, learned)
-        .await
-    {
+    let pulled = if recent {
+        runtime
+            .recent_observations_for_paths(cx, &paths, extra_scope, 8, 16 * 1024)
+            .await
+    } else {
+        runtime
+            .query_observations_for_paths(
+                cx,
+                &query,
+                &paths,
+                extra_scope,
+                8,
+                16 * 1024,
+                learned,
+            )
+            .await
+    };
+    match pulled {
         Ok(pv) => {
             let items: Vec<Value> = pv
                 .evidence
@@ -472,7 +523,7 @@ async fn attach_observation_evidence(
 
 /// Evidence-closed assembly bundles. Separate from CQR Cards. Omitted while
 /// cue routes are disabled so default recall is unchanged.
-async fn attach_assembly_evidence(
+pub(crate) async fn attach_assembly_evidence(
     cx: &asupersync::Cx,
     state: &RuntimeState,
     text: &str,
@@ -482,7 +533,9 @@ async fn attach_assembly_evidence(
     if arg_bool(args, &["assemblies", "include_assemblies"]).unwrap_or(true) == false {
         return;
     }
-    let scope = arg_str(args, &["observation_scope", "scope"]).unwrap_or("project");
+    let extra_scope = arg_str(args, &["observation_scope", "scope"]);
+    let scope = extra_scope.unwrap_or("project");
+    let paths = commit_paths(args, &json!({}));
     let runtime = crate::CortexRuntime::from_state(state.clone());
     let query = if text.trim().is_empty() {
         arg_list(args, &["paths", "symbols"])
@@ -506,9 +559,10 @@ async fn attach_assembly_evidence(
     let context_epoch = arg_str(args, &["context_epoch"]).unwrap_or("");
     let presence = if context_epoch.is_empty() { None } else { presence };
     match runtime
-        .compile_assemblies(
+        .compile_assemblies_for_paths(
             cx,
-            scope,
+            &paths,
+            extra_scope,
             &cues,
             4,
             presence.as_ref(),
@@ -584,7 +638,15 @@ pub async fn dispatch(
                     out["thread"] = summary;
                 }
             }
-            attach_observation_evidence(cx, state, text, args, &mut out).await;
+            attach_observation_evidence(
+                cx,
+                state,
+                text,
+                args,
+                &mut out,
+                matches!(op, Operation::Orient),
+            )
+            .await;
             attach_assembly_evidence(cx, state, text, args, &mut out).await;
             Ok(out)
         }

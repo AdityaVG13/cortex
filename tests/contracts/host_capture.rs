@@ -757,3 +757,168 @@ fn sidecar_bash_flag_does_not_take_file_tools_and_file_flag_does_not_take_bash()
     .unwrap();
     assert_eq!(file_invocation.context.original_event_key.as_deref(), Some("toolu_read_1"));
 }
+
+const REPO_A: &str = "/Users/x/repoa";
+const REPO_B: &str = "/Users/x/repob";
+
+fn project_grant() -> HostCaptureGrant {
+    HostCaptureGrant {
+        key: "cwd-host".into(),
+        scope: "project".into(),
+        host_version: "fixture-v1".into(),
+        adapter_version: ADAPTER_VERSION.into(),
+        max_bytes: 4096,
+        live: true,
+        history: true,
+    }
+}
+
+fn live_prompt(text: &str, cwd: Option<&str>) -> Vec<u8> {
+    let mut value = json!({
+        "session_id": "session-a",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": text
+    });
+    if let Some(cwd) = cwd {
+        value["cwd"] = json!(cwd);
+    }
+    serde_json::to_vec(&value).unwrap()
+}
+
+#[test]
+fn host_capture_with_cwd_stays_in_that_repository() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        let grant = project_grant();
+        runtime
+            .register_host_capture(&cx, grant.clone())
+            .await
+            .unwrap();
+
+        let unscoped = runtime
+            .capture_host_event(
+                &cx,
+                &grant.key,
+                &context("cwd-unscoped", HostOrigin::External),
+                &live_prompt("HOST-CWD-UNSCOPED signing cache warm", None),
+            )
+            .await
+            .unwrap();
+        let in_a = runtime
+            .capture_host_event(
+                &cx,
+                &grant.key,
+                &context("cwd-a", HostOrigin::External),
+                &live_prompt("HOST-CWD-A ledger retry in payments", Some(REPO_A)),
+            )
+            .await
+            .unwrap();
+        let in_b = runtime
+            .capture_host_event(
+                &cx,
+                &grant.key,
+                &context("cwd-b", HostOrigin::External),
+                &live_prompt("HOST-CWD-B signing key rotation", Some(REPO_B)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unscoped.accepted.len(), 1);
+        assert_eq!(in_a.accepted.len(), 1);
+        assert_eq!(in_b.accepted.len(), 1);
+
+        let retry = runtime
+            .capture_host_event(
+                &cx,
+                &grant.key,
+                &context("cwd-a", HostOrigin::External),
+                &live_prompt("HOST-CWD-A ledger retry in payments", None),
+            )
+            .await
+            .unwrap();
+        assert!(
+            retry.accepted.iter().all(|r| r.duplicate),
+            "a later capture of the same event without cwd must reuse the first source, not mint a project row: {retry:?}"
+        );
+
+        let project = runtime
+            .query_observations(&cx, "project", "HOST-CWD", 32, 65536, false)
+            .await
+            .unwrap();
+        assert!(
+            project
+                .source_refs
+                .contains(&unscoped.accepted[0].source_id),
+            "events without cwd stay in the grant bucket: {project:?}"
+        );
+        assert!(
+            !project.source_refs.contains(&in_a.accepted[0].source_id),
+            "cwd-stamped host capture must not leak into an exact project pull: {project:?}"
+        );
+        assert!(
+            !project.source_refs.contains(&in_b.accepted[0].source_id),
+            "cwd-stamped host capture must not leak into an exact project pull: {project:?}"
+        );
+
+        let paths_a = vec![REPO_A.to_string()];
+        let scoped_a = runtime
+            .query_observations_for_paths(&cx, "HOST-CWD", &paths_a, None, 32, 65536, false)
+            .await
+            .unwrap();
+        assert!(
+            scoped_a
+                .source_refs
+                .contains(&unscoped.accepted[0].source_id),
+            "path pull still surfaces the unscoped project bucket: {scoped_a:?}"
+        );
+        assert!(
+            scoped_a.source_refs.contains(&in_a.accepted[0].source_id),
+            "path pull must return host evidence captured in that repository: {scoped_a:?}"
+        );
+        assert!(
+            !scoped_a.source_refs.contains(&in_b.accepted[0].source_id),
+            "path pull must not return the sibling repository's host evidence: {scoped_a:?}"
+        );
+
+        let paths_b = vec![REPO_B.to_string()];
+        let scoped_b = runtime
+            .query_observations_for_paths(&cx, "HOST-CWD", &paths_b, None, 32, 65536, false)
+            .await
+            .unwrap();
+        assert!(
+            scoped_b.source_refs.contains(&in_b.accepted[0].source_id),
+            "sibling path pull must return its own host evidence: {scoped_b:?}"
+        );
+        assert!(
+            !scoped_b.source_refs.contains(&in_a.accepted[0].source_id),
+            "sibling path pull must not return this repository's host evidence: {scoped_b:?}"
+        );
+
+        let (_, prepared) = runtime
+            .capture_and_prepare_host(
+                &cx,
+                &grant.key,
+                &context("cwd-a", HostOrigin::External),
+                &live_prompt("HOST-CWD-A ledger retry in payments", Some(REPO_A)),
+                "native-cwd-context",
+                None,
+            )
+            .await
+            .unwrap();
+        let prepared = prepared.expect("cwd capture must prepare a need in that repository");
+        assert!(
+            prepared
+                .evidence
+                .iter()
+                .any(|e| e.source_id == in_a.accepted[0].source_id),
+            "prepare must join host evidence in the payload cwd: {prepared:?}"
+        );
+        assert!(
+            prepared
+                .evidence
+                .iter()
+                .all(|e| e.source_id != in_b.accepted[0].source_id),
+            "prepare in one repository must not join the sibling's host evidence: {prepared:?}"
+        );
+    });
+}

@@ -364,6 +364,79 @@ fn field<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
 fn source_key(grant: &str, kind: HostRecordKind) -> String {
     format!("host:{}", json!([grant, kind]))
 }
+
+fn payload_cwd(value: &Value) -> Option<&str> {
+    string_field(value, &["cwd", "cwd_path", "working_directory"])
+}
+
+fn observation_scope_for(grant: &HostCaptureGrant, value: &Value) -> String {
+    let grant_scope = observation::normalize_scope(&grant.scope);
+    let Some(cwd) = payload_cwd(value) else {
+        return grant_scope;
+    };
+    let scope = observation::normalize_scope(cwd);
+    if scope.is_empty() || scope.len() > 1024 {
+        return grant_scope;
+    }
+    if scope.contains('/') || scope.contains('\\') {
+        scope
+    } else {
+        grant_scope
+    }
+}
+
+fn observation_scope_for_raw(grant: &HostCaptureGrant, raw: &[u8]) -> String {
+    match serde_json::from_slice::<Value>(raw) {
+        Ok(value) => observation_scope_for(grant, &value),
+        Err(_) => observation::normalize_scope(&grant.scope),
+    }
+}
+
+fn scoped_source_key(grant: &HostCaptureGrant, kind: HostRecordKind, scope: &str) -> String {
+    let grant_n = observation::normalize_scope(&grant.scope);
+    if scope == grant_n {
+        return source_key(&grant.key, kind);
+    }
+    let key = format!("host:{}", json!([&grant.key, kind, scope]));
+    if key.len() <= 1024 {
+        key
+    } else {
+        format!(
+            "host:{}",
+            json!([&grant.key, kind, cortex_logic::traces::content_hash(scope)])
+        )
+    }
+}
+
+fn existing_host_source(
+    conn: &rusqlite::Connection,
+    principal: &str,
+    generation: &str,
+    event_key: &str,
+    grant_key: &str,
+    kind: HostRecordKind,
+) -> Result<Option<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT source_key FROM observation_events WHERE principal=?1 AND generation=?2 AND event_key=?3",
+        )
+        .map_err(|e| e.to_string())?;
+    let keys = stmt
+        .query_map(params![principal, generation, event_key], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let unscoped = source_key(grant_key, kind);
+    let stem = format!(
+        "host:{}",
+        json!([grant_key, kind]).to_string().trim_end_matches(']')
+    );
+    Ok(keys
+        .into_iter()
+        .find(|key| *key == unscoped || key.starts_with(&(stem.clone() + ","))))
+}
 fn file_tool_name(name: &str) -> bool {
     matches!(name, "Edit" | "Write" | "Read" | "MultiEdit")
 }
@@ -1072,9 +1145,10 @@ impl CortexRuntime {
         };
         validate(&grant, context, HostRoute::Live)?;
         let hook = live_hook_name(raw)?;
+        let value: Value =
+            serde_json::from_slice(raw).map_err(|e| format!("malformed_host_record: {e}"))?;
+        let scope = observation_scope_for(&grant, &value);
         if hook.as_deref() == Some("PreToolUse") {
-            let value: Value =
-                serde_json::from_slice(raw).map_err(|e| format!("malformed_host_record: {e}"))?;
             if field(&value, "session_id")? != context.session_id {
                 return Err("host_session_mismatch".into());
             }
@@ -1096,7 +1170,7 @@ impl CortexRuntime {
                     cx,
                     grant_key,
                     context,
-                    &grant.scope,
+                    &scope,
                     cues,
                     invocation_context,
                     present_delivery,
@@ -1121,7 +1195,7 @@ impl CortexRuntime {
                 cx,
                 grant_key,
                 context,
-                &grant.scope,
+                &scope,
                 cues,
                 invocation_context,
                 present_delivery,
@@ -1149,7 +1223,7 @@ impl CortexRuntime {
             cx,
             super::cycle::NeedSpec {
                 id: id.clone(),
-                scope: scope.into(),
+                scope: observation::normalize_scope(scope),
                 cues: cues.clone(),
                 exclude_cues: Vec::new(),
                 max_results: 32,
@@ -1333,7 +1407,30 @@ impl CortexRuntime {
             }
             cx.checkpoint().map_err(|e| e.to_string())?;
             let normalized = normalize_host_event(&grant, context, route, line)?;
-            let source = source_key(grant_key, normalized.kind);
+            let source = if let Some(existing) = existing_host_source(
+                &tx,
+                &principal,
+                &generation,
+                &normalized.event.event_key,
+                grant_key,
+                normalized.kind,
+            )? {
+                existing
+            } else {
+                let scope = observation_scope_for_raw(&grant, line);
+                let source = scoped_source_key(&grant, normalized.kind, &scope);
+                observation::ensure_source(
+                    &tx,
+                    &principal,
+                    &SourceSpec {
+                        key: source.clone(),
+                        scope,
+                        role: normalized.kind.role(),
+                        max_bytes: grant.max_bytes,
+                    },
+                )?;
+                source
+            };
             let registered = observation::granted(&tx, &principal, &source, true)?;
             if registered.role != normalized.kind.role_name() {
                 return Err("host_source_role_mismatch".into());

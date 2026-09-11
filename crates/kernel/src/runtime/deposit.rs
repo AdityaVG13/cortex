@@ -244,6 +244,7 @@ fn deposit_inner(
         input.retention_class,
         None,
         input.owner_id,
+        &input.paths,
     )?;
     if !input.benchmark {
         crate::focus::focus_append(conn, &input.source_agent, text);

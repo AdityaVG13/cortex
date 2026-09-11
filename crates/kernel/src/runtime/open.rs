@@ -4,7 +4,7 @@ use crate::handlers::recall::{RecallContext, execute_unified_recall};
 use crate::handlers::store::{DecisionProvenance, StoreError};
 use crate::state::RuntimeState;
 use asupersync::Cx;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::Path;
 
 /// Library-boundary error. Adapters map it to their transport (HTTP status,
@@ -218,18 +218,24 @@ impl CortexRuntime {
     }
 
     /// Run one Lens through the same engine `/recall` uses.
+    ///
+    /// Attributed observations sit on `observations`, and after a route
+    /// rebuild evidence-closed assemblies sit on `assemblies`. Neither mixes
+    /// into `results`. Caller `paths` keep path-scoped sources in that
+    /// repository.
     pub async fn lens(&self, cx: &Cx, input: LensInput) -> Result<Value, CortexError> {
         let mut ctx = RecallContext::from_caller(input.owner_id, &self.state);
-        ctx.paths = input.paths;
+        ctx.paths = input.paths.clone();
         ctx.symbols = input.symbols;
         ctx.as_of = input.as_of;
         ctx.session_id = input.thread;
         let budget = if input.budget == 0 { 320 } else { input.budget };
         let k = if input.k == 0 { 8 } else { input.k };
-        execute_unified_recall(
+        let query = input.query.trim();
+        let mut view = execute_unified_recall(
             cx,
             &self.state,
-            input.query.trim(),
+            query,
             budget,
             k,
             &input.agent,
@@ -237,6 +243,25 @@ impl CortexRuntime {
             None,
         )
         .await
-        .map_err(CortexError::Recall)
+        .map_err(CortexError::Recall)?;
+        let args = json!({ "paths": input.paths });
+        crate::handlers::operations::attach_observation_evidence(
+            cx,
+            &self.state,
+            query,
+            &args,
+            &mut view,
+            true,
+        )
+        .await;
+        crate::handlers::operations::attach_assembly_evidence(
+            cx,
+            &self.state,
+            query,
+            &args,
+            &mut view,
+        )
+        .await;
+        Ok(view)
     }
 }

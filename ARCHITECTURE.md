@@ -46,11 +46,11 @@ Local process/file access is the trust boundary. Async APIs receive the host-own
 
 Host live events enter through one command: `cortex hook <kind>`. The plugin script only resolves the binary and relays stdin/stdout. `CORTEX_CAPTURE` is read inside that command. If the sidecar selects this event, the kernel runs `host_capture` (exact intake + prepare). If the sidecar omits this event, or is unset, the command stays silent. CQR orient / tool-result deposit / checkpoint stay on `cortex hook-boot`, `process()`, `cortex op`, and MCP. There is no `hook-event` command and no second env name for the sidecar.
 
-`cortex capture` is the operator surface for the same observation store: register/enable/put/tail/file/get, inventory/bootstrap/reconcile, subscribe/prepare/query/require, and flagged `host-register` / `host-put` / `host-tail` / `host-cycle`. `host-cycle` is the explicit-flag form used by operators and contracts; the plugin does not spawn it.
+`cortex capture` is the operator surface for the same observation store: register/enable/put/tail/file/get, inventory/bootstrap/reconcile, subscribe/prepare/query (`--path` roots, `--scope` extra bucket)/require, and flagged `host-register` / `host-put` / `host-tail` / `host-cycle`. `host-cycle` is the explicit-flag form used by operators and contracts; the plugin does not spawn it.
 
-`runtime/observation.rs` owns source grants and atomic occurrence/cursor/receipt intake. `inventory.rs` snapshots registered file candidates, resumes bounded bootstrap, and reconciles a sealed revision against later grants without adding those grants to the old denominator. `cycle.rs` maintains scoped postings and reverse any-cue subscriptions, applies exclude cues, walks required-child closure, revalidates current source permissions on reads, and qualifies delivery against coverage, size limits and explicit context presence.
+`runtime/observation.rs` owns source grants and atomic occurrence/cursor/receipt intake. A source scope may be a coarse label or a project root; `query` / `orient` with caller paths keep path-scoped observations in that repository and still surface the unscoped `project` bucket. Library `lens` attaches that same attributed `observations` section, and after a route rebuild the evidence-closed `assemblies` section, beside CQR `results`. `inventory.rs` snapshots registered file candidates, resumes bounded bootstrap, and reconciles a sealed revision against later grants without adding those grants to the old denominator. `cycle.rs` maintains scoped postings and reverse any-cue subscriptions, applies exclude cues, walks required-child closure, revalidates current source permissions on reads, and qualifies delivery against coverage, size limits and explicit context presence.
 
-`host_capture.rs` accepts the fixture string-tool subset plus structured Bash, Read, Edit, Write and MultiEdit reports. PreToolUse prepares from tool input and does not store the request. PreCompact records a silent checkpoint. Origin policy is operator-owned, never parsed from hook stdin as authority. `associations.rs` is opt-in local routing with reversible named usefulness assessments. `assembly.rs` stores exact revision membership plus an attributed learning ledger; cue routes stay off until rebuild and never change epistemic status. After rebuild, `orient` / `query` compile evidence-closed assembly bundles next to CQR Cards, and hooks inject that brief. Learned navigation neither changes source authority nor proves causal utility.
+`host_capture.rs` accepts the fixture string-tool subset plus structured Bash, Read, Edit, Write and MultiEdit reports. A live payload `cwd` that is a project root stamps that capture into the same path identity as CQR; events without a path stay in the grant's registered bucket. PreToolUse prepares from tool input and does not store the request. PreCompact records a silent checkpoint. Origin policy is operator-owned, never parsed from hook stdin as authority. `associations.rs` is opt-in local routing with reversible named usefulness assessments. `assembly.rs` stores exact revision membership plus an attributed learning ledger; cue routes stay off until rebuild and never change epistemic status. After rebuild, `orient` / `query` / `lens` compile evidence-closed assembly bundles next to CQR Cards using the same caller-path join as observations, and hooks inject that brief. SessionStart boot fallback compiles the CQR capsule and assemblies from caller `cwd`, not an empty path list or only the `project` bucket. `process()` ToolResult deposits stamp that same cwd and session thread. Learned navigation neither changes source authority nor proves causal utility.
 
 These surfaces have native contract coverage, not installed-host or reader-quality certification. See README and `crates/kernel/CONTRACT.md` for bounds and no-claim language.
 
@@ -80,7 +80,7 @@ client
   -> CortexRuntime::deposit / MCP cortex_commit
   -> redact secrets
   -> classify retention / TTL
-  -> Jaccard conflict vs recent decisions
+  -> Jaccard conflict vs recent decisions (same path identity; unscoped ≠ scoped)
        AGREES / CONTRADICTS / REFINES / UNRELATED
   -> insert (or dispute / refine / merge)
   -> FTS trigger
@@ -98,7 +98,7 @@ Projection extracts inspectable handles from the text (and from explicit `paths`
 
 Origin is `explicit` if the client sent anchors or project `paths` / `thread`, else `deterministic_extract`. Query expansion on read never writes new facts.
 
-A query or boot that names project paths treats those explicit roots as a filter: a fact stored under `/Users/x/repoa` is ineligible for `/Users/x/repob`. A fact with no stored root stays eligible (ignorance never demotes). The same paths are a hard task-clock, so a cwd-only orient can admit the repo's facts without a ticket in the sentence.
+A query or boot that names project paths treats those explicit roots as a filter: a fact stored under `/Users/x/repoa` is ineligible for `/Users/x/repob`. A fact with no stored root stays eligible (ignorance never demotes). The same paths are a hard task-clock, so a cwd-only orient can admit the repo's facts without a ticket in the sentence. Boot packing keeps the identity and constraints capsules whole: a tight budget omits them rather than cutting a headline away from its qualifier.
 
 ---
 

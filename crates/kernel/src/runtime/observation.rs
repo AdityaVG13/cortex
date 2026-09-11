@@ -2,11 +2,13 @@
 //! never inferred from event text. A source cursor and all its accepted
 //! occurrences commit together. This module does not interpret prose or learn.
 use super::CortexRuntime;
+use crate::clockwork::AnchorKind;
 use crate::db::{compiled, outbox, records};
 use asupersync::Cx;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeSet;
 
 pub const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_BATCH_EVENTS: usize = 128;
@@ -124,6 +126,95 @@ fn check_label(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn scope_is_path(value: &str) -> bool {
+    value.contains('/') || value.contains('\\')
+}
+
+/// Canonical observation scope. Path-like values use the same path
+/// identity as CQR roots; coarse labels (`project`, `repo`) stay as given.
+pub fn normalize_scope(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if !scope_is_path(trimmed) {
+        return trimmed.to_string();
+    }
+    let mut value = crate::clockwork::normalize_anchor_value(AnchorKind::Path, trimmed);
+    loop {
+        if let Some(stripped) = value.strip_suffix("/**") {
+            value = stripped.to_string();
+            continue;
+        }
+        if let Some(stripped) = value.strip_suffix("/*") {
+            value = stripped.to_string();
+            continue;
+        }
+        if let Some(stripped) = value.strip_suffix('*') {
+            value = stripped.to_string();
+            continue;
+        }
+        break;
+    }
+    value.trim_end_matches('/').to_string()
+}
+
+pub(crate) fn scopes_compatible(candidate: &str, query: &str) -> bool {
+    if candidate == query {
+        return true;
+    }
+    candidate.starts_with(&(query.to_string() + "/"))
+        || query.starts_with(&(candidate.to_string() + "/"))
+}
+
+/// Scopes to pull for a caller. Empty paths keep the exact extra label
+/// (default `project`). Named roots include compatible path-scoped sources
+/// plus the extra/unscoped bucket (`project` when extra is omitted).
+pub(crate) fn resolve_query_scopes(
+    conn: &Connection,
+    principal: &str,
+    paths: &[String],
+    extra_scope: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let query_paths: Vec<String> = paths
+        .iter()
+        .map(|p| normalize_scope(p))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let extra = extra_scope
+        .map(normalize_scope)
+        .filter(|s| !s.is_empty());
+    if query_paths.is_empty() {
+        return Ok(vec![extra.unwrap_or_else(|| "project".into())]);
+    }
+    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    wanted.insert(extra.unwrap_or_else(|| "project".into()));
+    for path in &query_paths {
+        wanted.insert(path.clone());
+    }
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT scope_label FROM observation_sources WHERE principal=?1")
+        .map_err(|e| e.to_string())?;
+    let stored = stmt
+        .query_map(params![principal], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    for label in stored {
+        let normalized = normalize_scope(&label);
+        if !scope_is_path(&normalized) {
+            continue;
+        }
+        if query_paths
+            .iter()
+            .any(|query| scopes_compatible(&normalized, query))
+        {
+            wanted.insert(label);
+        }
+    }
+    Ok(wanted.into_iter().collect())
+}
+
 pub(super) fn ensure(conn: &Connection) -> Result<(), String> {
     records::ensure_authoritative_schema(conn).map_err(|err| err.to_string())?;
     crate::db::capture_policy::ensure(conn).map_err(|err| err.to_string())?;
@@ -175,6 +266,61 @@ pub(super) fn offset(
 ) -> Result<u64, String> {
     let value: i64 = conn.query_row("SELECT byte_offset FROM observation_cursors WHERE principal=?1 AND source_key=?2 AND generation=?3", params![principal,key,generation], |r| r.get(0)).optional().map_err(|err| err.to_string())?.unwrap_or(0);
     u64::try_from(value).map_err(|_| "invalid_source_cursor".into())
+}
+
+pub(super) fn ensure_source(
+    conn: &Connection,
+    principal: &str,
+    spec: &SourceSpec,
+) -> Result<(), String> {
+    check_label(&spec.key)?;
+    let scope_label = normalize_scope(&spec.scope);
+    check_label(&scope_label)?;
+    if spec.max_bytes == 0 || spec.max_bytes > MAX_CAPTURE_BYTES {
+        return Err("invalid_capture_limit".into());
+    }
+    ensure(conn)?;
+    let scope = format!("observation-scope:{}", json!([principal, scope_label]));
+    let existing: Option<(String, String, i64)> = conn
+        .query_row(
+            "SELECT scope_id,role,max_bytes FROM observation_sources WHERE principal=?1 AND source_key=?2",
+            params![principal, spec.key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    if let Some((old_scope, role, limit)) = existing {
+        if old_scope != scope || role != spec.role.as_str() || limit != spec.max_bytes as i64 {
+            return Err("source_registration_conflict".into());
+        }
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO scopes(scope_id,owner_id,kind,descriptor) VALUES(?1,?2,'observation',?3)",
+        params![scope, principal, json!({"label": scope_label}).to_string()],
+    )
+    .map_err(|err| err.to_string())?;
+    let policy: String = conn
+        .query_row(
+            "SELECT policy_epoch FROM brain_meta WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    conn.execute(
+        "INSERT INTO observation_sources VALUES(?1,?2,?3,?4,?5,?6,1,?7)",
+        params![
+            principal,
+            spec.key,
+            scope,
+            scope_label,
+            spec.role.as_str(),
+            spec.max_bytes as i64,
+            policy
+        ],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 pub(crate) fn capture_registered(
@@ -317,11 +463,6 @@ impl CortexRuntime {
 
     /// Explicit local operator registration. Observation bodies cannot create or widen it.
     pub async fn register_source(&self, cx: &Cx, spec: SourceSpec) -> Result<(), String> {
-        check_label(&spec.key)?;
-        check_label(&spec.scope)?;
-        if spec.max_bytes == 0 || spec.max_bytes > MAX_CAPTURE_BYTES {
-            return Err("invalid_capture_limit".into());
-        }
         let principal = self.observation_principal()?;
         let mut conn = self
             .state()
@@ -329,39 +470,10 @@ impl CortexRuntime {
             .lock(cx)
             .await
             .map_err(|err| err.to_string())?;
-        ensure(&conn)?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|err| err.to_string())?;
-        let scope = format!("observation-scope:{}", json!([principal, spec.scope]));
-        let existing: Option<(String,String,i64)> = tx.query_row("SELECT scope_id,role,max_bytes FROM observation_sources WHERE principal=?1 AND source_key=?2", params![principal,spec.key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|err| err.to_string())?;
-        if let Some((old_scope, role, limit)) = existing {
-            if old_scope != scope || role != spec.role.as_str() || limit != spec.max_bytes as i64 {
-                return Err("source_registration_conflict".into());
-            }
-        } else {
-            tx.execute("INSERT OR IGNORE INTO scopes(scope_id,owner_id,kind,descriptor) VALUES(?1,?2,'observation',?3)", params![scope,principal,json!({"label":spec.scope}).to_string()]).map_err(|err| err.to_string())?;
-            let policy: String = tx
-                .query_row(
-                    "SELECT policy_epoch FROM brain_meta WHERE singleton=1",
-                    [],
-                    |r| r.get(0),
-                )
-                .map_err(|err| err.to_string())?;
-            tx.execute(
-                "INSERT INTO observation_sources VALUES(?1,?2,?3,?4,?5,?6,1,?7)",
-                params![
-                    principal,
-                    spec.key,
-                    scope,
-                    spec.scope,
-                    spec.role.as_str(),
-                    spec.max_bytes as i64,
-                    policy
-                ],
-            )
-            .map_err(|err| err.to_string())?;
-        }
+        ensure_source(&tx, &principal, &spec)?;
         tx.commit().map_err(|err| err.to_string())
     }
 

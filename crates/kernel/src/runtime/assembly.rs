@@ -156,6 +156,12 @@ fn check_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn canonical_scope(raw: &str) -> Result<String, String> {
+    let scope = super::observation::normalize_scope(raw);
+    check_id(&scope)?;
+    Ok(scope)
+}
+
 fn current_revision(conn: &Connection, principal: &str, id: &str) -> Result<Option<String>, String> {
     conn.query_row(
         "SELECT assembly_revision_id FROM assembly_revisions WHERE principal=?1 AND assembly_id=?2 ORDER BY recorded_sequence DESC LIMIT 1",
@@ -520,6 +526,109 @@ fn compile_for_cues(
     })
 }
 
+fn resolve_compile_scopes(
+    conn: &Connection,
+    principal: &str,
+    paths: &[String],
+    extra_scope: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let mut scopes = super::observation::resolve_query_scopes(conn, principal, paths, extra_scope)?;
+    let query_paths: Vec<String> = paths
+        .iter()
+        .map(|path| super::observation::normalize_scope(path))
+        .filter(|path| !path.is_empty())
+        .collect();
+    if query_paths.is_empty() {
+        return Ok(scopes
+            .into_iter()
+            .map(|scope| super::observation::normalize_scope(&scope))
+            .filter(|scope| !scope.is_empty())
+            .collect());
+    }
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT scope_label FROM assemblies WHERE principal=?1")
+        .map_err(|err| err.to_string())?;
+    let stored = stmt
+        .query_map(params![principal], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    drop(stmt);
+    for label in stored {
+        let normalized = super::observation::normalize_scope(&label);
+        if !super::observation::scope_is_path(&normalized) {
+            continue;
+        }
+        if query_paths
+            .iter()
+            .any(|query| super::observation::scopes_compatible(&normalized, query))
+            && !scopes
+                .iter()
+                .any(|scope| super::observation::normalize_scope(scope) == normalized)
+        {
+            scopes.push(normalized);
+        }
+    }
+    Ok(scopes
+        .into_iter()
+        .map(|scope| super::observation::normalize_scope(&scope))
+        .filter(|scope| !scope.is_empty())
+        .collect())
+}
+
+fn merge_compilations(
+    parts: Vec<AssemblyCompilation>,
+    display_scope: &str,
+    limit: usize,
+) -> AssemblyCompilation {
+    let mut enabled = false;
+    let mut bundles = Vec::new();
+    let mut seen = BTreeSet::new();
+    for part in parts {
+        if part.status != "disabled" {
+            enabled = true;
+        }
+        for bundle in part.bundles {
+            if seen.insert(bundle.id.clone()) {
+                bundles.push(bundle);
+            }
+        }
+    }
+    if !enabled {
+        return AssemblyCompilation {
+            status: "disabled".into(),
+            scope: display_scope.into(),
+            bundles: Vec::new(),
+            brief: String::new(),
+        };
+    }
+    bundles.sort_by(|left, right| {
+        right
+            .utility
+            .partial_cmp(&left.utility)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    bundles.truncate(limit.min(8));
+    let status = if bundles.iter().any(|bundle| bundle.status == "ready") {
+        "ready"
+    } else if bundles
+        .iter()
+        .any(|bundle| bundle.status == "qualification_unavailable")
+    {
+        "qualification_unavailable"
+    } else {
+        "no_match"
+    };
+    let brief = render_assembly_brief(&bundles);
+    AssemblyCompilation {
+        status: status.into(),
+        scope: display_scope.into(),
+        bundles,
+        brief,
+    }
+}
+
 fn routes_enabled(conn: &Connection, principal: &str, scope: &str) -> Result<bool, String> {
     Ok(conn
         .query_row(
@@ -611,8 +720,9 @@ fn stored_from_revision(
 
 impl CortexRuntime {
     pub async fn put_assembly(&self, cx: &Cx, spec: AssemblySpec) -> Result<StoredAssembly, String> {
+        let mut spec = spec;
+        spec.scope = canonical_scope(&spec.scope)?;
         check_id(&spec.id)?;
-        check_id(&spec.scope)?;
         check_id(&spec.kind)?;
         if spec.members.is_empty() || spec.members.len() > 32 {
             return Err("invalid_assembly_members".into());
@@ -703,6 +813,8 @@ impl CortexRuntime {
 
     pub async fn record_learning_event(&self, cx: &Cx, event: LearningEvent) -> Result<bool, String> {
         event.validate()?;
+        let mut event = event;
+        event.scope = canonical_scope(&event.scope)?;
         let principal = self.observation_principal()?;
         if event.principal != principal {
             return Err("feedback_not_authorized".into());
@@ -870,7 +982,7 @@ impl CortexRuntime {
     }
 
     pub async fn rebuild_assembly_routes(&self, cx: &Cx, scope: &str) -> Result<usize, String> {
-        check_id(scope)?;
+        let scope = canonical_scope(scope)?;
         let principal = self.observation_principal()?;
         let mut conn = self.state().db.lock(cx).await.map_err(|err| err.to_string())?;
         ensure(&conn)?;
@@ -882,13 +994,13 @@ impl CortexRuntime {
             params![principal, scope],
         )
         .map_err(|err| err.to_string())?;
-        let count = refresh_routes(&tx, &principal, scope, chrono::Utc::now().timestamp())?;
+        let count = refresh_routes(&tx, &principal, &scope, chrono::Utc::now().timestamp())?;
         tx.commit().map_err(|err| err.to_string())?;
         Ok(count)
     }
 
     pub async fn reset_assembly_routes(&self, cx: &Cx, scope: &str) -> Result<(), String> {
-        check_id(scope)?;
+        let scope = canonical_scope(scope)?;
         let principal = self.observation_principal()?;
         let mut conn = self.state().db.lock(cx).await.map_err(|err| err.to_string())?;
         ensure(&conn)?;
@@ -915,11 +1027,11 @@ impl CortexRuntime {
         cues: &[String],
         limit: usize,
     ) -> Result<Vec<RouteExplanation>, String> {
-        check_id(scope)?;
+        let scope = canonical_scope(scope)?;
         let principal = self.observation_principal()?;
         let conn = self.state().db.lock(cx).await.map_err(|err| err.to_string())?;
         ensure(&conn)?;
-        if !routes_enabled(&conn, &principal, scope)? {
+        if !routes_enabled(&conn, &principal, &scope)? {
             return Ok(Vec::new());
         }
         let mut stmt = conn
@@ -948,7 +1060,7 @@ impl CortexRuntime {
             .map_err(|err| err.to_string())?;
         drop(allowed_stmt);
         let ranked = rank_routes(&edges, cues, &allowed, 0.5);
-        let events = live_events(&conn, &principal, scope)?;
+        let events = live_events(&conn, &principal, &scope)?;
         Ok(ranked
             .into_iter()
             .take(limit.min(8))
@@ -987,25 +1099,66 @@ impl CortexRuntime {
         attested_policy: Option<&str>,
         context_epoch: &str,
     ) -> Result<AssemblyCompilation, String> {
-        check_id(scope)?;
-        let principal = self.observation_principal()?;
-        let conn = self.state().db.lock(cx).await.map_err(|err| err.to_string())?;
-        let (_, restore, policy) = records::brain_epochs(&conn);
-        compile_for_cues(
-            &conn,
-            &principal,
-            scope,
+        let scope = canonical_scope(scope)?;
+        self.compile_assemblies_for_paths(
+            cx,
+            &[],
+            Some(&scope),
             cues,
             limit,
             presence,
             attested_brain,
             attested_policy,
-            &CurrentEpochs {
-                brain_epoch: restore,
-                policy_epoch: policy,
-            },
             context_epoch,
         )
+        .await
+    }
+
+    /// Evidence-closed bundles for caller project roots. Path-scoped
+    /// assemblies stay in their repository; the extra label (default
+    /// `project`) remains the unscoped bucket when roots are named.
+    pub async fn compile_assemblies_for_paths(
+        &self,
+        cx: &Cx,
+        paths: &[String],
+        extra_scope: Option<&str>,
+        cues: &[String],
+        limit: usize,
+        presence: Option<&ContextPresence>,
+        attested_brain: Option<&str>,
+        attested_policy: Option<&str>,
+        context_epoch: &str,
+    ) -> Result<AssemblyCompilation, String> {
+        let display = extra_scope
+            .map(super::observation::normalize_scope)
+            .filter(|scope| !scope.is_empty())
+            .unwrap_or_else(|| "project".into());
+        let principal = self.observation_principal()?;
+        let conn = self.state().db.lock(cx).await.map_err(|err| err.to_string())?;
+        ensure(&conn)?;
+        let (_, restore, policy) = records::brain_epochs(&conn);
+        let current = CurrentEpochs {
+            brain_epoch: restore,
+            policy_epoch: policy,
+        };
+        let scopes = resolve_compile_scopes(&conn, &principal, paths, extra_scope)?;
+        let mut parts = Vec::new();
+        for scope in scopes {
+            check_id(&scope)?;
+            parts.push(compile_for_cues(
+                &conn,
+                &principal,
+                &scope,
+                cues,
+                limit,
+                presence,
+                attested_brain,
+                attested_policy,
+                &current,
+                context_epoch,
+            )?);
+        }
+        Ok(merge_compilations(parts, &display, limit))
     }
 }
 

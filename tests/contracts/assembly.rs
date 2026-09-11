@@ -704,3 +704,237 @@ fn orient_compiles_closed_assemblies_only_after_rebuild() {
         assert!(present["assemblies"]["brief"].as_str().unwrap().contains("already present"));
     });
 }
+
+#[test]
+fn query_keeps_path_scoped_assemblies_in_their_repository() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        let state = solo_state();
+        let runtime = CortexRuntime::from_state(state.clone());
+        runtime
+            .register_source(&cx, SourceSpec::document("notes-a", REPO_A))
+            .await
+            .unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("extra-a", REPO_A))
+            .await
+            .unwrap();
+        let noted = runtime
+            .observe(
+                &cx,
+                "notes-a",
+                "g",
+                event("one", "asmpathretry requires idempotency"),
+            )
+            .await
+            .unwrap();
+        let extra = runtime
+            .observe(
+                &cx,
+                "extra-a",
+                "g",
+                event("one", "asmpathretry is unsafe here"),
+            )
+            .await
+            .unwrap();
+        runtime
+            .put_assembly(
+                &cx,
+                AssemblySpec {
+                    id: "path-bundle".into(),
+                    scope: REPO_A.into(),
+                    kind: "rule".into(),
+                    members: vec![
+                        AssemblyMemberSpec {
+                            revision_id: noted.revision_id.clone(),
+                            role: MembershipRole::Observation,
+                        },
+                        AssemblyMemberSpec {
+                            revision_id: extra.revision_id.clone(),
+                            role: MembershipRole::Exception,
+                        },
+                    ],
+                    guards: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .record_learning_event(
+                &cx,
+                LearningEvent {
+                    origin: "host".into(),
+                    origin_event_id: "path-e1".into(),
+                    principal: "local".into(),
+                    scope: REPO_A.into(),
+                    training_unit: "unit-path".into(),
+                    target: "path-bundle".into(),
+                    kind: LearningKind::Explicit,
+                    reward: 1,
+                    cues: vec!["asmpathretry".into()],
+                    sources: vec![noted.source_id.clone()],
+                    observed_at: 1,
+                    receipt_ref: "receipt:path-e1".into(),
+                },
+            )
+            .await
+            .unwrap();
+        runtime.rebuild_assembly_routes(&cx, REPO_A).await.unwrap();
+        let same = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({
+                "need": "asmpathretry",
+                "paths": [REPO_A],
+                "budget": 4000
+            }),
+        )
+        .await
+        .unwrap();
+        let same_ids: Vec<&str> = same["assemblies"]["bundles"]
+            .as_array()
+            .unwrap_or_else(|| panic!("same-repo query must compile the path assembly: {same}"))
+            .iter()
+            .filter_map(|bundle| bundle["id"].as_str())
+            .collect();
+        assert!(
+            same_ids.contains(&"path-bundle"),
+            "same-repo query must compile the path assembly: {same}"
+        );
+        let nested = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({
+                "need": "asmpathretry",
+                "paths": [format!("{REPO_A}/src")],
+                "budget": 4000
+            }),
+        )
+        .await
+        .unwrap();
+        let nested_ids: Vec<&str> = nested["assemblies"]["bundles"]
+            .as_array()
+            .unwrap_or_else(|| panic!("nested same-repo path must compile the path assembly: {nested}"))
+            .iter()
+            .filter_map(|bundle| bundle["id"].as_str())
+            .collect();
+        assert!(
+            nested_ids.contains(&"path-bundle"),
+            "nested same-repo path must compile the path assembly: {nested}"
+        );
+        let sibling = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({
+                "need": "asmpathretry",
+                "paths": [REPO_B],
+                "budget": 4000
+            }),
+        )
+        .await
+        .unwrap();
+        let sibling_ids: Vec<&str> = sibling
+            .get("assemblies")
+            .and_then(|section| section["bundles"].as_array())
+            .map(|bundles| {
+                bundles
+                    .iter()
+                    .filter_map(|bundle| bundle["id"].as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !sibling_ids.contains(&"path-bundle"),
+            "sibling path must not compile the other repository's assembly: {sibling}"
+        );
+        let project = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({
+                "need": "asmpathretry",
+                "observation_scope": "project",
+                "budget": 4000
+            }),
+        )
+        .await
+        .unwrap();
+        let project_ids: Vec<&str> = project
+            .get("assemblies")
+            .and_then(|section| section["bundles"].as_array())
+            .map(|bundles| {
+                bundles
+                    .iter()
+                    .filter_map(|bundle| bundle["id"].as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !project_ids.contains(&"path-bundle"),
+            "default project compile must not leak a path-scoped assembly: {project}"
+        );
+        let lens_same = runtime
+            .lens(
+                &cx,
+                LensInput {
+                    query: "asmpathretry".into(),
+                    agent: "outfit".into(),
+                    paths: vec![REPO_A.into()],
+                    budget: 4000,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let lens_ids: Vec<&str> = lens_same["assemblies"]["bundles"]
+            .as_array()
+            .unwrap_or_else(|| panic!("library lens must attach path assemblies: {lens_same}"))
+            .iter()
+            .filter_map(|bundle| bundle["id"].as_str())
+            .collect();
+        assert!(
+            lens_ids.contains(&"path-bundle"),
+            "same-repo lens must compile the path assembly: {lens_same}"
+        );
+        let results = lens_same["results"].as_array().cloned().unwrap_or_default();
+        assert!(
+            results.iter().all(|item| item["source"].as_str() != Some("path-bundle")),
+            "assemblies must not mix into results: {lens_same}"
+        );
+        let lens_sibling = runtime
+            .lens(
+                &cx,
+                LensInput {
+                    query: "asmpathretry".into(),
+                    agent: "outfit".into(),
+                    paths: vec![REPO_B.into()],
+                    budget: 4000,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let lens_sibling_ids: Vec<&str> = lens_sibling
+            .get("assemblies")
+            .and_then(|section| section["bundles"].as_array())
+            .map(|bundles| {
+                bundles
+                    .iter()
+                    .filter_map(|bundle| bundle["id"].as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !lens_sibling_ids.contains(&"path-bundle"),
+            "sibling lens must not compile the other repository's assembly: {lens_sibling}"
+        );
+    });
+}

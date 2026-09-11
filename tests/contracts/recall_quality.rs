@@ -501,3 +501,91 @@ fn runtime_scope_on_write_reaches_lens_and_boot() {
         );
     });
 }
+
+#[test]
+fn boot_does_not_cut_a_constraint_headline_away_from_its_qualifier() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let runtime = CortexRuntime::from_state(solo_state());
+        let state = runtime.state();
+        let rule = "BAR-BOOT-1 always enable TLS on the payments listener and never skip certificate pinning even in long-named local development environments with extra hostnames";
+        let exception = "BAR-BOOT-1 exception: localhost dev listener may stay plaintext";
+        let first = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({"decision": rule, "retention_class": "durable", "type": "constraint"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["status"], "ok", "{first}");
+        let second = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({"decision": exception, "retention_class": "durable", "type": "constraint"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second["status"], "ok", "{second}");
+        {
+            use cortex_kernel::db::records::{append_commit, heads};
+            use cortex_kernel::handlers::operations::{add_relation, DependencyRole};
+            let rule_id = decision_id(&first);
+            let exception_id = decision_id(&second);
+            let conn = state.db.lock(&cx).await.expect("lock");
+            let rule_head = heads(&conn, &format!("decision:{rule_id}")).unwrap().remove(0);
+            let exc_head = heads(&conn, &format!("decision:{exception_id}"))
+                .unwrap()
+                .remove(0);
+            let seq = append_commit(&conn, "solo", None, "process_crash").unwrap();
+            add_relation(
+                &conn,
+                seq,
+                &rule_head,
+                &exc_head,
+                DependencyRole::RequiredQualifier.as_str(),
+                Some("closure/1"),
+            )
+            .unwrap();
+        }
+        let full = runtime
+            .boot(
+                &cx,
+                BootInput {
+                    agent: "reader".into(),
+                    max_tokens: 2000,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            full.boot_prompt.contains("always enable TLS")
+                && full.boot_prompt.contains("localhost dev listener"),
+            "full boot must pack the constraint and its qualifier: {}",
+            full.boot_prompt
+        );
+        let packed = cortex_kernel::compiler::pack_context_items_greedy(
+            std::slice::from_ref(&cortex_kernel::compiler::ContextItem::new(
+                "## Constraints",
+                format!(
+                    "## Constraints\n- [constraint d1] {rule}\n- [constraint d2] {exception}"
+                ),
+                0.99,
+            )),
+            40,
+        );
+        let assembled = packed.assembled_parts.join("\n\n");
+        assert!(
+            packed.admitted.iter().all(|item| item["truncated"] != true),
+            "constraint capsule must not be cut mid-statement: {assembled:?} admitted={:?}",
+            packed.admitted
+        );
+        assert!(
+            !assembled.contains("always enable TLS") || assembled.contains("localhost dev listener"),
+            "greedy packing must not serve the headline without its qualifier: {assembled:?}"
+        );
+    });
+}

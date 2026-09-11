@@ -38,6 +38,7 @@ pub fn store_decision_with_ttl(
         None,
         None,
         owner_id,
+        &[],
     )
     .map_err(|err| err.to_string());
     if let Ok((ref entry, id)) = result {
@@ -116,6 +117,7 @@ pub fn store_decision_with_input_embedding_and_provenance(
         None,
         query_embedding,
         owner_id,
+        &[],
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -131,6 +133,7 @@ pub fn store_decision_with_input_embedding_and_provenance_retention(
     retention_class: Option<RetentionClass>,
     query_embedding: Option<&[f32]>,
     owner_id: Option<i64>,
+    paths: &[String],
 ) -> Result<(Value, Option<i64>), StoreError> {
     store_decision_internal(
         conn,
@@ -144,6 +147,7 @@ pub fn store_decision_with_input_embedding_and_provenance_retention(
         retention_class,
         query_embedding,
         owner_id,
+        paths,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -159,6 +163,7 @@ pub fn store_decision_internal(
     retention_class: Option<RetentionClass>,
     query_embedding: Option<&[f32]>,
     owner_id: Option<i64>,
+    paths: &[String],
 ) -> Result<(Value, Option<i64>), StoreError> {
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
     let suppress_benchmark_events =
@@ -245,6 +250,7 @@ pub fn store_decision_internal(
         expires_at,
         &ts,
         owner_id,
+        paths,
     )
 }
 pub fn is_typed_evidence_kind(entry_type: &str) -> bool {
@@ -281,10 +287,25 @@ pub fn store_decision_legacy(
     expires_at: Option<String>,
     ts: &str,
     owner_id: Option<i64>,
+    paths: &[String],
 ) -> Result<(Value, Option<i64>), StoreError> {
     let decision_tokens = jaccard_token_set(decision);
-    let recent_candidates =
+    let mut recent_candidates =
         fetch_recent_decision_candidates(conn, owner_id).map_err(StoreError::Internal)?;
+    let candidate_ids: Vec<i64> = recent_candidates.iter().map(|candidate| candidate.id).collect();
+    match crate::handlers::recall::explicit_paths_by_target(conn, "decision", &candidate_ids) {
+        Ok(path_map) => {
+            let incoming = crate::handlers::recall::normalize_query_paths(paths);
+            recent_candidates.retain(|candidate| {
+                let candidate_paths = path_map
+                    .get(&candidate.id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                crate::handlers::recall::jaccard_path_sets(&incoming, candidate_paths)
+            });
+        }
+        Err(_) => recent_candidates.clear(),
+    }
     let mut recent_scan = scan_recent_decision_candidates(
         &recent_candidates,
         decision,

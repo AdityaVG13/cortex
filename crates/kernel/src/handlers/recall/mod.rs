@@ -18,4 +18,6 @@ pub use engine::run_budget_recall_trace_with_query_vector;
 pub use engine::{
     parse_recall_policy_mode, resolve_recall_budget_k, RecallContext, RecallPolicyMode,
 };
-pub(crate) use engine::target_scope_compatible;
+pub(crate) use engine::{
+    explicit_paths_by_target, jaccard_path_sets, normalize_query_paths, read_path_sets,
+};

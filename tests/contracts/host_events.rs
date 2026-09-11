@@ -8,12 +8,15 @@ use cortex_logic::adapter::{
     decide, degradation_matrix, CapabilityManifest, EventKind, HookDecision, Presence,
     SnapshotState,
 };
-use cortex_daemon::hook_boot::session_start_context;
+use cortex_daemon::hook_boot::{boot_assembly_brief, boot_capsule_for_payload, session_start_context};
 use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
 use cortex_kernel::auth::CortexPaths;
 use cortex_kernel::hook_event::{frame_from_host, load_capture_sidecar, process, run_with_paths};
+use cortex_kernel::runtime::assembly::{AssemblyMemberSpec, AssemblySpec};
 use cortex_kernel::runtime::host_capture::{ADAPTER_VERSION, HostCaptureGrant};
-use cortex_kernel::runtime::CortexRuntime;
+use cortex_kernel::runtime::observation::{ObservationEvent, SourceSpec};
+use cortex_kernel::runtime::{CortexRuntime, LensInput};
+use cortex_kernel::assembly::{LearningEvent, LearningKind, MembershipRole};
 use cortex_tests::support::{run_with_cx, solo_state};
 use serde_json::json;
 
@@ -498,6 +501,770 @@ fn live_hook_reads_home_capture_file() {
                 .iter()
                 .any(|item| item.text.contains("FILESIDECAR-1")),
             "home capture.json must capture without CORTEX_CAPTURE: printed={printed:?} hits={hits:?}"
+        );
+    });
+}
+
+#[test]
+fn boot_fallback_keeps_path_scoped_assemblies_in_their_repository() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        let runtime = CortexRuntime::from_state(solo_state());
+        runtime
+            .register_source(&cx, SourceSpec::document("notes-a", REPO_A))
+            .await
+            .unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("extra-a", REPO_A))
+            .await
+            .unwrap();
+        let noted = runtime
+            .observe(
+                &cx,
+                "notes-a",
+                "g",
+                ObservationEvent {
+                    event_key: "one".into(),
+                    text: "bootpathretry requires idempotency".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let extra = runtime
+            .observe(
+                &cx,
+                "extra-a",
+                "g",
+                ObservationEvent {
+                    event_key: "one".into(),
+                    text: "bootpathretry is unsafe here".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .put_assembly(
+                &cx,
+                AssemblySpec {
+                    id: "boot-path-bundle".into(),
+                    scope: REPO_A.into(),
+                    kind: "rule".into(),
+                    members: vec![
+                        AssemblyMemberSpec {
+                            revision_id: noted.revision_id.clone(),
+                            role: MembershipRole::Observation,
+                        },
+                        AssemblyMemberSpec {
+                            revision_id: extra.revision_id.clone(),
+                            role: MembershipRole::Exception,
+                        },
+                    ],
+                    guards: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .record_learning_event(
+                &cx,
+                LearningEvent {
+                    origin: "host".into(),
+                    origin_event_id: "boot-e1".into(),
+                    principal: "local".into(),
+                    scope: REPO_A.into(),
+                    training_unit: "unit-boot".into(),
+                    target: "boot-path-bundle".into(),
+                    kind: LearningKind::Explicit,
+                    reward: 1,
+                    cues: vec!["bootpathretry".into()],
+                    sources: vec![noted.source_id.clone()],
+                    observed_at: 1,
+                    receipt_ref: "receipt:boot-e1".into(),
+                },
+            )
+            .await
+            .unwrap();
+        runtime.rebuild_assembly_routes(&cx, REPO_A).await.unwrap();
+        let prompt = "Identity chrome bootpathretry must remain closed";
+        let same = boot_assembly_brief(
+            &cx,
+            &runtime,
+            prompt,
+            &json!({"cwd": REPO_A}),
+        )
+        .await;
+        assert!(
+            same.contains("boot-path-bundle"),
+            "SessionStart boot fallback must compile the cwd assembly: {same}"
+        );
+        let sibling = boot_assembly_brief(
+            &cx,
+            &runtime,
+            prompt,
+            &json!({"cwd": REPO_B}),
+        )
+        .await;
+        assert!(
+            !sibling.contains("boot-path-bundle"),
+            "a sibling cwd must not compile the other repository's assembly: {sibling}"
+        );
+        let project = boot_assembly_brief(&cx, &runtime, prompt, &json!({})).await;
+        assert!(
+            !project.contains("boot-path-bundle"),
+            "boot fallback without cwd must stay on the project bucket: {project}"
+        );
+    });
+}
+
+fn lens_excerpts(view: &serde_json::Value) -> Vec<&str> {
+    view["results"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| r["excerpt"].as_str())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn tool_result_deposit_stays_in_the_cwd_repository() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        let runtime = CortexRuntime::from_state(solo_state());
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "scope-s",
+            "working_directory": REPO_A,
+            "tool_name": "Bash",
+            "tool_use_id": "tu-scope-1",
+            "tool_input": {"command": "cargo test -p pathscopeunique"},
+            "tool_response": {
+                "stdout": "test result: FAILED. 0 passed; 1 failed\n --> crates/kernel/src/pathscope.rs:1:1",
+                "exit_code": 101
+            }
+        });
+        let frame = frame_from_host(
+            "PostToolUse",
+            &payload,
+            CapabilityManifest::claude_code_plugin(),
+        );
+        assert_eq!(frame.scope, REPO_A);
+        let out = process(&cx, &runtime, "claude-code", &frame, &payload)
+            .await
+            .unwrap();
+        assert!(
+            out.outcome.automatic_capture,
+            "tool result must deposit: {out:?}"
+        );
+
+        let sibling = runtime
+            .lens(
+                &cx,
+                LensInput {
+                    query: "pathscopeunique".into(),
+                    budget: 4000,
+                    k: 8,
+                    agent: "claude-code".into(),
+                    paths: vec![REPO_B.into()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            lens_excerpts(&sibling)
+                .iter()
+                .all(|excerpt| !excerpt.contains("pathscopeunique")),
+            "a sibling repo must not see the cwd-scoped tool fact: {sibling}"
+        );
+
+        let home = runtime
+            .lens(
+                &cx,
+                LensInput {
+                    query: "pathscopeunique".into(),
+                    budget: 4000,
+                    k: 8,
+                    agent: "claude-code".into(),
+                    paths: vec![REPO_A.into()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            lens_excerpts(&home)
+                .iter()
+                .any(|excerpt| excerpt.contains("pathscopeunique")),
+            "cwd lens must admit the tool fact: {home}"
+        );
+    });
+}
+
+#[test]
+fn boot_fallback_keeps_path_scoped_cqr_facts_in_their_repository() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        let runtime = CortexRuntime::from_state(solo_state());
+        let caller = || Caller {
+            owner_id: None,
+            agent: "claude-code",
+            principal: "solo".into(),
+        };
+        let a = dispatch(
+            &cx,
+            runtime.state(),
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": "RepoA exclusive boot marker must stay here",
+                "paths": [REPO_A],
+                "retention_class": "durable",
+                "type": "constraint"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(a["status"], "ok", "{a}");
+        let b = dispatch(
+            &cx,
+            runtime.state(),
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": "RepoB exclusive boot marker must stay here",
+                "paths": [REPO_B],
+                "retention_class": "durable",
+                "type": "constraint"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(b["status"], "ok", "{b}");
+
+        let same = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"cwd_path": REPO_A}),
+            2000,
+        )
+        .await
+        .expect("SessionStart boot capsule");
+        assert!(
+            same.contains("RepoA exclusive boot marker"),
+            "cwd boot must pack this repo: {same}"
+        );
+        assert!(
+            !same.contains("RepoB exclusive boot marker"),
+            "cwd boot must omit the sibling repo: {same}"
+        );
+
+        let sibling = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"cwd_path": REPO_B}),
+            2000,
+        )
+        .await
+        .expect("SessionStart boot capsule");
+        assert!(
+            sibling.contains("RepoB exclusive boot marker"),
+            "sibling cwd boot must pack its repo: {sibling}"
+        );
+        assert!(
+            !sibling.contains("RepoA exclusive boot marker"),
+            "sibling cwd boot must omit the other repo: {sibling}"
+        );
+    });
+}
+
+#[test]
+fn operational_path_scoped_fact_reaches_cwd_boot_not_sibling() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        const FACT_A: &str = "RepoA exclusive boot marker must stay here";
+        const FACT_B: &str = "RepoB exclusive boot marker must stay here";
+        let runtime = CortexRuntime::from_state(solo_state());
+        runtime
+            .deposit_with_scope(
+                &cx,
+                "op-boot-a",
+                None,
+                FACT_A,
+                "claude-code",
+                None,
+                &[REPO_A.into()],
+                None,
+            )
+            .await
+            .unwrap();
+        runtime
+            .deposit_with_scope(
+                &cx,
+                "op-boot-b",
+                None,
+                FACT_B,
+                "claude-code",
+                None,
+                &[REPO_B.into()],
+                None,
+            )
+            .await
+            .unwrap();
+
+        {
+            let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                n, 2,
+                "two repositories with similar sentences must stay two facts"
+            );
+            let mut stmt = conn
+                .prepare(
+                    "SELECT d.decision, a.value, a.specificity
+                     FROM decisions d
+                     JOIN clock_anchor_evidence e
+                       ON e.target_id = d.id AND e.target_type = 'decision'
+                     JOIN clock_anchors a ON a.id = e.anchor_id
+                     WHERE a.kind = 'path' AND d.status = 'active'
+                     ORDER BY d.id, a.specificity DESC, a.value",
+                )
+                .unwrap();
+            let rows: Vec<String> = stmt
+                .query_map([], |row| {
+                    Ok(format!(
+                        "{} | {} | {}",
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?
+                    ))
+                })
+                .unwrap()
+                .flatten()
+                .collect();
+            assert!(
+                rows.iter().any(|row| row.contains("RepoA exclusive")
+                    && row.contains("users/x/repoa")
+                    && row.contains(" | 3")),
+                "operational deposit must keep the explicit repo path: {rows:?}"
+            );
+        }
+
+        let same = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"cwd": REPO_A}),
+            600,
+        )
+        .await
+        .expect("SessionStart boot capsule");
+        assert!(
+            same.contains("RepoA exclusive boot marker"),
+            "cwd boot must pack this repo's operational fact: {same}"
+        );
+        assert!(
+            !same.contains("RepoB exclusive boot marker"),
+            "cwd boot must omit the sibling operational fact: {same}"
+        );
+
+        let sibling = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"cwd": REPO_B}),
+            600,
+        )
+        .await
+        .expect("SessionStart boot capsule");
+        assert!(
+            sibling.contains("RepoB exclusive boot marker"),
+            "sibling cwd boot must pack its operational fact: {sibling}"
+        );
+        assert!(
+            !sibling.contains("RepoA exclusive boot marker"),
+            "sibling cwd boot must omit the other operational fact: {sibling}"
+        );
+    });
+}
+
+#[test]
+fn same_repo_duplicate_sentence_still_collapses() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const TEXT: &str = "RepoA exclusive boot marker must stay here";
+        let runtime = CortexRuntime::from_state(solo_state());
+        runtime
+            .deposit_with_scope(
+                &cx,
+                "op-dup-1",
+                None,
+                TEXT,
+                "claude-code",
+                None,
+                &[REPO_A.into()],
+                None,
+            )
+            .await
+            .unwrap();
+        runtime
+            .deposit_with_scope(
+                &cx,
+                "op-dup-2",
+                None,
+                TEXT,
+                "claude-code",
+                None,
+                &[REPO_A.into()],
+                None,
+            )
+            .await
+            .unwrap();
+        let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            n, 1,
+            "the same sentence in one repository must still collapse"
+        );
+    });
+}
+
+#[test]
+fn tool_result_reaches_cwd_boot_capsule_not_sibling() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        let runtime = CortexRuntime::from_state(solo_state());
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "boot-s",
+            "cwd": REPO_A,
+            "tool_name": "Bash",
+            "tool_use_id": "tu-boot-1",
+            "tool_input": {"command": "cargo test -p bootcqrunify"},
+            "tool_response": {
+                "stdout": "test result: FAILED. 0 passed; 1 failed\n --> crates/kernel/src/bootcqr.rs:1:1",
+                "exit_code": 101
+            }
+        });
+        let frame = frame_from_host(
+            "PostToolUse",
+            &payload,
+            CapabilityManifest::claude_code_plugin(),
+        );
+        let out = process(&cx, &runtime, "claude-code", &frame, &payload)
+            .await
+            .unwrap();
+        assert!(
+            out.outcome.automatic_capture,
+            "tool result must deposit: {out:?}"
+        );
+
+        let same = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"working_directory": REPO_A}),
+            600,
+        )
+        .await
+        .expect("SessionStart boot capsule");
+        assert!(
+            same.contains("bootcqrunify"),
+            "SessionStart boot at the tool cwd must pack the operational capture: {same}"
+        );
+
+        let sibling = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"working_directory": REPO_B}),
+            600,
+        )
+        .await
+        .expect("SessionStart boot capsule");
+        assert!(
+            !sibling.contains("bootcqrunify"),
+            "a sibling cwd must not pack the other repository's tool capture: {sibling}"
+        );
+    });
+}
+
+#[test]
+fn commit_cwd_path_stays_in_that_repository() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        let runtime = CortexRuntime::from_state(solo_state());
+        let committed = dispatch(
+            &cx,
+            runtime.state(),
+            Caller {
+                owner_id: None,
+                agent: "claude-code",
+                principal: "solo".into(),
+            },
+            Operation::Commit,
+            &json!({
+                "decision": "CwdPath exclusive ledger retries must stay idempotent under duplicate POSTs",
+                "cwd_path": REPO_A
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(committed["status"], "ok", "{committed}");
+
+        let sibling = runtime
+            .lens(
+                &cx,
+                LensInput {
+                    query: "CwdPath exclusive ledger retries".into(),
+                    budget: 4000,
+                    k: 8,
+                    agent: "claude-code".into(),
+                    paths: vec![REPO_B.into()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            lens_excerpts(&sibling)
+                .iter()
+                .all(|excerpt| !excerpt.contains("CwdPath exclusive ledger retries")),
+            "cwd_path commit must not admit in a sibling repo: {sibling}"
+        );
+
+        let home = runtime
+            .lens(
+                &cx,
+                LensInput {
+                    query: "CwdPath exclusive ledger retries".into(),
+                    budget: 4000,
+                    k: 8,
+                    agent: "claude-code".into(),
+                    paths: vec![REPO_A.into()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            lens_excerpts(&home)
+                .iter()
+                .any(|excerpt| excerpt.contains("CwdPath exclusive ledger retries")),
+            "cwd_path commit must admit in that repo: {home}"
+        );
+    });
+}
+
+fn active_decision_count(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn unscoped_near_duplicate_does_not_absorb_path_scoped_fact() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        const UNSCOPED: &str = "Exclusive boot marker must stay here";
+        const SCOPED: &str = "RepoA exclusive boot marker must stay here";
+        let runtime = CortexRuntime::from_state(solo_state());
+        runtime
+            .deposit(&cx, "unscoped-boot", UNSCOPED, "claude-code", None)
+            .await
+            .unwrap();
+        runtime
+            .deposit_with_scope(
+                &cx,
+                "scoped-boot",
+                None,
+                SCOPED,
+                "claude-code",
+                None,
+                &[REPO_A.into()],
+                None,
+            )
+            .await
+            .unwrap();
+
+        {
+            let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+            assert_eq!(
+                active_decision_count(&conn),
+                2,
+                "an unscoped sentence must not Jaccard-merge a path-scoped near-duplicate"
+            );
+            let mut stmt = conn
+                .prepare(
+                    "SELECT d.decision, COALESCE(a.value, ''), COALESCE(a.specificity, 0)
+                     FROM decisions d
+                     LEFT JOIN clock_anchor_evidence e
+                       ON e.target_id = d.id AND e.target_type = 'decision'
+                     LEFT JOIN clock_anchors a ON a.id = e.anchor_id AND a.kind = 'path'
+                     WHERE d.status = 'active'
+                     ORDER BY d.id, a.specificity DESC, a.value",
+                )
+                .unwrap();
+            let rows: Vec<String> = stmt
+                .query_map([], |row| {
+                    Ok(format!(
+                        "{} | {} | {}",
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?
+                    ))
+                })
+                .unwrap()
+                .flatten()
+                .collect();
+            assert!(
+                rows.iter().any(|row| row.contains("RepoA exclusive")
+                    && row.contains("users/x/repoa")
+                    && row.contains(" | 3")),
+                "path-scoped near-duplicate must keep the explicit repo path: {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|row| row.contains("Exclusive boot marker")
+                    && !row.contains("RepoA exclusive")
+                    && !row.contains("users/x/repoa")),
+                "unscoped near-duplicate must remain without a spec-3 path: {rows:?}"
+            );
+        }
+
+        let home = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"cwd": REPO_A}),
+            600,
+        )
+        .await
+        .expect("cwd A boot");
+        assert!(
+            home.contains("RepoA exclusive boot marker"),
+            "cwd boot must still pack the path-scoped fact: {home}"
+        );
+
+        let sibling = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"cwd": REPO_B}),
+            600,
+        )
+        .await
+        .expect("cwd B boot");
+        assert!(
+            sibling.contains("Exclusive boot marker must stay here"),
+            "unscoped fact must remain visible in a sibling repository: {sibling}"
+        );
+        assert!(
+            !sibling.contains("RepoA exclusive boot marker"),
+            "sibling cwd must not pack the other repository's scoped fact: {sibling}"
+        );
+    });
+}
+
+#[test]
+fn path_scoped_near_duplicate_does_not_absorb_unscoped_fact() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        const UNSCOPED: &str = "Exclusive boot marker must stay here";
+        const SCOPED: &str = "RepoA exclusive boot marker must stay here";
+        let runtime = CortexRuntime::from_state(solo_state());
+        runtime
+            .deposit_with_scope(
+                &cx,
+                "scoped-first",
+                None,
+                SCOPED,
+                "claude-code",
+                None,
+                &[REPO_A.into()],
+                None,
+            )
+            .await
+            .unwrap();
+        runtime
+            .deposit(&cx, "unscoped-second", UNSCOPED, "claude-code", None)
+            .await
+            .unwrap();
+
+        {
+            let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+            assert_eq!(
+                active_decision_count(&conn),
+                2,
+                "a path-scoped sentence must not Jaccard-merge a later unscoped near-duplicate"
+            );
+        }
+
+        let sibling = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"cwd": REPO_B}),
+            600,
+        )
+        .await
+        .expect("cwd B boot");
+        assert!(
+            sibling.contains("Exclusive boot marker must stay here"),
+            "later unscoped write must remain visible outside the scoped repository: {sibling}"
+        );
+        assert!(
+            !sibling.contains("RepoA exclusive boot marker"),
+            "sibling cwd must not pack the scoped fact: {sibling}"
+        );
+    });
+}
+
+#[test]
+fn unscoped_duplicate_sentence_still_collapses() {
+    run_with_cx(|cx| async move {
+        const TEXT: &str = "Exclusive boot marker must stay here";
+        let runtime = CortexRuntime::from_state(solo_state());
+        runtime
+            .deposit(&cx, "unscoped-dup-1", TEXT, "claude-code", None)
+            .await
+            .unwrap();
+        runtime
+            .deposit(&cx, "unscoped-dup-2", TEXT, "claude-code", None)
+            .await
+            .unwrap();
+        let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+        assert_eq!(
+            active_decision_count(&conn),
+            1,
+            "the same unscoped sentence must still collapse"
         );
     });
 }

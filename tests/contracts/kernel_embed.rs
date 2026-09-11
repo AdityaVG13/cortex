@@ -54,6 +54,119 @@ fn kernel_opens_deposits_and_lenses_without_a_server_or_a_port() {
 }
 
 #[test]
+fn lens_keeps_path_scoped_observations_out_of_results() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        use cortex_kernel::runtime::observation::{ObservationEvent, SourceSpec};
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        let dir = tempfile::Builder::new()
+            .prefix("cortex-kernel-lens-obs-")
+            .tempdir()
+            .unwrap();
+        let rt = CortexRuntime::open_db(&dir.path().join("cortex.db")).unwrap();
+        rt.register_source(&cx, SourceSpec::document("notes-a", REPO_A))
+            .await
+            .unwrap();
+        rt.register_source(&cx, SourceSpec::document("notes-b", REPO_B))
+            .await
+            .unwrap();
+        let in_a = rt
+            .observe(
+                &cx,
+                "notes-a",
+                "g1",
+                ObservationEvent {
+                    event_key: "a1".into(),
+                    text: "LENS-OBS-A ledger retry after crash".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let in_b = rt
+            .observe(
+                &cx,
+                "notes-b",
+                "g1",
+                ObservationEvent {
+                    event_key: "b1".into(),
+                    text: "LENS-OBS-A cache warm on sibling boot".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let view = rt
+            .lens(
+                &cx,
+                LensInput {
+                    query: "LENS-OBS-A".into(),
+                    agent: "outfit".into(),
+                    paths: vec![REPO_A.into()],
+                    budget: 4000,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let results = view["results"].as_array().cloned().unwrap_or_default();
+        assert!(
+            results.iter().all(|item| item["source"].as_str() != Some(in_a.source_id.as_str())
+                && item["source"].as_str() != Some(in_b.source_id.as_str())),
+            "observations must not mix into results: {view}"
+        );
+        let items = view["observations"]["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("library lens must attach observations: {view}"));
+        let ids: Vec<&str> = items
+            .iter()
+            .filter_map(|item| item["source_id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&in_a.source_id.as_str()),
+            "same-repo observation missing from lens: {view}"
+        );
+        assert!(
+            !ids.contains(&in_b.source_id.as_str()),
+            "sibling observation leaked onto lens: {view}"
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| item["trust"]["kind"] == "attributed_observation"),
+            "{view}"
+        );
+        let sibling = rt
+            .lens(
+                &cx,
+                LensInput {
+                    query: "LENS-OBS-A".into(),
+                    agent: "outfit".into(),
+                    paths: vec![REPO_B.into()],
+                    budget: 4000,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let sibling_ids: Vec<&str> = sibling["observations"]["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("library lens must attach observations: {sibling}"))
+            .iter()
+            .filter_map(|item| item["source_id"].as_str())
+            .collect();
+        assert!(
+            sibling_ids.contains(&in_b.source_id.as_str()),
+            "{sibling}"
+        );
+        assert!(
+            !sibling_ids.contains(&in_a.source_id.as_str()),
+            "repo A must not appear under repo B: {sibling}"
+        );
+    });
+}
+
+#[test]
 fn cancelled_deposit_does_not_write_or_poison_the_next_request() {
     let state = cortex_tests::support::run_with_cx(|cx| async move {
         let state = cortex_tests::support::solo_state();

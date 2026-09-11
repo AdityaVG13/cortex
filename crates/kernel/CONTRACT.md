@@ -9,10 +9,18 @@ transport adapter over this crate; a Rust host path-deps it directly.
 `from_state`, `deposit`, `deposit_with_key`, `lens`, `boot`, `state`),
 `LensInput`, `BootInput`, `DepositOutcome`, `CortexError`
 (`Open | Rejected | Conflict | Recall | Internal | Lock`). `deposit` /
-`cortex op commit` record caller `paths` / `cwd` / `thread` as explicit clock
-anchors. `lens` / `orient` / `boot` with those paths admit the matching project
-and drop a row whose explicit root is a different repository; unscoped rows
-stay visible. Every module the daemon
+`cortex op commit` record caller `paths` / `cwd` / `cwd_path` /
+`working_directory` / `thread` as explicit clock anchors. `process()` ToolResult
+deposits stamp the same host cwd and session thread. `lens` / `orient` / `boot`
+with those paths admit the matching project and drop a row whose explicit root
+is a different repository; unscoped rows stay visible. Near-duplicate CQR
+sentences in two repositories stay two facts: Jaccard merge only considers
+rows whose explicit path is compatible with the incoming deposit. Unscoped
+and path-scoped identities never merge with each other; two unscoped
+near-duplicates still collapse. SessionStart boot
+fallback compiles the CQR capsule with those roots, not an empty path list.
+Boot packing omits identity and constraints capsules that do not
+fit wholly; it does not cut those texts to save budget. Every module the daemon
 used to own remains in this crate (`db`, `handlers::{operations,recall,store,…}`,
 `state`, `compiler`, `reflex`, `store_spi`, …). Hosts and contracts import
 `cortex_kernel` / `cortex_logic` directly. No axum / http / hyper type appears in
@@ -103,9 +111,20 @@ or delivery completeness; an inventory is not a globally atomic file snapshot.
 `reconcile_inventory` rechecks that sealed revision against current grants and
 file metadata. Later registrations are counted, not appended.
 
-**Retrieval and preparation.** `cycle::NeedSpec`, `query_observations`, `require_observation`,
+**Retrieval and preparation.** `cycle::NeedSpec`, `query_observations`, `query_observations_for_paths`,
+`recent_observations_for_paths`, `require_observation`,
 `subscribe_observations` and `prepare_observations` implement scoped exact any-cue
-joins over retained observations. Capture maintains postings and reverse needs
+joins over retained observations. A source `scope` may be a coarse label or a
+project root (same path identity as CQR). `query` / `orient` with `paths` /
+`cwd` pull compatible path-scoped sources plus the unscoped `project` bucket
+when `observation_scope` is omitted; a default `project` pull does not leak
+path-scoped sources. `CortexRuntime::lens` attaches the same attributed
+`observations` section beside recall `results` (never mixed into `results`).
+Orient with only those roots (or a task that is only
+those path tokens) uses a recent-in-scope pull so cwd start can surface
+attributed evidence without overlapping body cues. `cortex capture query`
+accepts repeatable `--path` roots; `--scope` stays the extra/unscoped bucket
+when paths are named, and remains required when no path is given. Capture maintains postings and reverse needs
 inside its transaction. Catch-up projects at most 32 observations per slice;
 8192 distinct cues per observation is the projection ceiling. At most 128 active
 needs per principal, 32 query cues, 128 returned sources and 64 KiB payload.
@@ -148,8 +167,12 @@ Operator-owned origin policy remains separate from payload origin claims.
 `resolve_host_invocation` derives user, Bash, and file-tool identities from the
 operator sidecar and host payload without model-generated memory commands. Own deliveries are excluded,
 origin conflicts fail closed, and raw JSONL cursors commit atomically with capture
-and metadata markers. `capture_and_prepare_host` composes exact intake with scoped
-needs; final/delivery-only events do not reinject. Capture may have committed
+and metadata markers. A live payload `cwd` that looks like a project root uses
+that path as the observation scope (same identity as CQR roots). Events without a
+path stay in the grant's registered scope. A later capture of the same
+generation/event key reuses the first source so catch-up cannot mint a second
+row in the grant bucket. `capture_and_prepare_host` composes exact intake with
+scoped needs; final/delivery-only events do not reinject. Capture may have committed
 before a preparation error; retry the original identity.
 
 Probe boundary: Claude Code 2.1.260 on macOS, isolated configuration, external
@@ -179,11 +202,15 @@ and training units; ranking is scoped utility, not a truth score. A
 rebuild, still inside current grants and evidence closure. `compile_assemblies`
 is the evidence-closed View for those routes: `orient` / `query` attach an
 `assemblies` section (never Cards), `expand` hydrates `asm:` / `rev:`, and
-hooks inject the extractive brief. A missing required exception yields
+hooks inject the extractive brief. `compile_assemblies_for_paths` joins
+caller roots the same way as observation pulls. A missing required exception yields
 `qualification_unavailable` with no prefix claim. Host presence may omit
-payloads already attested in the current invocation. Default query, `lens`,
-and routes-off reads stay exact observation / CQR. No HDC or controller is
-claimed.
+payloads already attested in the current invocation. Default query and
+routes-off reads stay exact observation / CQR until rebuild. `lens` attaches
+the same `assemblies` section beside `results`. SessionStart boot fallback
+compiles the CQR capsule and assemblies from caller `cwd` rather than an empty
+path list or only the `project` bucket. No HDC or
+controller is claimed.
 
 **Host entry.** Live host events use `cortex hook <kind>`. `resolve_host_invocation`
 turns `CORTEX_CAPTURE` or `$CORTEX_HOME/capture.json` plus the host payload into

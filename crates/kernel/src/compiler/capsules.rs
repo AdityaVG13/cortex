@@ -48,21 +48,39 @@ pub fn boot_owner() -> Option<i64> {
     BOOT_OWNER.with(|cell| cell.get())
 }
 pub fn set_boot_paths(paths: &[String]) {
-    BOOT_PATHS.with(|cell| *cell.borrow_mut() = paths.to_vec());
+    let normalized = crate::handlers::recall::normalize_query_paths(paths);
+    BOOT_PATHS.with(|cell| *cell.borrow_mut() = normalized);
 }
-pub fn boot_paths() -> Vec<String> {
-    BOOT_PATHS.with(|cell| cell.borrow().clone())
+pub fn with_boot_paths<R>(f: impl FnOnce(&[String]) -> R) -> R {
+    BOOT_PATHS.with(|cell| f(&cell.borrow()))
 }
-pub(crate) fn decision_in_boot_scope(conn: &Connection, id: i64) -> bool {
-    target_in_boot_scope(conn, "decision", id)
+/// `None` means the boot is unscoped and every id stays eligible.
+pub(crate) fn boot_scope_allowlist(
+    conn: &Connection,
+    target_type: &str,
+    ids: &[i64],
+) -> Option<HashSet<i64>> {
+    with_boot_paths(|paths| {
+        if paths.is_empty() {
+            return None;
+        }
+        let path_map = crate::handlers::recall::explicit_paths_by_target(conn, target_type, ids)
+            .unwrap_or_default();
+        Some(
+            ids.iter()
+                .copied()
+                .filter(|id| {
+                    crate::handlers::recall::read_path_sets(
+                        paths,
+                        path_map.get(id).map(Vec::as_slice).unwrap_or(&[]),
+                    )
+                })
+                .collect(),
+        )
+    })
 }
-pub(crate) fn target_in_boot_scope(conn: &Connection, target_type: &str, target_id: i64) -> bool {
-    let paths = boot_paths();
-    if paths.is_empty() {
-        return true;
-    }
-    crate::handlers::recall::target_scope_compatible(conn, target_type, target_id, &paths)
-        .unwrap_or(true)
+pub(crate) fn keep_boot_id(allow: &Option<HashSet<i64>>, id: i64) -> bool {
+    allow.as_ref().map(|ids| ids.contains(&id)).unwrap_or(true)
 }
 pub fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
@@ -398,9 +416,12 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             conn.prepare_cached(&format!("SELECT id, decision, context, source_agent FROM decisions WHERE status = 'active'{} AND created_at >= ?1 AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, rowid DESC LIMIT 20", owner_clause(conn, "decisions", boot_owner())))
         {
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?))) {
-                let lines: Vec<String> = rows
-                    .flatten()
-                    .filter(|(id, ..)| decision_in_boot_scope(conn, *id))
+                let collected: Vec<(i64, String, Option<String>, String)> = rows.flatten().collect();
+                let ids: Vec<i64> = collected.iter().map(|row| row.0).collect();
+                let allow = boot_scope_allowlist(conn, "decision", &ids);
+                let lines: Vec<String> = collected
+                    .into_iter()
+                    .filter(|(id, ..)| keep_boot_id(&allow, *id))
                     .take(5)
                     .map(|(_, dec, ctx, ag)| {
                         let c = ctx.map(|c| format!(" ({c})")).unwrap_or_default();
@@ -449,9 +470,12 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
         if !already_has_recent {
             if let Ok(mut stmt) = conn.prepare_cached("SELECT id, decision, context FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, id DESC LIMIT 20") {
             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))) {
-                let lines: Vec<String> = rows
-                    .flatten()
-                    .filter(|(id, ..)| decision_in_boot_scope(conn, *id))
+                let collected: Vec<(i64, String, Option<String>)> = rows.flatten().collect();
+                let ids: Vec<i64> = collected.iter().map(|row| row.0).collect();
+                let allow = boot_scope_allowlist(conn, "decision", &ids);
+                let lines: Vec<String> = collected
+                    .into_iter()
+                    .filter(|(id, ..)| keep_boot_id(&allow, *id))
                     .take(5)
                     .map(|(_, dec, ctx)| {
                         let c = ctx.map(|c| format!(" — {c}")).unwrap_or_default();

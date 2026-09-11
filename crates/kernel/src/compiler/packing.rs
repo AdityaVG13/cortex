@@ -160,6 +160,11 @@ pub fn truncate_to_token_budget(text: &str, token_budget: usize) -> (String, usi
     }
     best
 }
+
+fn keep_whole_boot_item(item: &ContextItem) -> bool {
+    item.name == "identity" || item.name == "## Constraints"
+}
+
 pub fn pack_context_items_greedy(items: &[ContextItem], max_tokens: usize) -> PackedContext {
     let mut budget_remaining = max_tokens;
     let mut admitted: Vec<Value> = Vec::new();
@@ -175,7 +180,7 @@ item.priority,"utility":(item.utility*10000.0).round()/10000.0}),
                 item,
             ));
         } else if !item.text.is_empty() {
-            if item.priority >= 0.7 && budget_remaining > 30 {
+            if !keep_whole_boot_item(item) && item.priority >= 0.7 && budget_remaining > 30 {
                 let trunc_chars = (budget_remaining as f64 * 3.5) as usize;
                 let truncated: String = item.text.chars().take(trunc_chars).collect();
                 let trunc_tokens = estimate_tokens(&truncated);
@@ -308,6 +313,11 @@ pub fn pack_context_items_score_adaptive(
                 json!({"name":item.name,
 "tokens":item.tokens,"allocatedTokens":allocation,"priority":item.priority,"utility":(item.utility*10000.0).round()/10000.0,
 "packing":"score_adaptive"}),
+                item,
+            ));
+        } else if keep_whole_boot_item(item) {
+            rejected.push(attach_rank_audit(
+                json!({"name":item.name,"tokens":item.tokens,"allocatedTokens":allocation,"priority":item.priority,"reason":"score_adaptive_budget_exceeded"}),
                 item,
             ));
         } else {

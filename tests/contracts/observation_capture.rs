@@ -534,3 +534,138 @@ fn cli_capture_roundtrip_and_checkpoint_stdout_are_quiet_when_requested() {
         "checkpoint acknowledgement must remain outside model context"
     );
 }
+
+#[test]
+fn cli_capture_query_with_path_stays_in_that_repository() {
+    fn invoke(home: &std::path::Path, args: &[&str], input: &[u8]) -> std::process::Output {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(cortex_tests::cortex_bin())
+            .args(args)
+            .arg("--home")
+            .arg(home)
+            .env_remove("CORTEX_DB")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        child.wait_with_output().unwrap()
+    }
+    const REPO_A: &str = "/Users/x/repoa";
+    const REPO_B: &str = "/Users/x/repob";
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("brain");
+    let registered_a = invoke(
+        &home,
+        &[
+            "capture", "register", "--source", "notes-a", "--scope", REPO_A,
+        ],
+        b"",
+    );
+    assert!(
+        registered_a.status.success(),
+        "{}",
+        String::from_utf8_lossy(&registered_a.stderr)
+    );
+    let registered_b = invoke(
+        &home,
+        &[
+            "capture", "register", "--source", "notes-b", "--scope", REPO_B,
+        ],
+        b"",
+    );
+    assert!(
+        registered_b.status.success(),
+        "{}",
+        String::from_utf8_lossy(&registered_b.stderr)
+    );
+    let put_a = invoke(
+        &home,
+        &[
+            "capture", "put", "--source", "notes-a", "--generation", "g1",
+        ],
+        br#"{"event_key":"a1","text":"CLI-PATH-SHARED ledger in repo A","observed_at":null}"#,
+    );
+    assert!(
+        put_a.status.success(),
+        "{}",
+        String::from_utf8_lossy(&put_a.stderr)
+    );
+    let put_b = invoke(
+        &home,
+        &[
+            "capture", "put", "--source", "notes-b", "--generation", "g1",
+        ],
+        br#"{"event_key":"b1","text":"CLI-PATH-SHARED cache in repo B","observed_at":null}"#,
+    );
+    assert!(
+        put_b.status.success(),
+        "{}",
+        String::from_utf8_lossy(&put_b.stderr)
+    );
+    let queried_a = invoke(
+        &home,
+        &[
+            "capture", "query", "--path", REPO_A, "--query", "CLI-PATH-SHARED",
+        ],
+        b"",
+    );
+    assert!(
+        queried_a.status.success(),
+        "{}",
+        String::from_utf8_lossy(&queried_a.stderr)
+    );
+    let view_a: serde_json::Value = serde_json::from_slice(&queried_a.stdout).unwrap();
+    let texts_a: Vec<&str> = view_a["evidence"]
+        .as_array()
+        .unwrap_or_else(|| panic!("path query must return evidence: {view_a}"))
+        .iter()
+        .filter_map(|item| item["text"].as_str())
+        .collect();
+    assert!(
+        texts_a.iter().any(|text| text.contains("ledger in repo A")),
+        "same-repo path query must return that repository's observation: {view_a}"
+    );
+    assert!(
+        texts_a.iter().all(|text| !text.contains("cache in repo B")),
+        "sibling observation leaked into path query: {view_a}"
+    );
+    let queried_b = invoke(
+        &home,
+        &[
+            "capture", "query", "--path", REPO_B, "--query", "CLI-PATH-SHARED",
+        ],
+        b"",
+    );
+    assert!(
+        queried_b.status.success(),
+        "{}",
+        String::from_utf8_lossy(&queried_b.stderr)
+    );
+    let view_b: serde_json::Value = serde_json::from_slice(&queried_b.stdout).unwrap();
+    let texts_b: Vec<&str> = view_b["evidence"]
+        .as_array()
+        .unwrap_or_else(|| panic!("sibling path query must return evidence: {view_b}"))
+        .iter()
+        .filter_map(|item| item["text"].as_str())
+        .collect();
+    assert!(
+        texts_b.iter().any(|text| text.contains("cache in repo B")),
+        "{view_b}"
+    );
+    assert!(
+        texts_b.iter().all(|text| !text.contains("ledger in repo A")),
+        "repo A must not appear under repo B: {view_b}"
+    );
+    let missing_scope = invoke(
+        &home,
+        &["capture", "query", "--query", "CLI-PATH-SHARED"],
+        b"",
+    );
+    assert!(
+        !missing_scope.status.success(),
+        "query without --path still requires --scope"
+    );
+}

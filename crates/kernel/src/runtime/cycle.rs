@@ -437,6 +437,165 @@ fn materialize(
     })
 }
 
+fn materialize_recent(
+    conn: &Connection,
+    principal: &str,
+    spec: &NeedSpec,
+) -> Result<PreparedView, String> {
+    let (_, restore, policy) = crate::db::records::brain_epochs(conn);
+    let capture_state: Option<String> = conn.query_row("SELECT state FROM capture_policy WHERE scope IN (?1,'*') ORDER BY CASE WHEN scope=?1 THEN 0 ELSE 1 END LIMIT 1",params![spec.scope],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+    if capture_state.as_deref() == Some("stopped") {
+        return Err("capture_stopped".into());
+    }
+    let pending: i64 = conn.query_row("SELECT count(*) FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key JOIN sources s ON s.source_id=e.source_id LEFT JOIN observation_projection p ON p.source_id=e.source_id WHERE e.principal=?1 AND g.scope_label=?2 AND g.enabled=1 AND g.policy_epoch=?3 AND g.role!='delivery_only' AND s.availability='owned_inline' AND (p.status IS NULL OR p.status!='ready') AND NOT EXISTS(SELECT 1 FROM observation_retractions t WHERE t.source_id=e.source_id)",params![principal,spec.scope,policy],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let mut stmt = conn.prepare("SELECT e.source_id,e.revision_id,e.source_key,g.role,s.inline_payload FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key JOIN sources s ON s.source_id=e.source_id JOIN revisions v ON v.revision_id=e.revision_id WHERE e.principal=?1 AND g.scope_label=?2 AND g.enabled=1 AND g.policy_epoch=?3 AND g.role!='delivery_only' AND s.availability='owned_inline' AND EXISTS(SELECT 1 FROM record_heads h WHERE h.revision_id=e.revision_id) AND NOT EXISTS(SELECT 1 FROM observation_retractions t WHERE t.source_id=e.source_id) ORDER BY s.capture_sequence DESC,e.source_id LIMIT ?4").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            params![principal, spec.scope, policy, spec.max_results as i64 + 1],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut evidence = Vec::new();
+    for (source_id, revision_id, source_key, role, bytes) in rows {
+        evidence.push(Evidence {
+            source_id,
+            revision_id,
+            source_key,
+            role,
+            text: String::from_utf8(bytes).map_err(|_| "source_not_utf8")?,
+            route: "literal".into(),
+        });
+    }
+    let rendered = serde_json::to_string(&evidence).map_err(|e| e.to_string())?;
+    let bounded = evidence.len() > spec.max_results || rendered.len() > spec.max_bytes;
+    let permission_required: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM observation_sources WHERE principal=?1 AND scope_label=?2 AND (enabled=0 OR policy_epoch!=?3))",params![principal,spec.scope,policy],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let unavailable: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key JOIN sources s ON s.source_id=e.source_id WHERE e.principal=?1 AND g.scope_label=?2 AND g.enabled=1 AND g.policy_epoch=?3 AND s.availability!='owned_inline')",params![principal,spec.scope,policy],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let status = if permission_required {
+        "permission_required"
+    } else if unavailable {
+        "source_unavailable"
+    } else if pending > 0 {
+        "projection_pending"
+    } else if bounded {
+        "quota_blocked"
+    } else {
+        "ready"
+    };
+    if bounded {
+        evidence.clear();
+    }
+    let payload = if status == "ready" && !evidence.is_empty() {
+        serde_json::to_string(&evidence).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+    let source_refs = evidence
+        .iter()
+        .take(spec.max_results)
+        .map(|e| e.source_id.clone())
+        .collect();
+    let fingerprint = cortex_logic::traces::content_hash(
+        &serde_json::json!([principal, spec.scope, restore, policy, status, &payload]).to_string(),
+    );
+    Ok(PreparedView {
+        status: status.into(),
+        evidence,
+        source_refs,
+        delivery_id: None,
+        payload: payload.clone(),
+        payload_bytes: payload.len(),
+        projection_pending: pending as usize,
+        restore_epoch: restore,
+        policy_epoch: policy,
+        fingerprint,
+        assembly_brief: String::new(),
+    })
+}
+
+fn merge_prepared(views: Vec<PreparedView>, max_results: usize, max_bytes: usize) -> PreparedView {
+    let mut seen = BTreeSet::new();
+    let mut evidence = Vec::new();
+    let mut pending = 0usize;
+    let mut restore = String::new();
+    let mut policy = String::new();
+    let mut status = "ready".to_string();
+    for view in views {
+        pending += view.projection_pending;
+        if restore.is_empty() {
+            restore = view.restore_epoch;
+        }
+        if policy.is_empty() {
+            policy = view.policy_epoch;
+        }
+        if evidence.is_empty() && view.status != "ready" {
+            status = view.status.clone();
+        }
+        for item in view.evidence {
+            if seen.insert(item.source_id.clone()) {
+                evidence.push(item);
+            }
+        }
+    }
+    evidence.truncate(max_results);
+    while !evidence.is_empty() {
+        let rendered = serde_json::to_string(&evidence).unwrap_or_default();
+        if rendered.len() <= max_bytes {
+            break;
+        }
+        evidence.pop();
+    }
+    if !evidence.is_empty() {
+        status = "ready".into();
+    }
+    let payload = if status == "ready" && !evidence.is_empty() {
+        serde_json::to_string(&evidence).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let source_refs = evidence.iter().map(|e| e.source_id.clone()).collect();
+    let fingerprint = cortex_logic::traces::content_hash(
+        &serde_json::json!([&source_refs, &status, pending, &payload]).to_string(),
+    );
+    PreparedView {
+        status,
+        evidence,
+        source_refs,
+        delivery_id: None,
+        payload: payload.clone(),
+        payload_bytes: payload.len(),
+        projection_pending: pending,
+        restore_epoch: restore,
+        policy_epoch: policy,
+        fingerprint,
+        assembly_brief: String::new(),
+    }
+}
+
+fn pull_spec(scope: &str, query: &str, max_results: usize, max_bytes: usize, learned: bool) -> Result<NeedSpec, String> {
+    let spec = NeedSpec {
+        id: format!("pull:{}", uuid::Uuid::new_v4()),
+        scope: observation::normalize_scope(scope),
+        cues: cues(query).into_iter().collect(),
+        exclude_cues: Vec::new(),
+        max_results,
+        max_bytes,
+        ttl_seconds: 1,
+        learned,
+    };
+    validate(&spec)?;
+    Ok(spec)
+}
+
 impl CortexRuntime {
     pub async fn query_observations(
         &self,
@@ -450,17 +609,7 @@ impl CortexRuntime {
         if query.len() > 4096 {
             return Err("query_byte_limit".into());
         }
-        let spec = NeedSpec {
-            id: format!("pull:{}", uuid::Uuid::new_v4()),
-            scope: scope.into(),
-            cues: cues(query).into_iter().collect(),
-            exclude_cues: Vec::new(),
-            max_results,
-            max_bytes,
-            ttl_seconds: 1,
-            learned,
-        };
-        validate(&spec)?;
+        let spec = pull_spec(scope, query, max_results, max_bytes, learned)?;
         let principal = self.observation_principal()?;
         let mut conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
         ensure(&conn)?;
@@ -473,6 +622,74 @@ impl CortexRuntime {
         Ok(view)
     }
 
+    /// Cue-filtered pull over caller project roots. Path-scoped sources stay
+    /// in their repository; the extra label (default `project`) remains the
+    /// unscoped bucket when roots are named.
+    pub async fn query_observations_for_paths(
+        &self,
+        cx: &Cx,
+        query: &str,
+        paths: &[String],
+        extra_scope: Option<&str>,
+        max_results: usize,
+        max_bytes: usize,
+        learned: bool,
+    ) -> Result<PreparedView, String> {
+        if query.len() > 4096 {
+            return Err("query_byte_limit".into());
+        }
+        let principal = self.observation_principal()?;
+        let mut conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
+        ensure(&conn)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|e| e.to_string())?;
+        let scopes = observation::resolve_query_scopes(&tx, &principal, paths, extra_scope)?;
+        let mut views = Vec::new();
+        for scope in scopes {
+            let spec = pull_spec(&scope, query, max_results, max_bytes, learned)?;
+            project(&tx, &principal, &spec.scope, 32)?;
+            views.push(materialize(&tx, &principal, &spec)?);
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(merge_prepared(views, max_results, max_bytes))
+    }
+
+    /// Latest attributed observations in the caller roots, without a cue join.
+    /// Used when orient names a project and the task is only that path.
+    pub async fn recent_observations_for_paths(
+        &self,
+        cx: &Cx,
+        paths: &[String],
+        extra_scope: Option<&str>,
+        max_results: usize,
+        max_bytes: usize,
+    ) -> Result<PreparedView, String> {
+        let principal = self.observation_principal()?;
+        let mut conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
+        ensure(&conn)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|e| e.to_string())?;
+        let scopes = observation::resolve_query_scopes(&tx, &principal, paths, extra_scope)?;
+        let mut views = Vec::new();
+        for scope in scopes {
+            let spec = NeedSpec {
+                id: format!("recent:{}", uuid::Uuid::new_v4()),
+                scope: observation::normalize_scope(&scope),
+                cues: vec!["_".into()],
+                exclude_cues: Vec::new(),
+                max_results,
+                max_bytes,
+                ttl_seconds: 1,
+                learned: false,
+            };
+            views.push(materialize_recent(&tx, &principal, &spec)?);
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(merge_prepared(views, max_results, max_bytes))
+    }
+
     pub async fn rebuild_observation_projection(
         &self,
         cx: &Cx,
@@ -481,6 +698,10 @@ impl CortexRuntime {
         let principal = self.observation_principal()?;
         let mut conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
         ensure(&conn)?;
+        let scope = observation::normalize_scope(scope);
+        if scope.is_empty() || scope.len() > 1024 {
+            return Err("invalid_need_bounds".into());
+        }
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
@@ -491,7 +712,7 @@ impl CortexRuntime {
         )
         .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM observation_matches WHERE principal=?1 AND need_id IN (SELECT need_id FROM observation_needs WHERE principal=?1 AND scope=?2)",params![principal,scope]).map_err(|e|e.to_string())?;
-        let count = project(&tx, &principal, scope, 32)?;
+        let count = project(&tx, &principal, &scope, 32)?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(count)
     }

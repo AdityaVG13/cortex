@@ -1,6 +1,6 @@
 //! Operator-managed capture adapter. Stdin contains normalized observations
 //! or trusted host grants, not credentials or filesystem paths to crawl.
-use super::common::{parse_flag_value, validate_cli_options};
+use super::common::{parse_flag_value, parse_flag_values, validate_cli_options};
 use crate::{
     auth::CortexPaths,
     runtime::{
@@ -49,7 +49,7 @@ pub async fn run_capture_cli(cx: &Cx, paths: &CortexPaths, args: &[String]) -> R
         "prepare" => &["--id", "--context", "--present"],
         "retract" => &["--id", "--reason"],
         "learn" | "learn-reset" | "rebuild" => &["--scope"],
-        "query" => &["--scope", "--query"],
+        "query" => &["--scope", "--query", "--path"],
         "learn-explain" => &["--scope", "--query"],
         "assess" => &["--scope", "--event-key", "--id", "--assessment"],
         "unassess" => &["--scope", "--event-key"],
@@ -140,7 +140,28 @@ pub async fn run_capture_cli(cx: &Cx, paths: &CortexPaths, args: &[String]) -> R
                 .await?;
             Ok(json!({"status":"retracted"}))
         }
-        "query" => serde_json::to_value(runtime.query_observations(cx, &required("--scope")?, &required("--query")?, 32, 65536, false).await?),
+        "query" => {
+            let query = required("--query")?;
+            let paths = parse_flag_values(flags, "--path");
+            let extra = parse_flag_value(flags, "--scope").filter(|s| !s.trim().is_empty());
+            serde_json::to_value(if paths.is_empty() {
+                runtime
+                    .query_observations(cx, &required("--scope")?, &query, 32, 65536, false)
+                    .await?
+            } else {
+                runtime
+                    .query_observations_for_paths(
+                        cx,
+                        &query,
+                        &paths,
+                        extra.as_deref(),
+                        32,
+                        65536,
+                        false,
+                    )
+                    .await?
+            })
+        }
         "rebuild" => Ok(json!({"projected":runtime.rebuild_observation_projection(cx,&required("--scope")?).await?})),
         "learn" => Ok(json!({"sources":runtime.rebuild_associations(cx,&required("--scope")?).await?})),
         "learn-reset" => {
