@@ -2,6 +2,7 @@
 
 pub mod adapter;
 pub mod api_types;
+pub mod assembly;
 pub mod budgets;
 pub mod capture;
 pub mod clockwork;

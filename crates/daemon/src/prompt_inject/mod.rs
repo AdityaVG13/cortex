@@ -125,7 +125,7 @@ async fn fetch_boot_context(cx: &asupersync::Cx, agent: &str, budget: u32) -> St
         return "<!-- Cortex: boot requires a local owner in team mode -->".to_string();
     }
     match runtime
-        .boot(cx, crate::runtime::BootInput { agent: agent.to_string(), max_tokens: budget as usize, owner_id: state.default_owner_id })
+        .boot(cx, crate::runtime::BootInput { agent: agent.to_string(), max_tokens: budget as usize, owner_id: state.default_owner_id, ..Default::default() })
         .await
     {
         Ok(result) => {

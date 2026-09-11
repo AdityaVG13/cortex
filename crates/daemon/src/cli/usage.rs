@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 pub(crate) fn cli_usage_text() -> String {
     format!(
-        "Cortex v{} -- Local agent memory\n\nUsage: cortex <command> [--home <path>] [--db <path>]\n\n  capture <register|enable|disable|put|tail|get> [--quiet]\n  capabilities --json      Discover local operations\n  status [--json]           Open and inspect the local brain\n  setup                    Configure MCP clients and initialize memory\n  mcp [--agent <name>]      MCP stdio, in-process\n  boot [--agent <name>] [--budget <n>] [--json]\n  op <operation> [--args '<json>'] [--agent <name>]\n  maintain [--jobs <n>]     Drain a bounded maintenance slice\n  serve                    Optional headless maintenance worker, no listener\n  paths --json             Show local paths\n  hook-boot [--agent <name>] | hook-status | hook-event <kind>\n  prompt-inject --file <path> [--agent <name>] [--budget <n>] [--watch]\n  doctor | backup | restore <file>\n  cleanup [--dry-run] [--events] [--max-passes <n>]\n  reindex [--json] | recrystallize [--json]\n  rebuild-anchors [--json] [--batch-size <n>]\n  embeddings status [--json] | eval | robot-docs guide\n\nNo network endpoint, background service, or remote API key is required.\n",
+        "Cortex v{} -- Local agent memory\n\nUsage: cortex <command> [--home <path>] [--db <path>]\n\n  capture <register|enable|disable|put|tail|file|get|inventory|prepare|host-cycle> [--quiet]\n  capabilities --json      Discover local operations\n  status [--json]           Open and inspect the local brain\n  setup                    Configure MCP clients and initialize memory\n  mcp [--agent <name>]      MCP stdio, in-process\n  boot [--agent <name>] [--budget <n>] [--path <cwd>] [--json]\n  op <operation> [--args '<json>'] [--agent <name>]\n  maintain [--jobs <n>]     Drain a bounded maintenance slice\n  serve                    Optional headless maintenance worker, no listener\n  paths --json             Show local paths\n  hook-boot [--agent <name>] | hook-status | hook <kind>\n  prompt-inject --file <path> [--agent <name>] [--budget <n>] [--watch]\n  doctor | backup | restore <file>\n  cleanup [--dry-run] [--events] [--max-passes <n>]\n  reindex [--json] | recrystallize [--json]\n  rebuild-anchors [--json] [--batch-size <n>]\n  embeddings status [--json] | eval | robot-docs guide\n\nNo network endpoint, background service, or remote API key is required.\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -11,9 +11,9 @@ pub fn cli_service_usage() -> &'static str {
 pub fn cli_capabilities_payload() -> Value {
     json!({"schema_version":2,"contract_version":"2","tool":{"name":"cortex","version":env!("CARGO_PKG_VERSION"),"runtime":"asupersync","transport":"local"},
     "commands":{
-      "capture":{"output":"json_or_silent","side_effects":"may_write_local_brain","usage":"cortex capture <register|enable|disable|put|tail|get>"},
+      "capture":{"output":"json_or_silent","side_effects":"may_write_local_brain","usage":"cortex capture <register|enable|disable|put|tail|file|get|inventory|prepare|host-cycle>"},
       "mcp":{"usage":"cortex mcp [--agent <name>]","output":"stdio_json_rpc","side_effects":"may_write_local_brain"},
-      "boot":{"usage":"cortex boot [--agent <name>] [--budget <n>] [--json]","output":"human_or_json","side_effects":"opens_local_brain"},
+      "boot":{"usage":"cortex boot [--agent <name>] [--budget <n>] [--path <cwd>] [--json]","output":"human_or_json","side_effects":"opens_local_brain"},
       "op":{"usage":"cortex op <operation> [--args <json>] [--agent <name>]","output":"json","side_effects":"may_write_local_brain"},
       "status":{"usage":"cortex status [--json]","output":"human_or_json","side_effects":"opens_existing_local_brain"},
       "maintain":{"usage":"cortex maintain [--jobs <n>]","output":"json","side_effects":"writes_local_brain"},

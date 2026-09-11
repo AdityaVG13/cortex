@@ -1,6 +1,6 @@
-use cortex_daemon::db;
-use cortex_daemon::rate_limit::RateLimiter;
-use cortex_daemon::state::RuntimeState;
+use cortex_kernel::db;
+use cortex_kernel::rate_limit::RateLimiter;
+use cortex_kernel::state::RuntimeState;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -93,7 +93,6 @@ pub fn runtime_state(
         db_path: PathBuf::from(":memory:"),
         token_path: PathBuf::from("cortex.token"),
         pid_path: PathBuf::from("cortex.pid"),
-        port: 7437,
         rate_limiter: RateLimiter::new(),
         team_mode,
         default_owner_id,
@@ -103,10 +102,10 @@ pub fn runtime_state(
         readiness: Arc::new(AtomicBool::new(true)),
         last_activity_unix_secs: Arc::new(AtomicU64::new(0)),
         write_buffer_path: PathBuf::from("write_buffer.jsonl"),
-        sqlite_vec_canary: cortex_daemon::state::SqliteVecCanaryConfig {
+        sqlite_vec_canary: cortex_kernel::state::SqliteVecCanaryConfig {
             trial_percent: 0,
             force_off: false,
-            route_mode: cortex_daemon::state::SqliteVecRouteMode::Trial,
+            route_mode: cortex_kernel::state::SqliteVecRouteMode::Trial,
         },
     }
 }

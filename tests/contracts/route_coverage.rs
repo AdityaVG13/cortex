@@ -2,7 +2,9 @@
 //! focus lifecycle, conductor minted-UUID/no-effect facades, and removed route
 //! aliases. Local permissions retain their actual owner-scoped database effects;
 //! semantic recall retains model-free retrieval and token-budget accounting.
-use cortex_daemon::handlers::{mutate::{grant_permission, list_permissions, revoke_permission}, operations::{dispatch, Caller, Operation}, recall::{execute_semantic_recall, RecallContext}};
+use cortex_kernel::handlers::mutate::{grant_permission, list_permissions, revoke_permission};
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::handlers::recall::{execute_semantic_recall, RecallContext};
 use cortex_tests::support::{run_with_cx, solo_state};
 use serde_json::json;
 

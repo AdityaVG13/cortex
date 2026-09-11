@@ -4,17 +4,17 @@
 //! the deferred adaptive policy's safety envelope. Convergence is not
 //! consensus: replicas converge on evidence and keep contradictory heads.
 
-use cortex_daemon::db::backup::{backup_to, restore_from};
-use cortex_daemon::db::erasure::{erase, erasure_floor, fence_check, is_erased, read_ledger};
-use cortex_daemon::db::feedback_ledger::{
+use cortex_kernel::db::backup::{backup_to, restore_from};
+use cortex_kernel::db::erasure::{erase, erasure_floor, fence_check, is_erased, read_ledger};
+use cortex_kernel::db::feedback_ledger::{
     adaptive_policy, envelope_check, family_stats, record, OutcomeFeedback, SafeChoice,
 };
-use cortex_daemon::db::records::{heads, import_legacy, record_for_legacy, revision_body};
-use cortex_daemon::db::replication::{
+use cortex_kernel::db::records::{heads, import_legacy, record_for_legacy, revision_body};
+use cortex_kernel::db::replication::{
     acquire_fence, check_fence, independent_support, ingest, pending_count, CausalRef, Ingest,
     ReplicatedCommit, SupportWitness,
 };
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
 use cortex_tests::support::{open_file_db, solo_state};
 use serde_json::json;
 use std::fs;
@@ -50,7 +50,7 @@ fn peer_commits_wait_for_parents_and_contradictory_heads_stay_concurrent() {
     let home = unique_temp_dir("repl");
     fs::create_dir_all(&home).unwrap();
     let conn = open_file_db(&home.join("cortex.db"));
-    cortex_daemon::db::records::ensure_authoritative_schema(&conn).unwrap();
+    cortex_kernel::db::records::ensure_authoritative_schema(&conn).unwrap();
     // Child arrives before its parent: stored pending, nothing applied.
     let child = commit(
         "peer-a",
@@ -201,7 +201,7 @@ fn erasure_reaches_derived_state_revokes_views_and_survives_restore() {
                 conn.execute("INSERT INTO decisions (decision, type, source_agent, status, retention_class) VALUES (?1, 'decision', 'seed', 'active', 'durable')", [text]).unwrap();
             }
             import_legacy(&conn).unwrap();
-            let _ = cortex_daemon::clockwork::rebuild_clock_projections(&conn, 64);
+            let _ = cortex_logic::clockwork::rebuild_clock_projections(&conn, 64);
         }
         // Backup BEFORE the erasure: the classic resurrection vector.
         let backup = home.join("pre-erasure.db");
@@ -278,8 +278,8 @@ fn erasure_reaches_derived_state_revokes_views_and_survives_restore() {
         let other_home = unique_temp_dir("erase-quarantine");
         fs::create_dir_all(&other_home).unwrap();
         fs::copy(
-            cortex_daemon::db::erasure::ledger_path(&home),
-            cortex_daemon::db::erasure::ledger_path(&other_home),
+            cortex_kernel::db::erasure::ledger_path(&home),
+            cortex_kernel::db::erasure::ledger_path(&other_home),
         )
         .unwrap();
         let other_db = other_home.join("cortex.db");

@@ -3,11 +3,9 @@
 //! export/import routes and CLI-vs-HTTP golden summaries. The old HTTP scenario
 //! coverage document is historical, not proof of the current local surface.
 //! Legacy cortex_boot is the alias of cortex_orient (operations dispatch).
-use cortex_daemon::handlers::{
-    mcp::handle_mcp_message_with_caller,
-    operations::{self, Caller, Operation},
-};
-use cortex_daemon::{runtime::LensInput, CortexRuntime};
+use cortex_daemon::handlers::mcp::handle_mcp_message_with_caller;
+use cortex_kernel::handlers::operations::{self, Caller, Operation};
+use cortex_kernel::{runtime::LensInput, CortexRuntime};
 use cortex_tests::support::{run_with_cx, solo_state};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;

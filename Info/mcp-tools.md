@@ -64,7 +64,7 @@ each to a replacement:
 
 Calling a removed name never returns a fabricated success.
 
-## V5 observation bridge
+## Observation and assembly bridges
 
 `cortex_query` / `cortex_orient` attach a separate `observations` object when
 registered capture sources exist. Hits are **attributed observations**, never
@@ -92,6 +92,12 @@ CQR Cards:
 - Opt out with `observations: false`.
 - `cortex_expand` `{"reference":"obs:<source_id>"}` returns the exact retained text with the same trust envelope.
 - Capture never changes CQR admission, status, or Card epistemic state.
+
+After `routes-rebuild`, the same calls may attach an `assemblies` section:
+evidence-closed bundles with member roles, expand handles (`asm:<id>`,
+`obs:` / `rev:`), and an extractive `brief`. Missing required exceptions
+are `qualification_unavailable` with no prefix claim. Opt out with
+`assemblies: false`. Routes off omits the section. Cards stay CQR.
 
 ## Quick reference
 

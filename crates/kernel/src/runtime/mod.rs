@@ -13,6 +13,7 @@ pub mod cycle;
 pub mod inventory;
 pub mod host_capture;
 pub mod associations;
+pub mod assembly;
 mod open;
 
 pub use deposit::{DepositInput, DepositOutcome, ack_profile_label_pub, deposit_decision};

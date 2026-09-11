@@ -8,7 +8,6 @@ pub type BrainFiringSender = Option<broadcast::Sender<BrainFiringEvent>>;
 pub const CRYSTAL_RELEVANCE_BOOST: f64 = 1.15;
 
 const MAX_SCAN_ROWS: i64 = 500;
-const COSINE_THRESHOLD: f64 = 0.83;
 const JACCARD_THRESHOLD: f64 = 0.30;
 
 const STOPWORDS: &[&str] = &[
@@ -31,9 +30,7 @@ pub struct CrystallizeResult {
 struct Candidate {
     id: i64,
     text: String,
-    source: String,
     score: f64,
-    created_at: String,
     target_type: String,
 }
 
@@ -68,10 +65,6 @@ fn jaccard_similarity_sets(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     let inter = smaller.iter().filter(|t| larger.contains(*t)).count() as f64;
     let uni = (a.len() + b.len()) as f64 - inter;
     if uni == 0.0 { 0.0 } else { inter / uni }
-}
-
-fn cosine_similarity(_a: &[f32], _b: &[f32]) -> f32 {
-    0.0
 }
 
 fn label_for_members(texts: &[String]) -> String {
@@ -112,36 +105,6 @@ fn label_for_members(texts: &[String]) -> String {
         .join(" ")
 }
 
-fn mean_vector(vectors: &[Vec<f32>]) -> Option<Vec<f32>> {
-    if vectors.is_empty() {
-        return None;
-    }
-    let dim = vectors[0].len();
-    if dim == 0 {
-        return None;
-    }
-    let mut mean = vec![0f32; dim];
-    for v in vectors {
-        if v.len() != dim {
-            return None;
-        }
-        for (i, val) in v.iter().enumerate() {
-            mean[i] += *val;
-        }
-    }
-    let n = vectors.len() as f32;
-    for m in &mut mean {
-        *m /= n;
-    }
-    let norm: f32 = mean.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 && norm.is_finite() {
-        for m in &mut mean {
-            *m /= norm;
-        }
-    }
-    Some(mean)
-}
-
 pub fn run_crystallize_pass_with_brain(
     cx: &Cx,
     conn: &Connection,
@@ -159,8 +122,6 @@ pub fn run_crystallize_pass_with_brain(
         });
     }
 
-    let vector_map: HashMap<(String, i64), Vec<f32>> = HashMap::new();
-    let use_cosine = false;
     let clusters: Vec<Vec<usize>> = cluster_by_jaccard(&candidates);
 
     let qualified: Vec<Vec<usize>> = clusters.into_iter().filter(|c| c.len() >= 2).collect();
@@ -180,23 +141,7 @@ pub fn run_crystallize_pass_with_brain(
             }
         }
         let consolidated_text = best.text.clone();
-
-        let centroid_blob: Vec<u8> = if use_cosine {
-            let vectors: Vec<Vec<f32>> = member_indices
-                .iter()
-                .filter_map(|&i| {
-                    let c = &candidates[i];
-                    vector_map.get(&(c.target_type.clone(), c.id)).cloned()
-                })
-                .collect();
-            if let Some(_mean) = mean_vector(&vectors) {
-                Vec::<u8>::new()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+        let centroid_blob = Vec::<u8>::new();
 
         let member_count = member_indices.len() as i64;
         let insert = conn.execute(
@@ -267,9 +212,7 @@ fn scan_candidates(conn: &Connection, owner_id: Option<i64>) -> Vec<Candidate> {
             Ok(Candidate {
                 id: row.get(0)?,
                 text: row.get(1)?,
-                source: row.get(2)?,
                 score: row.get(3)?,
-                created_at: row.get(4)?,
                 target_type: "memory".to_string(),
             })
         })
@@ -292,9 +235,7 @@ fn scan_candidates(conn: &Connection, owner_id: Option<i64>) -> Vec<Candidate> {
                 Ok(Candidate {
                     id: row.get(0)?,
                     text: row.get(1)?,
-                    source: row.get(2)?,
                     score: row.get(3)?,
-                    created_at: row.get(4)?,
                     target_type: "decision".to_string(),
                 })
             }) {
@@ -321,9 +262,7 @@ fn scan_candidates_no_owner(conn: &Connection) -> Vec<Candidate> {
             Ok(Candidate {
                 id: row.get(0)?,
                 text: row.get(1)?,
-                source: row.get(2)?,
                 score: row.get(3)?,
-                created_at: row.get(4)?,
                 target_type: "memory".to_string(),
             })
         }) {
@@ -339,9 +278,7 @@ fn scan_candidates_no_owner(conn: &Connection) -> Vec<Candidate> {
             Ok(Candidate {
                 id: row.get(0)?,
                 text: row.get(1)?,
-                source: row.get(2)?,
                 score: row.get(3)?,
-                created_at: row.get(4)?,
                 target_type: "decision".to_string(),
             })
         }) {
@@ -355,59 +292,6 @@ fn scan_candidates_no_owner(conn: &Connection) -> Vec<Candidate> {
         out.truncate(MAX_SCAN_ROWS as usize);
     }
     out
-}
-
-fn load_candidate_vectors(
-    _conn: &Connection,
-    _candidates: &[Candidate],
-) -> HashMap<(String, i64), Vec<f32>> {
-    HashMap::new()
-}
-
-fn cluster_by_cosine(
-    candidates: &[Candidate],
-    vectors: &HashMap<(String, i64), Vec<f32>>,
-) -> Vec<Vec<usize>> {
-    let mut clusters: Vec<Vec<usize>> = Vec::new();
-    let mut centroids: Vec<Vec<f32>> = Vec::new();
-
-    for (idx, cand) in candidates.iter().enumerate() {
-        let key = (cand.target_type.clone(), cand.id);
-        let Some(vec) = vectors.get(&key) else {
-            clusters.push(vec![idx]);
-            centroids.push(Vec::new());
-            continue;
-        };
-        let mut best_cluster: Option<usize> = None;
-        let mut best_sim = COSINE_THRESHOLD;
-        for (ci, centroid) in centroids.iter().enumerate() {
-            if centroid.is_empty() || centroid.len() != vec.len() {
-                continue;
-            }
-            let sim = cosine_similarity(vec, centroid) as f64;
-            if sim >= best_sim {
-                best_sim = sim;
-                best_cluster = Some(ci);
-            }
-        }
-        if let Some(ci) = best_cluster {
-            clusters[ci].push(idx);
-            let member_vecs: Vec<Vec<f32>> = clusters[ci]
-                .iter()
-                .filter_map(|&mi| {
-                    let cc = &candidates[mi];
-                    vectors.get(&(cc.target_type.clone(), cc.id)).cloned()
-                })
-                .collect();
-            if let Some(mean) = mean_vector(&member_vecs) {
-                centroids[ci] = mean;
-            }
-        } else {
-            clusters.push(vec![idx]);
-            centroids.push(vec.clone());
-        }
-    }
-    clusters
 }
 
 fn cluster_by_jaccard(candidates: &[Candidate]) -> Vec<Vec<usize>> {

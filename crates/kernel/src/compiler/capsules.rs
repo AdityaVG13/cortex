@@ -1,6 +1,7 @@
 use crate::handlers::{estimate_tokens, estimate_tokens_from_chars};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::Path;
 pub fn stored_max_timestamp(conn: &Connection) -> Option<String> {
@@ -38,12 +39,30 @@ pub fn owner_clause(conn: &Connection, table: &str, owner: Option<i64>) -> Strin
 }
 thread_local! {
     static BOOT_OWNER: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+    static BOOT_PATHS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 pub fn set_boot_owner(owner: Option<i64>) {
     BOOT_OWNER.with(|cell| cell.set(owner));
 }
 pub fn boot_owner() -> Option<i64> {
     BOOT_OWNER.with(|cell| cell.get())
+}
+pub fn set_boot_paths(paths: &[String]) {
+    BOOT_PATHS.with(|cell| *cell.borrow_mut() = paths.to_vec());
+}
+pub fn boot_paths() -> Vec<String> {
+    BOOT_PATHS.with(|cell| cell.borrow().clone())
+}
+pub(crate) fn decision_in_boot_scope(conn: &Connection, id: i64) -> bool {
+    target_in_boot_scope(conn, "decision", id)
+}
+pub(crate) fn target_in_boot_scope(conn: &Connection, target_type: &str, target_id: i64) -> bool {
+    let paths = boot_paths();
+    if paths.is_empty() {
+        return true;
+    }
+    crate::handlers::recall::target_scope_compatible(conn, target_type, target_id, &paths)
+        .unwrap_or(true)
 }
 pub fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
@@ -376,12 +395,14 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
     }
     if let Some(ref lb) = last_boot {
         if let Ok(mut stmt) =
-            conn.prepare_cached(&format!("SELECT decision, context, source_agent FROM decisions WHERE status = 'active'{} AND created_at >= ?1 AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, rowid DESC LIMIT 5", owner_clause(conn, "decisions", boot_owner())))
+            conn.prepare_cached(&format!("SELECT id, decision, context, source_agent FROM decisions WHERE status = 'active'{} AND created_at >= ?1 AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, rowid DESC LIMIT 20", owner_clause(conn, "decisions", boot_owner())))
         {
-            if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))) {
+            if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?))) {
                 let lines: Vec<String> = rows
                     .flatten()
-                    .map(|(dec, ctx, ag)| {
+                    .filter(|(id, ..)| decision_in_boot_scope(conn, *id))
+                    .take(5)
+                    .map(|(_, dec, ctx, ag)| {
                         let c = ctx.map(|c| format!(" ({c})")).unwrap_or_default();
                         format!("- [{ag}] {dec}{c}")
                     })
@@ -426,11 +447,13 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
     if !has_new_section {
         let already_has_recent = parts.iter().any(|p| p.starts_with("Recent decisions:"));
         if !already_has_recent {
-            if let Ok(mut stmt) = conn.prepare_cached("SELECT decision, context FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, id DESC LIMIT 5") {
-            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))) {
+            if let Ok(mut stmt) = conn.prepare_cached("SELECT id, decision, context FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, id DESC LIMIT 20") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))) {
                 let lines: Vec<String> = rows
                     .flatten()
-                    .map(|(dec, ctx)| {
+                    .filter(|(id, ..)| decision_in_boot_scope(conn, *id))
+                    .take(5)
+                    .map(|(_, dec, ctx)| {
                         let c = ctx.map(|c| format!(" — {c}")).unwrap_or_default();
                         format!("- {dec}{c}")
                     })

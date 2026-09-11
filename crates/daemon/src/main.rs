@@ -1,5 +1,6 @@
 use asupersync::{Cx, runtime::RuntimeBuilder};
-use cortex_daemon::{auth, cli, hook_boot, prompt_inject, setup};
+use cortex_daemon::{cli, hook_boot, prompt_inject, setup};
+use cortex_kernel::auth;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -69,9 +70,9 @@ async fn run(cx: &Cx, paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
         }
         "hook-boot" => hook_boot::run_boot(cx, cli::parse_flag_value(rest, "--agent").as_deref().unwrap_or("claude-code")).await,
         "hook-status" => hook_boot::run_status(cx).await,
-        "hook-event" => {
+        "hook" => {
             let kind = rest.first().map(String::as_str).unwrap_or("session_start");
-            cortex_daemon::hook_event::run(cx, kind, cli::parse_flag_value(rest, "--agent").as_deref().unwrap_or("claude-code")).await?;
+            cortex_kernel::hook_event::run(cx, kind, cli::parse_flag_value(rest, "--agent").as_deref().unwrap_or("claude-code")).await?;
         }
         "prompt-inject" => prompt_inject::run(cx, rest).await,
         "setup" => {

@@ -3,7 +3,7 @@
 //! extensions but fail explicitly on unknown operations/flags/fields, and a
 //! Receipt is durable only with a local commit frontier.
 
-use cortex_daemon::protocol::{Envelope, EnvelopeError, LogicalId, Receipt, ResponseStatus};
+use cortex_logic::protocol::{Envelope, EnvelopeError, LogicalId, Receipt, ResponseStatus};
 use std::fs;
 use std::path::PathBuf;
 
@@ -132,11 +132,3 @@ fn legacy_references_become_logical_aliases() {
     );
 }
 
-#[test]
-fn invalid_port_is_a_configuration_error_not_a_fallback() {
-    use cortex_daemon::auth::parse_port;
-    assert_eq!(parse_port("7437"), Ok(7437));
-    assert!(parse_port("0").is_err());
-    assert!(parse_port("99999").is_err());
-    assert!(parse_port("abc").is_err());
-}

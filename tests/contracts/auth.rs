@@ -1,4 +1,4 @@
-use cortex_daemon::auth::CortexPaths;
+use cortex_kernel::auth::CortexPaths;
 use cortex_tests::in_subprocess;
 use serde_json::Value;
 
@@ -9,8 +9,6 @@ fn cortex_paths_resolve_and_serialize() {
         &[
             ("CORTEX_HOME", None),
             ("CORTEX_DB", None),
-            ("CORTEX_PORT", None),
-            ("CORTEX_BIND", None),
         ],
     ) {
         return;
@@ -20,8 +18,11 @@ fn cortex_paths_resolve_and_serialize() {
     let json = paths.to_json();
     let value: Value = serde_json::from_str(&json).expect("resolved paths serialize to valid JSON");
 
-    for key in ["home", "db", "token", "pid", "port", "bind"] {
+    for key in ["home", "db", "token", "pid"] {
         assert!(value.get(key).is_some(), "paths JSON missing key {key}");
+    }
+    for key in ["port", "bind", "ipc_endpoint", "ipc_kind"] {
+        assert!(value.get(key).is_none(), "paths JSON must not advertise listen leftovers {key}");
     }
 
     let home = value["home"].as_str().expect("home is a string");
@@ -38,13 +39,6 @@ fn cortex_paths_resolve_and_serialize() {
     assert!(
         token.ends_with("cortex.token"),
         "token path must end with cortex.token, got {token}"
-    );
-    let port = value["port"].as_u64().expect("port is a number");
-    assert_eq!(port, 7437, "default resolved port must be 7437");
-    assert_eq!(
-        value["bind"].as_str(),
-        Some("127.0.0.1"),
-        "default bind must be loopback"
     );
 }
 

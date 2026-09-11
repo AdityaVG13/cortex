@@ -1,9 +1,9 @@
 //! Public-API fixtures only: these do not validate an installed Claude release.
-use cortex_daemon::runtime::{
+use cortex_kernel::runtime::{
     CortexRuntime,
     host_capture::{
         ADAPTER_VERSION, HostCaptureContext, HostCaptureGrant, HostOrigin, HostOriginBinding,
-        HostRoute, normalize_host_event,
+        HostRoute, normalize_host_event, resolve_host_invocation,
     },
 };
 use cortex_tests::support::run_with_cx;
@@ -79,7 +79,7 @@ fn claude_2_1_260_structured_bash_and_control_records_replay_without_losing_fiel
         runtime
             .register_source(
                 &cx,
-                cortex_daemon::runtime::observation::SourceSpec::document("envelope-doc", "repo-a"),
+                cortex_kernel::runtime::observation::SourceSpec::document("envelope-doc", "repo-a"),
             )
             .await
             .unwrap();
@@ -88,7 +88,7 @@ fn claude_2_1_260_structured_bash_and_control_records_replay_without_losing_fiel
                 &cx,
                 "envelope-doc",
                 "g",
-                cortex_daemon::runtime::observation::ObservationEvent {
+                cortex_kernel::runtime::observation::ObservationEvent {
                     event_key: "one".into(),
                     text: "stdout stderr interrupted isImage noOutputExpected false".into(),
                     observed_at: None,
@@ -490,4 +490,270 @@ fn own_delivery_is_not_evidence_and_cannot_be_promoted_on_replay() {
             1
         );
     });
+}
+#[test]
+fn file_tool_reports_keep_exact_path_and_ignore_envelope_keys() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        runtime.register_host_capture(&cx, grant()).await.unwrap();
+        runtime
+            .register_source(
+                &cx,
+                cortex_kernel::runtime::observation::SourceSpec::document("notes", "repo-a"),
+            )
+            .await
+            .unwrap();
+        runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                cortex_kernel::runtime::observation::ObservationEvent {
+                    event_key: "path-note".into(),
+                    text: "payments/retry.rs must stay idempotent".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                cortex_kernel::runtime::observation::ObservationEvent {
+                    event_key: "json-keys".into(),
+                    text: "filePath content newString tool_response".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let ctx = context("tool-edit", HostOrigin::External);
+        let live = serde_json::to_vec(&json!({
+            "session_id":"session-a",
+            "hook_event_name":"PostToolUse",
+            "tool_name":"Edit",
+            "tool_use_id":"tool-edit",
+            "tool_response":{"filePath":"payments/retry.rs","oldString":"old","newString":"new"}
+        }))
+        .unwrap();
+        let captured = runtime
+            .capture_host_event(&cx, &grant().key, &ctx, &live)
+            .await
+            .unwrap();
+        let exact = runtime
+            .read_observation(&cx, &captured.accepted[0].source_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&exact.text).unwrap()["filePath"],
+            "payments/retry.rs"
+        );
+        let (_, prepared) = runtime
+            .capture_and_prepare_host(&cx, &grant().key, &ctx, &live, "edit-context", None)
+            .await
+            .unwrap();
+        let view = prepared.unwrap();
+        assert!(
+            view.evidence
+                .iter()
+                .any(|item| item.text.contains("idempotent"))
+        );
+        assert!(
+            view.evidence
+                .iter()
+                .all(|item| !item.text.contains("tool_response")),
+            "JSON field names are not retrieval cues"
+        );
+        let read = serde_json::to_vec(&json!({
+            "session_id":"session-a",
+            "hook_event_name":"PostToolUse",
+            "tool_name":"Read",
+            "tool_use_id":"tool-read",
+            "tool_response":{"file":{"filePath":"payments/retry.rs","content":"fn retry() {}"}}
+        }))
+        .unwrap();
+        let read_ctx = context("tool-read", HostOrigin::External);
+        let read_capture = runtime
+            .capture_host_event(&cx, &grant().key, &read_ctx, &read)
+            .await
+            .unwrap();
+        assert_eq!(read_capture.accepted.len(), 1);
+        let compact = serde_json::to_vec(&json!({
+            "session_id":"session-a",
+            "hook_event_name":"PreCompact",
+            "trigger":"auto"
+        }))
+        .unwrap();
+        let compact_ctx = context("session-a", HostOrigin::External);
+        let compacted = runtime
+            .capture_host_event(&cx, &grant().key, &compact_ctx, &compact)
+            .await
+            .unwrap();
+        assert!(compacted.accepted.is_empty());
+        assert_eq!(compacted.ignored_metadata, 1);
+    });
+}
+#[test]
+fn pretool_prepares_from_path_without_storing_the_request() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        runtime.register_host_capture(&cx, grant()).await.unwrap();
+        runtime
+            .register_source(
+                &cx,
+                cortex_kernel::runtime::observation::SourceSpec::document("notes", "repo-a"),
+            )
+            .await
+            .unwrap();
+        runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                cortex_kernel::runtime::observation::ObservationEvent {
+                    event_key: "one".into(),
+                    text: "src/ledger.rs write must be atomic".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let raw = serde_json::to_vec(&json!({
+            "session_id":"session-a",
+            "hook_event_name":"PreToolUse",
+            "tool_name":"Read",
+            "tool_use_id":"tool-pre",
+            "tool_input":{"file_path":"src/ledger.rs"}
+        }))
+        .unwrap();
+        let ctx = context("tool-pre", HostOrigin::External);
+        let (receipt, view) = runtime
+            .capture_and_prepare_host(&cx, &grant().key, &ctx, &raw, "pretool-context", None)
+            .await
+            .unwrap();
+        assert!(receipt.accepted.is_empty());
+        assert!(
+            view.unwrap()
+                .evidence
+                .iter()
+                .any(|item| item.text.contains("atomic"))
+        );
+        let events: i64 = runtime
+            .state()
+            .db
+            .lock(&cx)
+            .await
+            .unwrap()
+            .query_row("SELECT count(*) FROM observation_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 1, "a tool request is not an observation");
+    });
+}
+
+#[test]
+fn sidecar_without_native_flags_uses_explicit_trusted_fields() {
+    let sidecar = json!({
+        "grant":"approved",
+        "host_version":"fixture-v1",
+        "session":"s",
+        "generation":"g",
+        "event_key":"u1",
+        "origins":{"u1":"external"},
+        "context":"c1"
+    });
+    let invocation = resolve_host_invocation("PostToolUse", &sidecar, &json!({})).unwrap().unwrap();
+    assert_eq!(invocation.grant, "approved");
+    assert_eq!(invocation.context.session_id, "s");
+    assert_eq!(invocation.context.original_event_key.as_deref(), Some("u1"));
+    assert_eq!(invocation.invocation_context, "c1");
+}
+
+#[test]
+fn sidecar_user_prompt_derives_session_and_prompt_identity() {
+    let session = "225407e0-7c32-4812-b130-aa0d54039690";
+    let prompt = "ea0dd413-83bc-43a2-8913-506964f73808";
+    let sidecar = json!({"grant":"native-user","host_version":"fixture-v1","native_user_prompts":true});
+    let payload = json!({
+        "session_id":session,
+        "prompt_id":prompt,
+        "hook_event_name":"UserPromptSubmit",
+        "prompt":"offline fixture"
+    });
+    let invocation = resolve_host_invocation("UserPromptSubmit", &sidecar, &payload).unwrap().unwrap();
+    assert_eq!(invocation.context.session_id, session);
+    assert_eq!(invocation.context.original_event_key.as_deref(), Some(prompt));
+    assert_eq!(invocation.invocation_context, format!("claude-user:{session}:{prompt}"));
+    assert!(
+        resolve_host_invocation(
+            "UserPromptSubmit",
+            &sidecar,
+            &json!({
+                "session_id":session,
+                "prompt_id":"not-a-native-uuid",
+                "hook_event_name":"UserPromptSubmit",
+                "prompt":"offline fixture"
+            })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn sidecar_bash_flag_does_not_take_file_tools_and_file_flag_does_not_take_bash() {
+    let session = "225407e0-7c32-4812-b130-aa0d54039690";
+    let bash = json!({
+        "session_id":session,
+        "tool_use_id":"toolu_fixture_1",
+        "hook_event_name":"PostToolUse",
+        "tool_name":"Bash",
+        "tool_response":{"stdout":"fixture","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false}
+    });
+    let read = json!({
+        "session_id":session,
+        "tool_use_id":"toolu_read_1",
+        "hook_event_name":"PostToolUse",
+        "tool_name":"Read",
+        "tool_response":{"filePath":"/tmp/a.rs","content":"fn main() {}"}
+    });
+    assert!(
+        resolve_host_invocation(
+            "PostToolUse",
+            &json!({"grant":"native-tools","host_version":"fixture-v1","native_bash_results":true}),
+            &read
+        )
+        .unwrap()
+        .is_none()
+    );
+    let bash_invocation = resolve_host_invocation(
+        "PostToolUse",
+        &json!({"grant":"native-tools","host_version":"fixture-v1","native_bash_results":true}),
+        &bash,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        bash_invocation.invocation_context,
+        format!("claude-tool:{session}:toolu_fixture_1")
+    );
+    assert!(
+        resolve_host_invocation(
+            "PostToolUse",
+            &json!({"grant":"native-files","host_version":"fixture-v1","native_file_results":true}),
+            &bash
+        )
+        .unwrap()
+        .is_none()
+    );
+    let file_invocation = resolve_host_invocation(
+        "PostToolUse",
+        &json!({"grant":"native-files","host_version":"fixture-v1","native_file_results":true}),
+        &read,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(file_invocation.context.original_event_key.as_deref(), Some("toolu_read_1"));
 }

@@ -3,10 +3,10 @@
 //! corpus. A hidden index cutoff is never labelled `no_match`; the failure
 //! class of every miss is named. Plus the typed `compare` profile.
 
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::handlers::recall::{execute_unified_recall, RecallContext};
-use cortex_daemon::store_spi::sqlite::SqliteStore;
-use cortex_daemon::store_spi::{BrainStore, CandidateProfile, ReadSnapshot, ScanLimits};
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
+use cortex_kernel::store_spi::sqlite::SqliteStore;
+use cortex_kernel::store_spi::{BrainStore, CandidateProfile, ReadSnapshot, ScanLimits};
 use cortex_tests::support::{open_file_db, solo_state};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;

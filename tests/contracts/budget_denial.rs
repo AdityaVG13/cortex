@@ -1,8 +1,8 @@
 //! Budget admission is exercised directly with explicit, per-test configuration.
 //! Retired: HTTP 429, Retry-After/Cache-Control headers, and the removed router's
 //! JSON-RPC -32029 mapping. The MCP dispatcher does not enforce that router budget.
-use cortex_daemon::budgets::{BudgetConfigStatus, BudgetEndpoint};
-use cortex_daemon::rate_limit::RateLimiter;
+use cortex_logic::budgets::{BudgetConfigStatus, BudgetEndpoint};
+use cortex_logic::rate_limit::RateLimiter;
 use cortex_tests::support::run_with_cx;
 
 #[test]

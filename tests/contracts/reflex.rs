@@ -4,11 +4,11 @@
 //! fallback rate is reported, never hidden. Capture scope pause/stop is
 //! honored by the hook and inspectable through brain health.
 
-use cortex_daemon::adapter::{CapabilityManifest, HookDecision, SnapshotState};
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::hook_event::{frame_from_host, process};
-use cortex_daemon::reflex;
-use cortex_daemon::runtime::CortexRuntime;
+use cortex_logic::adapter::{CapabilityManifest, HookDecision, SnapshotState};
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::hook_event::{frame_from_host, process};
+use cortex_kernel::reflex;
+use cortex_kernel::runtime::CortexRuntime;
 use cortex_tests::support::solo_state;
 use serde_json::json;
 
@@ -223,7 +223,7 @@ fn warm_level0_latency_is_reported_with_fallback_rate() {
 fn capture_scope_pause_and_stop_are_honored_and_inspectable() {
     cortex_tests::support::run_with_cx(|cx| async move {
         let cx = &cx;
-        use cortex_daemon::db::capture_policy::{self, CaptureState};
+        use cortex_kernel::db::capture_policy::{self, CaptureState};
         let runtime = CortexRuntime::from_state(solo_state());
         let payload = json!({"hook_event_name": "PostToolUse", "session_id": "c", "cwd": "/Users/x/repoa", "tool_name": "Bash", "tool_use_id": "t1", "tool_input": {"command": "cargo test"}, "tool_response": {"stdout": "test result: FAILED. 1 passed; 2 failed", "exit_code": 101}});
         let frame = frame_from_host(
@@ -289,7 +289,7 @@ fn capture_scope_pause_and_stop_are_honored_and_inspectable() {
         // Brain health exposes the policy, capture receipts and reflex state.
         let health = {
             let conn = runtime.state().db_read.lock(cx).await.unwrap();
-            cortex_daemon::db::outbox::brain_health(&conn, &runtime.state().home)
+            cortex_kernel::db::outbox::brain_health(&conn, &runtime.state().home)
         };
         assert_eq!(health["capture_policy"]["global"], "stopped");
         assert!(

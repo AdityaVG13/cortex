@@ -2,7 +2,7 @@
 //! Retired: listener startup, health polling and HTTP status assertions.
 //! Runtime open exercises the same production initialization/repair branch.
 use cortex_daemon::handlers::health::{build_health_payload, build_readiness_payload};
-use cortex_daemon::{CortexRuntime, runtime::LensInput};
+use cortex_kernel::{CortexRuntime, runtime::LensInput};
 use cortex_tests::support::run_with_cx;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -171,17 +171,17 @@ fn auto_repair_preserves_identity_or_honestly_downgrades() {
             let path = home.path().join("cortex.db");
             {
                 let conn = cortex_tests::support::open_file_db(&path);
-                cortex_daemon::db::create_team_mode_tables(&conn).unwrap();
-                let owner = cortex_daemon::db::upsert_owner_user(
+                cortex_kernel::db::create_team_mode_tables(&conn).unwrap();
+                let owner = cortex_kernel::db::upsert_owner_user(
                     &conn,
                     "repair-owner",
                     None,
                     "hash-owner-verbatim",
                 )
                 .unwrap();
-                cortex_daemon::db::migrate_to_team_mode(&conn, owner).unwrap();
+                cortex_kernel::db::migrate_to_team_mode(&conn, owner).unwrap();
                 conn.execute("INSERT INTO decisions (decision, type, status) VALUES ('team salvage sentinel', 'decision', 'active')", []).unwrap();
-                assert_eq!(cortex_daemon::db::current_mode(&conn), "team");
+                assert_eq!(cortex_kernel::db::current_mode(&conn), "team");
                 match damage {
                     "config" => {
                         conn.execute("DELETE FROM config", []).unwrap();
@@ -205,12 +205,12 @@ fn auto_repair_preserves_identity_or_honestly_downgrades() {
                     _ => {}
                 }
             }
-            let result = cortex_daemon::db::auto_repair(&path, damage).unwrap();
+            let result = cortex_kernel::db::auto_repair(&path, damage).unwrap();
             assert_eq!(result.decisions_recovered, 1);
             let runtime = CortexRuntime::open_db(&path).unwrap();
             let conn = runtime.state().db.lock(&cx).await.unwrap();
             assert_eq!(
-                cortex_daemon::db::current_mode(&conn),
+                cortex_kernel::db::current_mode(&conn),
                 if damage == "intact" { "team" } else { "solo" }
             );
             if damage != "users" {
@@ -232,7 +232,7 @@ fn auto_repair_preserves_identity_or_honestly_downgrades() {
 
 #[test]
 fn sqlite_wal_reset_gate_matches_documented_fix_set() {
-    use cortex_daemon::db::{sqlite_version, sqlite_wal_reset_fixed};
+    use cortex_kernel::db::{sqlite_version, sqlite_wal_reset_fixed};
     for (version, fixed) in [
         ("3.51.2", false),
         ("3.51.3", true),

@@ -6,8 +6,8 @@
 
 use cortex_daemon::handlers::mcp::handle_mcp_message_with_caller;
 
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::lens::{EvidenceDepth, LensProfile, Need, NeedFrame};
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_logic::lens::{EvidenceDepth, LensProfile, Need, NeedFrame};
 use cortex_tests::support::solo_state;
 use serde_json::{json, Value};
 
@@ -266,7 +266,7 @@ fn checkpoint_and_resolve_create_revisions() {
         );
         let conn = state.db.lock(&cx).await.expect("lock");
         let heads =
-            cortex_daemon::db::records::heads(&conn, "checkpoint:thread:payments-retry").unwrap();
+            cortex_kernel::db::records::heads(&conn, "checkpoint:thread:payments-retry").unwrap();
         assert_eq!(heads.len(), 1);
         drop(conn);
         let resolved = dispatch(&cx, &state, caller(), Operation::Resolve, &json!({"record": "checkpoint:thread:payments-retry", "rationale": "owner accepted", "body": {"final": true}})).await.unwrap();
@@ -398,8 +398,8 @@ fn mcp_cortex_boot_routes_to_orient_and_dead_names_are_unknown() {
 #[test]
 fn evidence_closure_keeps_qualifiers_and_renders_contradictions_as_contrast() {
     cortex_tests::support::run_with_cx(|cx| async move {
-        use cortex_daemon::db::records::{append_commit, heads};
-        use cortex_daemon::handlers::operations::{add_relation, DependencyRole};
+        use cortex_kernel::db::records::{append_commit, heads};
+        use cortex_kernel::handlers::operations::{add_relation, DependencyRole};
         let state = solo_state();
         let rule = dispatch(
             &cx,
@@ -557,8 +557,8 @@ Operation::Commit,
 #[test]
 fn evidence_closure_quality_bar_never_serves_a_naked_claim() {
     cortex_tests::support::run_with_cx(|cx| async move {
-        use cortex_daemon::db::records::{append_commit, heads};
-        use cortex_daemon::handlers::operations::{add_relation, DependencyRole};
+        use cortex_kernel::db::records::{append_commit, heads};
+        use cortex_kernel::handlers::operations::{add_relation, DependencyRole};
         let state = solo_state();
 
         // Rule + exception linked as RequiredQualifier.
@@ -1018,7 +1018,7 @@ fn package_cli_and_mcp_return_the_same_qualified_bundle() {
         let expected = shape(&cli_view);
         assert_eq!(expected.len(), 2, "{cli_view}");
         let runtime =
-            cortex_daemon::runtime::CortexRuntime::open_db(std::path::Path::new(&db)).unwrap();
+            cortex_kernel::runtime::CortexRuntime::open_db(std::path::Path::new(&db)).unwrap();
         let local = dispatch(
             &cx,
             runtime.state(),
@@ -1129,7 +1129,7 @@ fn aliases_from_a_previous_restore_epoch_are_rejected() {
 #[test]
 fn query_and_expand_expose_v5_observations_as_attributed_evidence() {
     cortex_tests::support::run_with_cx(|cx| async move {
-        use cortex_daemon::runtime::{
+        use cortex_kernel::runtime::{
             CortexRuntime,
             observation::{ObservationEvent, SourceSpec},
         };
@@ -1225,7 +1225,7 @@ fn query_and_expand_expose_v5_observations_as_attributed_evidence() {
 #[test]
 fn commit_can_cite_observation_evidence_without_auto_promotion() {
     cortex_tests::support::run_with_cx(|cx| async move {
-        use cortex_daemon::runtime::{
+        use cortex_kernel::runtime::{
             CortexRuntime,
             observation::{ObservationEvent, SourceSpec},
         };

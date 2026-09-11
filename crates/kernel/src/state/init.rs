@@ -181,7 +181,6 @@ fn initialize_with_conn(
         db_path: paths.db.clone(),
         token_path: paths.token.clone(),
         pid_path: paths.pid.clone(),
-        port: paths.port,
         rate_limiter: crate::rate_limit::RateLimiter::new_with_budget_status(budget_config_status),
         team_mode,
         default_owner_id,

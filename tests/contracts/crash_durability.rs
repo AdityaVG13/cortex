@@ -2,7 +2,7 @@
 //! Retired: serve/port/HTTP readiness choreography. No graceful shutdown or
 //! explicit checkpoint occurs at the crash boundary.
 use cortex_daemon::handlers::health::build_health_payload;
-use cortex_daemon::{runtime::LensInput, CortexRuntime};
+use cortex_kernel::{runtime::LensInput, CortexRuntime};
 use cortex_tests::support::run_with_cx;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};

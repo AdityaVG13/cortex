@@ -1,11 +1,11 @@
 use serde_json::{json, Value};
 
-use crate::handlers::feedback::{build_agent_feedback_stats_payload, record_agent_feedback_from_value};
 use crate::handlers::health::{build_digest, build_health_payload};
-use crate::handlers::mutate::{grant_permission, list_permissions, revoke_permission};
-use crate::handlers::recall::{execute_semantic_recall, execute_unified_recall, RecallContext};
 use crate::handlers::SourceIdentity;
 use crate::state::RuntimeState;
+use cortex_kernel::handlers::feedback::{build_agent_feedback_stats_payload, record_agent_feedback_from_value};
+use cortex_kernel::handlers::mutate::{grant_permission, list_permissions, revoke_permission};
+use cortex_kernel::handlers::recall::{execute_semantic_recall, execute_unified_recall, RecallContext};
 
 use super::{arg_i64, arg_str, arg_usize, enforce_client_permission, fetch_last_call};
 
@@ -23,7 +23,7 @@ pub(crate) async fn mcp_dispatch(
     let owner_id = if state.team_mode { caller_id.unwrap_or_default() } else { 0 };
     // The eight semantic operations (and their legacy aliases) share one
     // transport-agnostic dispatcher; the specialised legacy tools below stay.
-    if let Some(op) = crate::handlers::operations::Operation::from_tool_name(tool_name) {
+    if let Some(op) = cortex_kernel::handlers::operations::Operation::from_tool_name(tool_name) {
         let keep_legacy_shape =
             matches!(tool_name, "cortex_recall" | "cortex_peek" | "cortex_semantic_recall" | "cortex_health" | "cortex_agent_feedback_record");
         if !keep_legacy_shape {
@@ -31,8 +31,8 @@ pub(crate) async fn mcp_dispatch(
                 .unwrap_or_else(|| source.map(|identity| identity.agent.as_str()).unwrap_or("mcp"))
                 .to_string();
             let principal = if state.team_mode { format!("user:{owner_id}") } else { "solo".to_string() };
-            let caller = crate::handlers::operations::Caller { owner_id: caller_id, agent: &agent, principal };
-            return crate::handlers::operations::dispatch(cx, state, caller, op, args).await;
+            let caller = cortex_kernel::handlers::operations::Caller { owner_id: caller_id, agent: &agent, principal };
+            return cortex_kernel::handlers::operations::dispatch(cx, state, caller, op, args).await;
         }
     }
     match tool_name {

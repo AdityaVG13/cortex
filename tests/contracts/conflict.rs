@@ -1,5 +1,5 @@
-use cortex_daemon::conflict::{self, ConflictClassification};
-use cortex_daemon::handlers::store::store_decision_with_ttl;
+use cortex_logic::conflict::{self, ConflictClassification};
+use cortex_kernel::handlers::store::store_decision_with_ttl;
 use cortex_tests::support::test_conn;
 use std::collections::HashSet;
 

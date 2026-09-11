@@ -15,6 +15,7 @@ CREATE INDEX IF NOT EXISTS observation_reverse_cues ON observation_need_cues(pri
 CREATE TABLE IF NOT EXISTS observation_matches(principal TEXT NOT NULL, need_id TEXT NOT NULL, source_id TEXT NOT NULL, PRIMARY KEY(principal,need_id,source_id));
 CREATE TABLE IF NOT EXISTS observation_retractions(source_id TEXT PRIMARY KEY, principal TEXT NOT NULL, reason TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS observation_deliveries(delivery_id TEXT PRIMARY KEY, principal TEXT NOT NULL, need_id TEXT NOT NULL, context TEXT NOT NULL, fingerprint TEXT NOT NULL, restore_epoch TEXT NOT NULL, expires INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS observation_requirements(principal TEXT NOT NULL, parent_id TEXT NOT NULL, child_id TEXT NOT NULL, PRIMARY KEY(principal,parent_id,child_id));
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,8 @@ pub struct NeedSpec {
     pub id: String,
     pub scope: String,
     pub cues: Vec<String>,
+    #[serde(default)]
+    pub exclude_cues: Vec<String>,
     pub max_results: usize,
     pub max_bytes: usize,
     pub ttl_seconds: u64,
@@ -52,13 +55,15 @@ pub struct PreparedView {
     pub restore_epoch: String,
     pub policy_epoch: String,
     pub fingerprint: String,
+    #[serde(default)]
+    pub assembly_brief: String,
 }
 
 fn ensure(conn: &Connection) -> Result<(), String> {
     // Runtime open owns authoritative migrations. Initialized observation reads
     // must not acquire a writer lock just to repeat idempotent schema writes.
-    let tables:i64=conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('observation_sources','observation_events','observation_cursors','capture_policy','observation_projection','observation_postings','observation_needs','observation_need_cues','observation_matches','observation_retractions','observation_deliveries')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
-    if tables == 11 {
+    let tables:i64=conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('observation_sources','observation_events','observation_cursors','capture_policy','observation_projection','observation_postings','observation_needs','observation_need_cues','observation_matches','observation_retractions','observation_deliveries','observation_requirements')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if tables == 12 {
         return Ok(());
     }
     observation::ensure(conn)?;
@@ -80,6 +85,8 @@ fn validate(spec: &NeedSpec) -> Result<BTreeSet<String>, String> {
         || spec.cues.is_empty()
         || spec.cues.len() > 32
         || spec.cues.iter().any(|c| c.len() > 128)
+        || spec.exclude_cues.len() > 32
+        || spec.exclude_cues.iter().any(|c| c.len() > 128)
         || spec.max_results == 0
         || spec.max_results > 128
         || spec.max_bytes == 0
@@ -188,6 +195,85 @@ fn register(conn: &Connection, principal: &str, spec: &NeedSpec) -> Result<(), S
     Ok(())
 }
 
+fn load_evidence(
+    conn: &Connection,
+    principal: &str,
+    scope: &str,
+    source_id: &str,
+    route: &str,
+) -> Result<Option<Evidence>, String> {
+    let row = conn
+        .query_row(
+            "SELECT e.source_id,e.revision_id,e.source_key,g.role,s.inline_payload FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key JOIN sources s ON s.source_id=e.source_id JOIN revisions v ON v.revision_id=e.revision_id WHERE e.principal=?1 AND e.source_id=?2 AND g.scope_label=?3 AND g.enabled=1 AND EXISTS(SELECT 1 FROM record_heads h WHERE h.revision_id=e.revision_id) AND NOT EXISTS(SELECT 1 FROM observation_retractions t WHERE t.source_id=e.source_id) AND s.availability='owned_inline'",
+            params![principal, source_id, scope],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    row.map(|(source_id, revision_id, source_key, role, bytes)| {
+        Ok(Evidence {
+            source_id,
+            revision_id,
+            source_key,
+            role,
+            text: String::from_utf8(bytes).map_err(|_| "source_not_utf8")?,
+            route: route.into(),
+        })
+    })
+    .transpose()
+}
+
+fn close_evidence(
+    conn: &Connection,
+    principal: &str,
+    spec: &NeedSpec,
+    mut evidence: Vec<Evidence>,
+) -> Result<(Vec<Evidence>, Option<&'static str>), String> {
+    if !spec.exclude_cues.is_empty() {
+        let banned: BTreeSet<_> = spec.exclude_cues.iter().flat_map(|c| cues(c)).collect();
+        evidence.retain(|item| cues(&item.text).is_disjoint(&banned));
+    }
+    let mut seen: BTreeSet<String> = evidence.iter().map(|item| item.source_id.clone()).collect();
+    let mut todo: Vec<String> = seen.iter().cloned().collect();
+    while let Some(parent) = todo.pop() {
+        if seen.len() > 128 {
+            return Ok((Vec::new(), Some("closure_limit")));
+        }
+        let mut stmt = conn
+            .prepare(
+                "SELECT child_id FROM observation_requirements WHERE principal=?1 AND parent_id=?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let children = stmt
+            .query_map(params![principal, parent], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(stmt);
+        for child in children {
+            if !seen.insert(child.clone()) {
+                continue;
+            }
+            match load_evidence(conn, principal, &spec.scope, &child, "required")? {
+                Some(item) => {
+                    todo.push(child);
+                    evidence.push(item);
+                }
+                None => return Ok((Vec::new(), Some("qualification_unavailable"))),
+            }
+        }
+    }
+    Ok((evidence, None))
+}
+
 fn materialize(
     conn: &Connection,
     principal: &str,
@@ -262,12 +348,53 @@ fn materialize(
                 route: "learned_local_association".into(),
             });
         }
+        for (source_id, _assembly, member_role) in super::assembly::suggest_authorized_members(
+            conn,
+            principal,
+            &spec.scope,
+            &spec.cues,
+            spec.max_results,
+        )? {
+            if evidence.iter().any(|item| item.source_id == source_id) {
+                continue;
+            }
+            if let Some(item) = load_evidence(
+                conn,
+                principal,
+                &spec.scope,
+                &source_id,
+                if member_role.is_required_exception() {
+                    "assembly_exception"
+                } else {
+                    "learned_assembly_route"
+                },
+            )? {
+                evidence.push(item);
+            } else if member_role.is_required_exception() {
+                return Ok(PreparedView {
+                    status: "qualification_unavailable".into(),
+                    evidence: Vec::new(),
+                    source_refs: Vec::new(),
+                    delivery_id: None,
+                    payload: String::new(),
+                    payload_bytes: 0,
+                    projection_pending: pending as usize,
+                    restore_epoch: restore.clone(),
+                    policy_epoch: policy.clone(),
+                    fingerprint: cortex_logic::traces::content_hash("qualification_unavailable"),
+                    assembly_brief: String::new(),
+                });
+            }
+        }
     }
+    let (mut evidence, closure_status) = close_evidence(conn, principal, spec, evidence)?;
     let rendered = serde_json::to_string(&evidence).map_err(|e| e.to_string())?;
     let bounded = evidence.len() > spec.max_results || rendered.len() > spec.max_bytes;
     let permission_required:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM observation_sources WHERE principal=?1 AND scope_label=?2 AND (enabled=0 OR policy_epoch!=?3))",params![principal,spec.scope,policy],|r|r.get(0)).map_err(|e|e.to_string())?;
     let unavailable:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key JOIN sources s ON s.source_id=e.source_id WHERE e.principal=?1 AND g.scope_label=?2 AND g.enabled=1 AND g.policy_epoch=?3 AND s.availability!='owned_inline')",params![principal,spec.scope,policy],|r|r.get(0)).map_err(|e|e.to_string())?;
-    let status = if permission_required {
+    let status = if let Some(status) = closure_status {
+        status
+    } else if permission_required {
         "permission_required"
     } else if unavailable {
         "source_unavailable"
@@ -306,6 +433,7 @@ fn materialize(
         restore_epoch: restore,
         policy_epoch: policy,
         fingerprint,
+        assembly_brief: String::new(),
     })
 }
 
@@ -326,6 +454,7 @@ impl CortexRuntime {
             id: format!("pull:{}", uuid::Uuid::new_v4()),
             scope: scope.into(),
             cues: cues(query).into_iter().collect(),
+            exclude_cues: Vec::new(),
             max_results,
             max_bytes,
             ttl_seconds: 1,
@@ -470,6 +599,52 @@ impl CortexRuntime {
             .ok_or("source_not_authorized")?;
         observation::granted(&tx, &principal, &key, true)?;
         tx.execute("INSERT INTO observation_retractions VALUES(?1,?2,?3) ON CONFLICT(source_id) DO UPDATE SET reason=excluded.reason",params![source_id,principal,reason]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Bind a required child to a parent. Delivery of the parent is incomplete
+    /// unless that child is still authorized, current, and unretracted.
+    pub async fn require_observation(
+        &self,
+        cx: &Cx,
+        parent_id: &str,
+        child_id: &str,
+    ) -> Result<(), String> {
+        if parent_id == child_id {
+            return Err("invalid_requirement".into());
+        }
+        let principal = self.observation_principal()?;
+        let mut conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
+        ensure(&conn)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let parent_scope: String = tx
+            .query_row(
+                "SELECT g.scope_label FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key WHERE e.principal=?1 AND e.source_id=?2",
+                params![principal, parent_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or("source_not_authorized")?;
+        let child_scope: String = tx
+            .query_row(
+                "SELECT g.scope_label FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key WHERE e.principal=?1 AND e.source_id=?2",
+                params![principal, child_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or("source_not_authorized")?;
+        if parent_scope != child_scope {
+            return Err("requirement_scope_mismatch".into());
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO observation_requirements VALUES(?1,?2,?3)",
+            params![principal, parent_id, child_id],
+        )
+        .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
     }
 }

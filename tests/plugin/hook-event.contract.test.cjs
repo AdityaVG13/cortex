@@ -29,49 +29,24 @@ test('real bridge failures remain visible while delivery is forwarded', () => {
   assert.equal(bridge({ status: 0, stdout: '{"delivery":"evidence"}', stderr: '' }), '{"delivery":"evidence"}\n');
 });
 
-test('trusted V5 invocation sidecar selects the automatic capture and prepare path', () => {
-  const calls = [];
+test('every host event uses cortex hook, including when a capture sidecar is present', () => {
+  const withSidecar = [];
   const sidecar = { grant: 'approved', host_version: 'fixture-v1', session: 's', generation: 'g', event_key: 'u1', origins: { u1: 'external' }, context: 'c1' };
-  assert.equal(bridge({ status: 0, stdout: '' }, { CORTEX_V5_CAPTURE: JSON.stringify(sidecar) }, calls), '');
-  assert.deepEqual(calls[0].slice(0, 2), ['capture', 'host-cycle']);
-  assert.equal(calls[0][calls[0].indexOf('--origins') + 1], '{"u1":"external"}');
-  assert.ok(calls[0].includes('--payload'));
+  assert.equal(bridge({ status: 0, stdout: '' }, { CORTEX_CAPTURE: JSON.stringify(sidecar) }, withSidecar), '');
+  assert.deepEqual(withSidecar[0].slice(0, 2), ['hook', 'PostToolUse']);
+  const without = [];
+  assert.equal(bridge({ status: 0, stdout: '' }, {}, without), '');
+  assert.deepEqual(without[0].slice(0, 2), ['hook', 'PostToolUse']);
 });
 
-test('opted-in native user hooks derive stable invocation metadata without model commands', () => {
-  const calls = [];
+test('file and Bash events share the same hook command', () => {
+  const fileCalls = [];
+  const bashCalls = [];
   const session = '225407e0-7c32-4812-b130-aa0d54039690';
-  const prompt = 'ea0dd413-83bc-43a2-8913-506964f73808';
-  const config = { grant: 'native-user', host_version: '2.1.260', native_user_prompts: true };
-  const input = JSON.stringify({ session_id: session, prompt_id: prompt, hook_event_name: 'UserPromptSubmit', prompt: 'offline fixture' });
-  const env = { CORTEX_TEST_EVENT: 'UserPromptSubmit', CORTEX_V5_CAPTURE: JSON.stringify(config) };
-  assert.equal(bridge({ status: 0, stdout: '' }, env, calls, input), '');
-  const args = calls[0];
-  assert.deepEqual(args.slice(0, 2), ['capture', 'host-cycle']);
-  assert.equal(args[args.indexOf('--session') + 1], session);
-  assert.equal(args[args.indexOf('--event-key') + 1], prompt);
-  assert.deepEqual(JSON.parse(args[args.indexOf('--origins') + 1]), { [prompt]: 'external' });
-  assert.equal(args[args.indexOf('--context') + 1], `claude-user:${session}:${prompt}`);
-  const rejected = [];
-  const malformed = input.replace(prompt, 'not-a-native-uuid');
-  assert.equal(JSON.parse(bridge({ status: 0, stdout: '' }, env, rejected, malformed)).cortex.decision, 'UNAVAILABLE');
-  assert.equal(rejected.length, 0);
+  const env = { CORTEX_CAPTURE: JSON.stringify({ grant: 'native-files', host_version: 'fixture-v1', native_file_results: true }) };
+  const payload = { session_id: session, tool_use_id: 'toolu_read_1', hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: { filePath: '/tmp/a.rs', content: 'fn main() {}' } };
+  assert.equal(bridge({ status: 0, stdout: '' }, env, fileCalls, JSON.stringify(payload)), '');
+  assert.deepEqual(fileCalls[0].slice(0, 2), ['hook', 'PostToolUse']);
+  bridge({ status: 0, stdout: '' }, env, bashCalls, JSON.stringify({ ...payload, tool_name: 'Bash', tool_response: { stdout: 'x', stderr: '', interrupted: false, isImage: false, noOutputExpected: false } }));
+  assert.deepEqual(bashCalls[0].slice(0, 2), ['hook', 'PostToolUse']);
 });
-
-test('opted-in native Bash hooks use tool-use identity and leave other tools on the legacy path', () => {
-  const calls = [];
-  const session = '225407e0-7c32-4812-b130-aa0d54039690';
-  const config = { grant: 'native-tools', host_version: '2.1.260', native_bash_results: true };
-  const env = { CORTEX_V5_CAPTURE: JSON.stringify(config) };
-  const payload = { session_id: session, tool_use_id: 'toolu_fixture_1', hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: { stdout: 'fixture', stderr: '', interrupted: false, isImage: false, noOutputExpected: false } };
-  assert.equal(bridge({ status: 0, stdout: '' }, env, calls, JSON.stringify(payload)), '');
-  assert.deepEqual(calls[0].slice(0, 2), ['capture', 'host-cycle']);
-  assert.equal(calls[0][calls[0].indexOf('--context') + 1], `claude-tool:${session}:toolu_fixture_1`);
-  assert.deepEqual(JSON.parse(calls[0][calls[0].indexOf('--origins') + 1]), { toolu_fixture_1: 'external' });
-  const other = [];
-  bridge({ status: 0, stdout: '' }, env, other, JSON.stringify({ ...payload, tool_name: 'Read' }));
-  assert.deepEqual(other[0].slice(0, 2), ['hook-event', 'PostToolUse']);
-});
-
-
-

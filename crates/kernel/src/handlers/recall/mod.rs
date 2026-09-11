@@ -18,3 +18,4 @@ pub use engine::run_budget_recall_trace_with_query_vector;
 pub use engine::{
     parse_recall_policy_mode, resolve_recall_budget_k, RecallContext, RecallPolicyMode,
 };
+pub(crate) use engine::target_scope_compatible;

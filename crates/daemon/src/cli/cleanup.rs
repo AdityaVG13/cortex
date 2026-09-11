@@ -1,22 +1,11 @@
 use super::common::{is_cli_option_token, validate_cli_options_or_exit};
 use crate::{auth, db};
 use chrono::{Local, Utc};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(crate) const BACKUP_RETENTION_COUNT: usize = 3;
-const BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION: i32 = 5;
 const LOG_ROTATION_BYTES: u64 = 1024 * 1024;
 const STARTUP_LOG_FILES: &[&str] = &["daemon.log", "daemon.err.log", "daemon.out.log", "mcp-crash.log", "rust-daemon.err.log"];
-
-pub(crate) fn should_backup(backup_dir: &Path) -> bool {
-    let last_backup_file = backup_dir.join(".last_backup");
-    let Ok(ts) = std::fs::read_to_string(last_backup_file) else {
-        return true;
-    };
-    chrono::DateTime::parse_from_rfc3339(&ts)
-        .map(|last_backup| (Utc::now() - last_backup.with_timezone(&Utc)).num_hours() >= 24)
-        .unwrap_or(true)
-}
 
 pub(crate) fn cleanup_backup_retention(backup_dir: &Path) -> usize {
     let mut backups = std::fs::read_dir(backup_dir)
@@ -36,48 +25,6 @@ pub(crate) fn cleanup_backup_retention(backup_dir: &Path) -> usize {
         let _ = std::fs::remove_file(entry.path());
     }
     remove_count
-}
-
-pub(crate) fn cleanup_bridge_backups(home: &Path, schema_version: i32) -> bool {
-    if schema_version < BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION {
-        return false;
-    }
-    std::fs::remove_dir_all(home.join("bridge-backups")).is_ok()
-}
-
-pub(crate) fn cleanup_expired_rows(conn: &rusqlite::Connection, label: &str) {
-    match db::delete_expired_entries(conn) {
-        Ok(counts) if counts.memories_deleted > 0 || counts.decisions_deleted > 0 => {
-            eprintln!("[cortex] {label}: deleted {} expired memories and {} expired decisions", counts.memories_deleted, counts.decisions_deleted);
-        }
-        Ok(_) => {}
-        Err(err) => eprintln!("[cortex] Warning: expired-row cleanup failed: {err}"),
-    }
-}
-
-pub(crate) fn run_stale_pid_cleanup(paths: &auth::CortexPaths, dry_run: bool) -> Vec<String> {
-    // Live-daemon check must work on every platform; the previous /proc-based
-    // probe never matched on macOS/Windows, so a live daemon's pid file could
-    // be deleted as "stale".
-    if auth::pid_file_live_pid(paths).is_some() {
-        return Vec::new();
-    }
-    let Some(pid) = std::fs::read_to_string(&paths.pid).ok().and_then(|value| value.trim().parse::<u32>().ok()) else {
-        return Vec::new();
-    };
-    if !dry_run {
-        let _ = std::fs::remove_file(&paths.pid);
-    }
-    vec![format!("DELETE cortex.pid (process {pid} not running)")]
-}
-
-/// SQLite sidecar path (`<db>-wal` / `<db>-shm`): the suffix is appended to
-/// the full file name, not substituted for the extension, so custom db names
-/// like `foo.sqlite` resolve correctly.
-fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
-    let mut name = db_path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
-    name.push(suffix);
-    db_path.with_file_name(name)
 }
 
 pub(crate) fn rotate_startup_logs(home: &Path) -> usize {

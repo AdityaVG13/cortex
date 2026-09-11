@@ -18,14 +18,6 @@ impl ClientPermission {
         }
     }
 }
-pub(crate) fn parse_client_permission(raw: &str) -> Option<ClientPermission> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "read" => Some(ClientPermission::Read),
-        "write" => Some(ClientPermission::Write),
-        "admin" => Some(ClientPermission::Admin),
-        _ => None,
-    }
-}
 pub(crate) fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
     // Only names with a real dispatcher path. Removed historical tools
     // (diary, forget, reconnect, boot_audit, …) return None and surface as

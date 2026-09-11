@@ -6,12 +6,6 @@ use crate::clockwork::{
 use crate::graph;
 use crate::traces;
 
-const ACTIVE_GATES: &str = "status NOT IN ('superseded','archived') \
- AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) \
- AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) \
- AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) \
- AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned'))";
-
 /// Per-arm provenance markers. Each collector arm stamps the candidates it
 /// contributes to; `scored_to_item` surfaces the merged list as
 /// `clockVotes.admittedArms` in the why payload. Additive metadata only:
@@ -903,27 +897,42 @@ fn row_eligible(conn: &Connection, candidate: &ScoredCandidate, ctx: &RecallCont
     Ok(true)
 }
 
-fn path_context_compatible(conn: &Connection, candidate: &ScoredCandidate, frame: &QueryFrame) -> Result<bool, String> {
-    if frame.paths.is_empty() {
-        return Ok(true);
-    }
-    let query_paths: Vec<String> = frame.paths.iter().map(|p| normalize_task_path(p)).filter(|p| !p.is_empty()).collect();
+pub(crate) fn target_scope_compatible(
+    conn: &Connection,
+    target_type: &str,
+    target_id: i64,
+    query_paths: &[String],
+) -> Result<bool, String> {
     if query_paths.is_empty() {
         return Ok(true);
     }
-    let candidate_paths = candidate_path_values(conn, &candidate.target_type, candidate.target_id)?;
+    let query_paths: Vec<String> = query_paths
+        .iter()
+        .map(|p| normalize_task_path(p))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if query_paths.is_empty() {
+        return Ok(true);
+    }
+    let candidate_paths = explicit_path_values(conn, target_type, target_id)?;
     if candidate_paths.is_empty() {
         return Ok(true);
     }
-    Ok(candidate_paths.iter().any(|cp| query_paths.iter().any(|qp| path_compatible(cp, qp))))
+    Ok(candidate_paths
+        .iter()
+        .any(|cp| query_paths.iter().any(|qp| path_compatible(cp, qp))))
 }
 
-fn candidate_path_values(conn: &Connection, target_type: &str, target_id: i64) -> Result<Vec<String>, String> {
+fn path_context_compatible(conn: &Connection, candidate: &ScoredCandidate, frame: &QueryFrame) -> Result<bool, String> {
+    target_scope_compatible(conn, &candidate.target_type, candidate.target_id, &frame.paths)
+}
+
+fn explicit_path_values(conn: &Connection, target_type: &str, target_id: i64) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare_cached(
             "SELECT a.value FROM clock_anchors a
              JOIN clock_anchor_evidence e ON e.anchor_id = a.id
-             WHERE e.target_type = ?1 AND e.target_id = ?2 AND a.kind = 'path'",
+             WHERE e.target_type = ?1 AND e.target_id = ?2 AND a.kind = 'path' AND a.specificity >= 3",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map(params![target_type, target_id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;

@@ -3,7 +3,7 @@
 //! explicit capabilities at the kernel/MCP seams, not fabricated responses.
 use cortex_daemon::handlers::health::build_health_payload;
 use cortex_daemon::handlers::mcp::handle_mcp_message_with_caller;
-use cortex_daemon::CortexRuntime;
+use cortex_kernel::CortexRuntime;
 use cortex_tests::support::{run_with_cx, solo_state};
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
@@ -30,7 +30,7 @@ fn mcp_rejects_vague_decision_with_validation_evidence() {
         let mut conn = state.db.lock(&cx).await.unwrap();
         // The adapter serializes an error string; structured quality evidence
         // remains available at the typed store boundary.
-        use cortex_daemon::handlers::store::{
+        use cortex_kernel::handlers::store::{
             store_decision_with_input_embedding_and_provenance_retention, DecisionProvenance,
             StoreError,
         };

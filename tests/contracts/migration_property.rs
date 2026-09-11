@@ -30,7 +30,7 @@ mod support;
 
 use std::collections::HashSet;
 
-use cortex_daemon::db;
+use cortex_kernel::db;
 use proptest::prelude::*;
 use proptest::test_runner::{RngAlgorithm, TestRng};
 use rusqlite::{params, Connection};

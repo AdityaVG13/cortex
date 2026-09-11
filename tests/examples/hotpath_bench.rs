@@ -47,11 +47,11 @@
 //! recall quality (precision/MRR/coverage floors need a labeled relevance set — the
 //! deleted HTTP-level recall_benchmark's job; quality stays owned by benchmarking/).
 
-use cortex_daemon::compiler;
-use cortex_daemon::conflict;
-use cortex_daemon::db;
-use cortex_daemon::handlers::recall::{execute_unified_recall, RecallContext};
-use cortex_daemon::handlers::store::store_decision_with_ttl;
+use cortex_kernel::compiler;
+use cortex_logic::conflict;
+use cortex_kernel::db;
+use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
+use cortex_kernel::handlers::store::store_decision_with_ttl;
 use cortex_tests::support::runtime_state;
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -260,7 +260,7 @@ fn print_header(mode: &str, profile: &str, rounds: usize) {
     println!("hotpath_bench — {BENCH_NAME} latency ratchet (lib-level smoke)");
     println!(
         "mode={mode} profile={profile} rounds={rounds} durability={}",
-        cortex_daemon::db::DurabilityProfile::from_env().as_str()
+        cortex_kernel::db::DurabilityProfile::from_env().as_str()
     );
     println!("runner command:");
     println!("  CORTEX_BENCH_PROFILE=release-perf cargo run --quiet -p cortex-tests --example hotpath_bench --profile release-perf");

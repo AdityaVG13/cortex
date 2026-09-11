@@ -6,8 +6,8 @@
 // HTTP import/admin status codes and the retired admin bounds-key aggregation
 // are no longer surfaces; import redaction and budget validation remain local contracts.
 
-use cortex_daemon::handlers::operations::{Caller, Operation, dispatch};
-use cortex_daemon::runtime::CortexRuntime;
+use cortex_kernel::handlers::operations::{Caller, Operation, dispatch};
+use cortex_kernel::runtime::CortexRuntime;
 use cortex_tests::support::solo_state;
 use serde_json::json;
 use std::fs;
@@ -117,7 +117,7 @@ fn import_redacts_like_store_and_reports_it() {
         let payload = serde_json::from_value(json!({"memories": [{"text": "IMP-1 key ghp_abcdefghijklmnopqrstuvFAKE here"}, {"text": "   "}], "decisions": [{"decision": "IMP-2 decision with sk-test1234567890abcdefFAKE", "context": "ctx sk-test1234567890abcdefFAKE"}]})).unwrap();
         {
             let mut conn = state.db.lock(&cx).await.expect("database lock");
-            let counts = cortex_daemon::export_data::import_payload(
+            let counts = cortex_kernel::export_data::import_payload(
                 &mut conn,
                 &payload,
                 &Default::default(),
@@ -130,14 +130,14 @@ fn import_redacts_like_store_and_reports_it() {
             ("IMP-1", "ghp_abcdefghijklmnopqrstuvFAKE"),
             ("IMP-2", "sk-test1234567890abcdefFAKE"),
         ] {
-            let recalled = cortex_daemon::handlers::recall::execute_unified_recall(
+            let recalled = cortex_kernel::handlers::recall::execute_unified_recall(
                 &cx,
                 &state,
                 query,
                 400,
                 8,
                 "capture",
-                &cortex_daemon::handlers::recall::RecallContext::solo(),
+                &cortex_kernel::handlers::recall::RecallContext::solo(),
                 None,
             )
             .await
@@ -154,8 +154,8 @@ fn import_redacts_like_store_and_reports_it() {
 #[test]
 fn indexer_never_reads_more_than_the_ceiling() {
     cortex_tests::support::run_with_cx(|cx| async move {
-        use cortex_daemon::indexer::INDEXER_MAX_FILE_BYTES;
-        use cortex_daemon::runtime::{CortexRuntime, observation::SourceSpec};
+        use cortex_kernel::indexer::INDEXER_MAX_FILE_BYTES;
+        use cortex_kernel::runtime::{CortexRuntime, observation::SourceSpec};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("huge.log");
         fs::write(&path, vec![b'x'; INDEXER_MAX_FILE_BYTES as usize + 1]).unwrap();
@@ -183,7 +183,7 @@ fn indexer_never_reads_more_than_the_ceiling() {
 /// routes and their aggregate bounds document.
 #[test]
 fn budget_config_rejects_unknown_endpoints_and_preserves_valid_bounds() {
-    use cortex_daemon::budgets::{BudgetConfig, BudgetEndpoint};
+    use cortex_logic::budgets::{BudgetConfig, BudgetEndpoint};
     let bad = BudgetConfig::parse_toml_str("[endpoints.nope]\nlimit = 1\n").unwrap_err();
     assert_eq!(bad.code, "unknown_endpoint");
     assert_eq!(bad.endpoint.as_deref(), Some("nope"));

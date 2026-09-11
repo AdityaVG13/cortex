@@ -12,8 +12,6 @@
 //! let view = rt.lens(cx, LensInput { query: "PAY-12".into(), agent: "outfit".into(), ..Default::default() }).await?;
 //! ```
 
-pub const DEFAULT_CORTEX_PORT: u16 = 7437;
-
 pub mod aging;
 pub mod auth;
 pub mod compaction;
@@ -33,7 +31,7 @@ pub mod store_spi;
 pub mod workspace;
 
 pub use cortex_logic::{
-    adapter, api_types, budgets, capture, clockwork, conflict, eval, graph, lens, presence,
-    protocol, rate_limit, recipe, traces,
+    adapter, api_types, assembly, budgets, capture, clockwork, conflict, eval, graph, lens,
+    presence, protocol, rate_limit, recipe, traces,
 };
 pub use runtime::{BootInput, CortexError, CortexRuntime, DepositOutcome, LensInput};

@@ -1,4 +1,4 @@
-use cortex_daemon::runtime::{
+use cortex_kernel::runtime::{
     CortexRuntime,
     cycle::NeedSpec,
     observation::{ObservationEvent, SourceSpec},
@@ -10,6 +10,7 @@ fn need() -> NeedSpec {
         id: "active".into(),
         scope: "repo".into(),
         cues: vec!["retry".into()],
+        exclude_cues: vec![],
         max_results: 128,
         max_bytes: 65536,
         ttl_seconds: 3600,
@@ -299,5 +300,115 @@ fn bounded_views_disclose_incomplete_results_instead_of_delivering_prefixes() {
         assert_eq!(view.status, "quota_blocked");
         assert_eq!(view.payload_bytes, 0);
         assert!(view.evidence.is_empty());
+    });
+}
+
+#[test]
+fn required_child_blocks_ready_until_it_is_available() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes", "repo"))
+            .await
+            .unwrap();
+        let parent = runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                ObservationEvent {
+                    event_key: "rule".into(),
+                    text: "retry unless revoked".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let child = runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                ObservationEvent {
+                    event_key: "exception".into(),
+                    text: "revoked permit exception".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .require_observation(&cx, &parent.source_id, &child.source_id)
+            .await
+            .unwrap();
+        let ready = runtime.subscribe_observations(&cx, need()).await.unwrap();
+        assert_eq!(ready.status, "ready");
+        assert!(ready.evidence.iter().any(|item| item.route == "required"));
+        runtime
+            .retract_observation(&cx, &child.source_id, "withdrawn")
+            .await
+            .unwrap();
+        let blocked = runtime
+            .prepare_observations(&cx, "active", "context-1", None)
+            .await
+            .unwrap();
+        assert_eq!(blocked.status, "qualification_unavailable");
+        assert!(blocked.payload.is_empty());
+    });
+}
+
+#[test]
+fn exclude_cues_remove_candidates_without_deleting_sources() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes", "repo"))
+            .await
+            .unwrap();
+        runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                ObservationEvent {
+                    event_key: "keep".into(),
+                    text: "retry ledger".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let foreign = runtime
+            .observe(
+                &cx,
+                "notes",
+                "g",
+                ObservationEvent {
+                    event_key: "drop".into(),
+                    text: "retry foreign secret".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut spec = need();
+        spec.exclude_cues = vec!["foreign".into()];
+        let view = runtime.subscribe_observations(&cx, spec).await.unwrap();
+        assert_eq!(view.status, "ready");
+        assert!(
+            view.evidence
+                .iter()
+                .all(|item| item.source_id != foreign.source_id)
+        );
+        assert_eq!(
+            runtime
+                .read_observation(&cx, &foreign.source_id)
+                .await
+                .unwrap()
+                .text,
+            "retry foreign secret"
+        );
     });
 }

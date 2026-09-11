@@ -3,12 +3,12 @@
 //! library runtime and the hook path agree on eligible records, revisions
 //! and write results because they share one dispatch.
 
-use cortex_daemon::adapter::CapabilityManifest;
+use cortex_logic::adapter::CapabilityManifest;
 use cortex_daemon::handlers::mcp::handle_mcp_message_with_caller;
-use cortex_daemon::handlers::operations::{Caller, Operation, dispatch};
-use cortex_daemon::hook_event::{frame_from_host, process};
+use cortex_kernel::handlers::operations::{Caller, Operation, dispatch};
+use cortex_kernel::hook_event::{frame_from_host, process};
 use cortex_daemon::mcp_native::answer_line;
-use cortex_daemon::runtime::{CortexRuntime, LensInput};
+use cortex_kernel::runtime::{CortexRuntime, LensInput};
 use cortex_tests::support::run_with_cx;
 use cortex_tests::support::solo_state;
 use serde_json::{Value, json};

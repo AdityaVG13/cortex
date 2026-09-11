@@ -1,4 +1,4 @@
-use crate::handlers::truncate_chars;
+use cortex_kernel::handlers::truncate_chars;
 use rusqlite::params;
 use serde_json::{json, Value};
 pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {

@@ -7,8 +7,9 @@
 //! Empty-agree tautology: an abstain fixture is not a pass just because both
 //! sides are empty. The same corpus must still admit a positive-control handle.
 
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::state::RuntimeState;
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::runtime::{BootInput, CortexRuntime, LensInput};
+use cortex_kernel::state::RuntimeState;
 use cortex_tests::support::solo_state;
 use serde_json::{json, Value};
 
@@ -292,6 +293,211 @@ fn paraphrase_lite_morphology_admits_shared_stem() {
         assert!(
             !has_statement(&view, "salted almonds"),
             "morph admit must not drag in the distractor: {view}"
+        );
+    });
+}
+
+const SCOPE_A: &str =
+    "Payment ledger retries must stay idempotent after a crash in the write path";
+const SCOPE_B: &str = "Cache warming must run before the first user request on boot";
+const SCOPE_GLOBAL: &str = "Team signing keys rotate every quarter without exception";
+const REPO_A: &str = "/Users/x/repoa";
+const REPO_B: &str = "/Users/x/repob";
+
+#[test]
+fn scoped_commit_admits_in_repo_and_not_in_sibling_repo() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let a = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({"decision": SCOPE_A, "paths": [REPO_A]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(a["status"], "ok", "{a}");
+        let b = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({"decision": SCOPE_B, "paths": [REPO_B]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(b["status"], "ok", "{b}");
+
+        let in_a = query(
+            &cx,
+            &state,
+            json!({"need": "Payment ledger retries", "profile": "answer", "budget": 4000, "paths": [REPO_A]}),
+        )
+        .await;
+        assert!(
+            has_statement(&in_a, "Payment ledger retries must stay idempotent"),
+            "same-repo query must admit the scoped fact: {in_a}"
+        );
+        assert!(
+            !has_statement(&in_a, "Cache warming must run"),
+            "sibling repo fact must not admit: {in_a}"
+        );
+
+        let in_b = query(
+            &cx,
+            &state,
+            json!({"need": "Payment ledger retries", "profile": "answer", "budget": 4000, "paths": [REPO_B]}),
+        )
+        .await;
+        assert!(
+            !has_statement(&in_b, "Payment ledger retries must stay idempotent"),
+            "foreign cwd must not retrieve this project's fact: {in_b}"
+        );
+
+        let orient = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Orient,
+            &json!({"paths": [REPO_A], "budget": 4000}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            has_statement(&orient, "Payment ledger retries must stay idempotent"),
+            "cwd-only orient must retrieve this repo's fact: {orient}"
+        );
+        assert!(
+            !has_statement(&orient, "Cache warming must run"),
+            "cwd-only orient must not retrieve a sibling repo: {orient}"
+        );
+    });
+}
+
+#[test]
+fn unscoped_fact_survives_a_project_path_query() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({"decision": SCOPE_GLOBAL}),
+        )
+        .await
+        .unwrap();
+        let view = query(
+            &cx,
+            &state,
+            json!({"need": "Team signing keys rotate", "profile": "answer", "budget": 4000, "paths": [REPO_B]}),
+        )
+        .await;
+        assert!(
+            has_statement(&view, "Team signing keys rotate"),
+            "a fact with no stored root stays eligible when the caller names a project: {view}"
+        );
+    });
+}
+
+#[test]
+fn runtime_scope_on_write_reaches_lens_and_boot() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let runtime = CortexRuntime::from_state(solo_state());
+        let a_paths = vec![REPO_A.to_string()];
+        let b_paths = vec![REPO_B.to_string()];
+        runtime
+            .deposit_with_scope(
+                &cx,
+                "scope-a",
+                None,
+                SCOPE_A,
+                "rq-harness",
+                None,
+                &a_paths,
+                Some("session:alpha"),
+            )
+            .await
+            .unwrap();
+        runtime
+            .deposit_with_scope(
+                &cx,
+                "scope-b",
+                None,
+                SCOPE_B,
+                "rq-harness",
+                None,
+                &b_paths,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let view = runtime
+            .lens(
+                &cx,
+                LensInput {
+                    query: "Payment ledger retries".into(),
+                    budget: 4000,
+                    k: 8,
+                    agent: "rq-harness".into(),
+                    paths: a_paths.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let excerpts: Vec<&str> = view["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["excerpt"].as_str())
+            .collect();
+        assert!(
+            excerpts.iter().any(|e| e.contains("Payment ledger retries")),
+            "scoped lens must admit: {view}"
+        );
+        assert!(
+            excerpts.iter().all(|e| !e.contains("Cache warming must run")),
+            "scoped lens must drop the sibling: {view}"
+        );
+
+        {
+            let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+            let sessions: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM clock_anchors a
+                     JOIN clock_anchor_evidence e ON e.anchor_id = a.id
+                     WHERE a.kind = 'session' AND a.value = 'session:alpha'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(sessions, 1, "thread must be projected as a session anchor");
+        }
+
+        let boot = runtime
+            .boot(
+                &cx,
+                BootInput {
+                    agent: "reader".into(),
+                    max_tokens: 2000,
+                    paths: a_paths,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            boot.boot_prompt.contains("Payment ledger retries"),
+            "scoped boot must pack this repo: {}",
+            boot.boot_prompt
+        );
+        assert!(
+            !boot.boot_prompt.contains("Cache warming must run"),
+            "scoped boot must omit the sibling repo: {}",
+            boot.boot_prompt
         );
     });
 }

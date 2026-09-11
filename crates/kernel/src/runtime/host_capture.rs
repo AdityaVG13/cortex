@@ -1,5 +1,5 @@
-//! Versioned, fail-closed host capture. The legacy adapter is fixture-defined;
-//! the pinned 2.1.260 subset follows an isolated installed-host protocol probe.
+//! Fail-closed host capture. The fixture adapter accepts string tool results;
+//! the native adapter also accepts structured Bash and file-tool reports.
 //! Neither establishes reader quality or compatibility with every host tool.
 //! Callers supply authenticated invocation metadata and origin sidecars separately
 //! from host JSON. This module never opens a path supplied by a hook.
@@ -18,6 +18,33 @@ use sha2::{Digest, Sha256};
 
 pub const ADAPTER_VERSION: &str = "claude-visible-subset-v1";
 pub const CLAUDE_2_1_260_ADAPTER: &str = "claude-code-2.1.260-v1";
+/// Default grant key written by `cortex setup`. Operator-owned, not host-derived.
+pub const INSTALLED_HOST_GRANT_KEY: &str = "local-host";
+
+/// Grant used when setup enables live host capture. Pins stay in this module.
+pub fn installed_host_grant() -> HostCaptureGrant {
+    HostCaptureGrant {
+        key: INSTALLED_HOST_GRANT_KEY.into(),
+        scope: "project".into(),
+        host_version: "2.1.260".into(),
+        adapter_version: CLAUDE_2_1_260_ADAPTER.into(),
+        max_bytes: 65536,
+        live: true,
+        history: true,
+    }
+}
+
+/// Sidecar that opts the installed host events into observation capture.
+pub fn installed_capture_sidecar() -> Value {
+    json!({
+        "grant": INSTALLED_HOST_GRANT_KEY,
+        "host_version": "2.1.260",
+        "native_user_prompts": true,
+        "native_bash_results": true,
+        "native_file_results": true,
+        "native_compactions": true
+    })
+}
 const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS host_capture_grants (
  principal TEXT NOT NULL, grant_key TEXT NOT NULL, spec_json TEXT NOT NULL,
@@ -94,11 +121,219 @@ pub struct HostCaptureContext {
     pub host_version: String,
     pub session_id: String,
     pub generation: String,
-    /// Transcript UUID for live final and legacy user records. Native 2.1.260
-    /// user events carry prompt_id; this field optionally checks that identity.
+    /// Transcript UUID for live final and legacy user records. Native user
+    /// events carry prompt_id; this field optionally checks that identity.
     /// Never synthesize an identity from content or import time.
     pub original_event_key: Option<String>,
     pub origins: Vec<HostOriginBinding>,
+}
+/// Operator sidecar plus host payload, never deserialized from stdin alone.
+#[derive(Debug, Clone)]
+pub struct HostInvocation {
+    pub grant: String,
+    pub context: HostCaptureContext,
+    pub invocation_context: String,
+    pub present: Option<String>,
+}
+fn sidecar_flag(sidecar: &Value, key: &str) -> bool {
+    sidecar.get(key).and_then(Value::as_bool) == Some(true)
+}
+fn sidecar_string(sidecar: &Value, key: &str) -> Result<String, String> {
+    sidecar
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("Missing trusted {key}"))
+}
+fn sidecar_optional_string(sidecar: &Value, key: &str) -> Result<Option<String>, String> {
+    match sidecar.get(key) {
+        None => Ok(None),
+        Some(Value::String(value)) => {
+            if value.trim().is_empty() {
+                Err(format!("Invalid trusted {key}"))
+            } else {
+                Ok(Some(value.trim().to_string()))
+            }
+        }
+        _ => Err(format!("Invalid trusted {key}")),
+    }
+}
+fn is_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    let hex = |index: usize| bytes[index].is_ascii_hexdigit();
+    (0..8).all(hex)
+        && bytes[8] == b'-'
+        && (9..13).all(hex)
+        && bytes[13] == b'-'
+        && (14..18).all(hex)
+        && bytes[18] == b'-'
+        && (19..23).all(hex)
+        && bytes[23] == b'-'
+        && (24..36).all(hex)
+}
+fn is_tool_use_id(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+fn parse_origins(value: &Value) -> Result<Vec<HostOriginBinding>, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Missing trusted origins".to_string())?;
+    if object.len() > 128 {
+        return Err("host_origin_limit".into());
+    }
+    object
+        .iter()
+        .map(|(event_key, origin)| {
+            Ok(HostOriginBinding {
+                event_key: event_key.clone(),
+                origin: match origin.as_str() {
+                    Some("external") => HostOrigin::External,
+                    Some("cortex_delivery") => HostOrigin::CortexDelivery,
+                    _ => return Err("invalid_host_origin".into()),
+                },
+            })
+        })
+        .collect()
+}
+fn native_flags_set(sidecar: &Value) -> bool {
+    sidecar_flag(sidecar, "native_user_prompts")
+        || sidecar_flag(sidecar, "native_bash_results")
+        || sidecar_flag(sidecar, "native_file_results")
+        || sidecar_flag(sidecar, "native_hooks")
+        || sidecar_flag(sidecar, "native_compactions")
+        || sidecar_flag(sidecar, "native_finals")
+}
+/// Build a live host invocation from the operator sidecar and this event.
+/// `Ok(None)` means this event is not on the observation path (CQR hook may run).
+pub fn resolve_host_invocation(
+    kind: &str,
+    sidecar: &Value,
+    payload: &Value,
+) -> Result<Option<HostInvocation>, String> {
+    if !sidecar.is_object() {
+        return Err("invalid capture invocation sidecar".into());
+    }
+    let tool_name = payload.get("tool_name").and_then(Value::as_str).unwrap_or("");
+    let native_user = kind == "UserPromptSubmit" && sidecar_flag(sidecar, "native_user_prompts");
+    let native_bash =
+        kind == "PostToolUse" && sidecar_flag(sidecar, "native_bash_results") && tool_name == "Bash";
+    let native_file = kind == "PostToolUse"
+        && (sidecar_flag(sidecar, "native_file_results") || sidecar_flag(sidecar, "native_hooks"))
+        && file_tool_name(tool_name);
+    let native_pre = kind == "PreToolUse"
+        && (sidecar_flag(sidecar, "native_file_results") || sidecar_flag(sidecar, "native_hooks"));
+    let native_compact = kind == "PreCompact"
+        && (sidecar_flag(sidecar, "native_compactions") || sidecar_flag(sidecar, "native_hooks"));
+    let native_stop =
+        kind == "Stop" && (sidecar_flag(sidecar, "native_finals") || sidecar_flag(sidecar, "native_hooks"));
+    if native_flags_set(sidecar)
+        && !(native_user || native_bash || native_file || native_pre || native_compact || native_stop)
+    {
+        return Ok(None);
+    }
+    let host_version = sidecar_string(sidecar, "host_version")?;
+    let mut session = sidecar_optional_string(sidecar, "session")?;
+    let mut generation = sidecar_optional_string(sidecar, "generation")?;
+    let mut event_key = sidecar_optional_string(sidecar, "event_key")?;
+    let mut invocation_context = sidecar_optional_string(sidecar, "context")?;
+    let mut origins = sidecar.get("origins").cloned();
+    if native_user || native_bash {
+        let hook_name = payload
+            .get("hook_event_name")
+            .and_then(Value::as_str)
+            .ok_or("Missing native hook identity")?;
+        let session_id = payload
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or("Missing native hook identity")?;
+        let key = if native_user {
+            payload
+                .get("prompt_id")
+                .and_then(Value::as_str)
+                .ok_or("Missing native hook identity")?
+        } else {
+            payload
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .ok_or("Missing native hook identity")?
+        };
+        if hook_name != kind
+            || !is_uuid(session_id)
+            || (native_user && (!is_uuid(key) || !payload.get("prompt").map(Value::is_string).unwrap_or(false)))
+            || (native_bash && !is_tool_use_id(key))
+        {
+            return Err("Missing native hook identity".into());
+        }
+        session = Some(session_id.to_string());
+        if generation.is_none() {
+            generation = Some(host_version.clone());
+        }
+        event_key = Some(key.to_string());
+        origins = Some(json!({ key: "external" }));
+        invocation_context = Some(format!(
+            "claude-{}:{session_id}:{key}",
+            if native_user { "user" } else { "tool" }
+        ));
+    } else if native_file || native_pre || native_compact || native_stop {
+        let hook_name = payload
+            .get("hook_event_name")
+            .and_then(Value::as_str)
+            .ok_or("Missing native hook identity")?;
+        let session_id = payload
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or("Missing native hook identity")?;
+        let key = if native_stop {
+            event_key.clone()
+        } else if native_compact {
+            event_key
+                .clone()
+                .or_else(|| Some(session_id.to_string()))
+        } else {
+            payload
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let Some(key) = key.filter(|value| !value.trim().is_empty()) else {
+            return Err("Missing native hook identity".into());
+        };
+        if hook_name != kind || !is_uuid(session_id) {
+            return Err("Missing native hook identity".into());
+        }
+        session = Some(session_id.to_string());
+        if generation.is_none() {
+            generation = Some(host_version.clone());
+        }
+        event_key = Some(key.clone());
+        if origins.as_ref().is_none_or(|value| !value.is_object() || value.is_array()) {
+            origins = Some(json!({ key.as_str(): "external" }));
+        }
+        if invocation_context.is_none() {
+            invocation_context = Some(format!("host-{kind}:{session_id}:{key}"));
+        }
+    }
+    let context = HostCaptureContext {
+        host_version,
+        session_id: session.ok_or("Missing trusted session")?,
+        generation: generation.ok_or("Missing trusted generation")?,
+        original_event_key: event_key,
+        origins: parse_origins(origins.as_ref().ok_or("Missing trusted origins")?)?,
+    };
+    Ok(Some(HostInvocation {
+        grant: sidecar_string(sidecar, "grant")?,
+        context,
+        invocation_context: invocation_context.ok_or("Missing trusted context")?,
+        present: sidecar_optional_string(sidecar, "present")?,
+    }))
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct NormalizedHostEvent {
@@ -128,6 +363,94 @@ fn field<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
 }
 fn source_key(grant: &str, kind: HostRecordKind) -> String {
     format!("host:{}", json!([grant, kind]))
+}
+fn file_tool_name(name: &str) -> bool {
+    matches!(name, "Edit" | "Write" | "Read" | "MultiEdit")
+}
+fn tool_path(value: &Value) -> Option<&str> {
+    value
+        .get("filePath")
+        .or_else(|| value.get("file_path"))
+        .or_else(|| value.get("path"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value.get("file").and_then(|file| {
+                file.get("filePath")
+                    .or_else(|| file.get("file_path"))
+                    .and_then(Value::as_str)
+            })
+        })
+}
+fn string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+}
+fn history_tool_name(response: &Value) -> &'static str {
+    if response.get("file").is_some()
+        || (tool_path(response).is_some()
+            && string_field(response, &["content"]).is_some()
+            && response.get("newString").is_none()
+            && response.get("edits").is_none())
+    {
+        "Read"
+    } else if response.get("newString").is_some() || response.get("edits").is_some() {
+        if response.get("edits").is_some() {
+            "MultiEdit"
+        } else {
+            "Edit"
+        }
+    } else {
+        "Write"
+    }
+}
+fn collect_situation(value: &Value, out: &mut Vec<String>) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    for (key, child) in object {
+        match key.to_ascii_lowercase().as_str() {
+            "filepath" | "file_path" | "path" | "stdout" | "stderr" | "content" | "newstring"
+            | "oldstring" | "new_string" | "old_string" | "command" | "prompt" => {
+                if let Some(text) = child.as_str() {
+                    out.push(text.to_string());
+                }
+            }
+            "file" | "tool_input" | "tool_response" => collect_situation(child, out),
+            "edits" => {
+                if let Some(items) = child.as_array() {
+                    for item in items {
+                        collect_situation(item, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+fn situation_cues(text: &str) -> Vec<String> {
+    let tokens = if let Ok(value) = serde_json::from_str::<Value>(text) {
+        let mut parts = Vec::new();
+        collect_situation(&value, &mut parts);
+        parts.join("\n")
+    } else {
+        text.to_string()
+    };
+    tokens
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.' && c != '/')
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .map(str::to_lowercase)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .take(32)
+        .collect()
+}
+fn live_hook_name(raw: &[u8]) -> Result<Option<String>, String> {
+    let value: Value =
+        serde_json::from_slice(raw).map_err(|e| format!("malformed_host_record: {e}"))?;
+    Ok(value
+        .get("hook_event_name")
+        .and_then(Value::as_str)
+        .map(str::to_string))
 }
 fn cursor_key(grant: &str) -> String {
     format!("host-cursor:{}", json!([grant]))
@@ -354,9 +677,122 @@ fn native_bash_event(
         },
     })
 }
-/// Normalize evidence records, not transcript control frames. The legacy adapter
-/// accepts user/tool strings and a single final assistant text block. The pinned
-/// native adapter additionally uses prompt_id/promptId and structured Bash reports.
+fn native_file_tool_event(
+    grant: &HostCaptureGrant,
+    v: &Value,
+    route: HostRoute,
+) -> Result<NormalizedHostEvent, String> {
+    let (key, response) = match route {
+        HostRoute::Live => {
+            if !file_tool_name(field(v, "tool_name")?) {
+                return Err("unsupported_native_tool".into());
+            }
+            (
+                field(v, "tool_use_id")?,
+                v.get("tool_response")
+                    .ok_or("missing_native_tool_response")?,
+            )
+        }
+        HostRoute::History => {
+            if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+                return Err("unsupported_host_sidechain".into());
+            }
+            let blocks = v
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(Value::as_array)
+                .filter(|b| b.len() == 1)
+                .ok_or("unsupported_host_content_blocks")?;
+            if field(&blocks[0], "type")? != "tool_result" {
+                return Err("unsupported_host_content_block".into());
+            }
+            (
+                field(&blocks[0], "tool_use_id")?,
+                v.get("toolUseResult")
+                    .ok_or("missing_native_tool_response")?,
+            )
+        }
+    };
+    label(key)?;
+    if !response.is_object() || tool_path(response).is_none() {
+        return Err("unsupported_native_tool_response".into());
+    }
+    let name = match route {
+        HostRoute::Live => field(v, "tool_name")?,
+        HostRoute::History => history_tool_name(response),
+    };
+    match name {
+        "Read" => {
+            let content = response
+                .get("file")
+                .and_then(|file| file.get("content"))
+                .or_else(|| response.get("content"));
+            if !content.is_some_and(Value::is_string) {
+                return Err("unsupported_native_tool_response".into());
+            }
+        }
+        "Edit" | "MultiEdit" => {
+            if response.get("newString").is_none()
+                && response.get("edits").is_none()
+                && response.get("structuredPatch").is_none()
+            {
+                return Err("unsupported_native_tool_response".into());
+            }
+        }
+        "Write" => {}
+        _ => return Err("unsupported_native_tool".into()),
+    }
+    let text = serde_json::to_string(response).map_err(|e| e.to_string())?;
+    if text.len() > grant.max_bytes {
+        return Err("capture_byte_limit".into());
+    }
+    Ok(NormalizedHostEvent {
+        kind: HostRecordKind::Tool,
+        event: ObservationEvent {
+            event_key: key.into(),
+            text,
+            observed_at: None,
+        },
+    })
+}
+fn native_tool_event(
+    grant: &HostCaptureGrant,
+    v: &Value,
+    route: HostRoute,
+) -> Result<NormalizedHostEvent, String> {
+    let name = match route {
+        HostRoute::Live => field(v, "tool_name")?,
+        HostRoute::History => {
+            if let Some(response) = v.get("toolUseResult") {
+                if response.as_object().is_some_and(|object| {
+                    object.len() == 5
+                        && ["stdout", "stderr"]
+                            .iter()
+                            .all(|key| object.get(*key).is_some_and(Value::is_string))
+                        && ["interrupted", "isImage", "noOutputExpected"]
+                            .iter()
+                            .all(|key| object.get(*key).and_then(Value::as_bool).is_some())
+                }) {
+                    "Bash"
+                } else {
+                    history_tool_name(response)
+                }
+            } else {
+                return Err("missing_native_tool_response".into());
+            }
+        }
+    };
+    if name == "Bash" {
+        native_bash_event(grant, v, route)
+    } else if file_tool_name(name) {
+        native_file_tool_event(grant, v, route)
+    } else {
+        Err("unsupported_native_tool".into())
+    }
+}
+/// Normalize evidence records, not transcript control frames. The fixture adapter
+/// accepts user/tool strings and a single final assistant text block. The native
+/// adapter additionally uses prompt_id/promptId and structured tool reports.
 /// `tail_host_transcript` accounts known non-evidence control records separately.
 /// Unknown or mixed/private evidence shapes fail; reported strings are not trimmed.
 pub fn normalize_host_event(
@@ -410,7 +846,7 @@ pub fn normalize_host_event(
                         && m.get("content").is_some_and(Value::is_array)
                 })))
     {
-        return native_bash_event(grant, &v, route);
+        return native_tool_event(grant, &v, route);
     }
     let (kind, key, text) = match route {
         HostRoute::Live => {
@@ -435,11 +871,20 @@ pub fn normalize_host_event(
                         )
                     }
                 }
-                "PostToolUse" => (
-                    HostRecordKind::Tool,
-                    field(&v, "tool_use_id")?,
-                    field(&v, "tool_response")?,
-                ),
+                "PostToolUse" => {
+                    if v.get("tool_name")
+                        .and_then(Value::as_str)
+                        .is_some_and(file_tool_name)
+                        && v.get("tool_response").is_some_and(Value::is_object)
+                    {
+                        return native_file_tool_event(grant, &v, route);
+                    }
+                    (
+                        HostRecordKind::Tool,
+                        field(&v, "tool_use_id")?,
+                        field(&v, "tool_response")?,
+                    )
+                }
                 _ => return Err(format!("unsupported_host_event: {name}")),
             }
         }
@@ -613,10 +1058,6 @@ impl CortexRuntime {
         invocation_context: &str,
         present_delivery: Option<&str>,
     ) -> Result<(HostCaptureReceipt, Option<super::cycle::PreparedView>), String> {
-        let receipt = self.capture_host_event(cx, grant_key, context, raw).await?;
-        if receipt.accepted.is_empty() {
-            return Ok((receipt, None));
-        }
         let principal = self.observation_principal()?;
         let grant: HostCaptureGrant = {
             let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
@@ -629,35 +1070,75 @@ impl CortexRuntime {
                 .map_err(|e| e.to_string())?;
             serde_json::from_str(&spec).map_err(|e| e.to_string())?
         };
+        validate(&grant, context, HostRoute::Live)?;
+        let hook = live_hook_name(raw)?;
+        if hook.as_deref() == Some("PreToolUse") {
+            let value: Value =
+                serde_json::from_slice(raw).map_err(|e| format!("malformed_host_record: {e}"))?;
+            if field(&value, "session_id")? != context.session_id {
+                return Err("host_session_mismatch".into());
+            }
+            let input = value.get("tool_input").cloned().unwrap_or_else(|| json!({}));
+            let cues = situation_cues(&input.to_string());
+            let receipt = HostCaptureReceipt {
+                adapter_version: grant.adapter_version.clone(),
+                accepted: vec![],
+                excluded_deliveries: 0,
+                ignored_metadata: 0,
+                next_offset: None,
+                uncommitted_tail_bytes: 0,
+            };
+            if cues.is_empty() {
+                return Ok((receipt, None));
+            }
+            let view = self
+                .prepare_host_need(
+                    cx,
+                    grant_key,
+                    context,
+                    &grant.scope,
+                    cues,
+                    invocation_context,
+                    present_delivery,
+                )
+                .await?;
+            return Ok((receipt, Some(view)));
+        }
+        let receipt = self.capture_host_event(cx, grant_key, context, raw).await?;
+        if receipt.accepted.is_empty() || hook.as_deref() == Some("PreCompact") {
+            return Ok((receipt, None));
+        }
         let event = normalize_host_event(&grant, context, HostRoute::Live, raw)?;
         if event.kind == HostRecordKind::Final {
             return Ok((receipt, None));
         }
-        let situation: std::borrow::Cow<'_, str> = if grant.adapter_version
-            == CLAUDE_2_1_260_ADAPTER
-            && event.kind == HostRecordKind::Tool
-        {
-            let report: Value =
-                serde_json::from_str(&event.event.text).map_err(|e| e.to_string())?;
-            std::borrow::Cow::Owned(format!(
-                "{}\n{}",
-                field(&report, "stdout")?,
-                field(&report, "stderr")?
-            ))
-        } else {
-            std::borrow::Cow::Borrowed(&event.event.text)
-        };
-        let cues: Vec<String> = situation
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|s| !s.is_empty() && s.len() <= 128)
-            .map(str::to_lowercase)
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .take(32)
-            .collect();
+        let cues = situation_cues(&event.event.text);
         if cues.is_empty() {
             return Ok((receipt, None));
         }
+        let view = self
+            .prepare_host_need(
+                cx,
+                grant_key,
+                context,
+                &grant.scope,
+                cues,
+                invocation_context,
+                present_delivery,
+            )
+            .await?;
+        Ok((receipt, Some(view)))
+    }
+    async fn prepare_host_need(
+        &self,
+        cx: &Cx,
+        grant_key: &str,
+        context: &HostCaptureContext,
+        scope: &str,
+        cues: Vec<String>,
+        invocation_context: &str,
+        present_delivery: Option<&str>,
+    ) -> Result<super::cycle::PreparedView, String> {
         let id = format!(
             "host-need:{}",
             cortex_logic::traces::content_hash(
@@ -668,8 +1149,9 @@ impl CortexRuntime {
             cx,
             super::cycle::NeedSpec {
                 id: id.clone(),
-                scope: grant.scope,
-                cues,
+                scope: scope.into(),
+                cues: cues.clone(),
+                exclude_cues: Vec::new(),
                 max_results: 32,
                 max_bytes: 32768,
                 ttl_seconds: 3600,
@@ -677,10 +1159,16 @@ impl CortexRuntime {
             },
         )
         .await?;
-        let view = self
+        let mut view = self
             .prepare_observations(cx, &id, invocation_context, present_delivery)
             .await?;
-        Ok((receipt, Some(view)))
+        if let Ok(compiled) = self
+            .compile_assemblies(cx, scope, &cues, 4, None, None, None, "")
+            .await
+        {
+            view.assembly_brief = compiled.brief;
+        }
+        Ok(view)
     }
     pub async fn capture_host_event(
         &self,
@@ -808,6 +1296,40 @@ impl CortexRuntime {
                     result.ignored_metadata += 1;
                     continue;
                 }
+            }
+            if route == HostRoute::Live && live_hook_name(line)?.as_deref() == Some("PreCompact") {
+                let value: Value = serde_json::from_slice(line)
+                    .map_err(|e| format!("malformed_host_record: {e}"))?;
+                if field(&value, "session_id")? != context.session_id {
+                    return Err("host_session_mismatch".into());
+                }
+                field(&value, "trigger")?;
+                let next: i64 = tx
+                    .query_row(
+                        "SELECT COALESCE(MAX(byte_offset),-1)+1 FROM host_capture_metadata WHERE principal=?1 AND grant_key=?2 AND generation=?3",
+                        params![principal, grant_key, generation],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                let digest: String = Sha256::digest(line)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                tx.execute(
+                    "INSERT INTO host_capture_metadata VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![
+                        principal,
+                        grant_key,
+                        generation,
+                        next,
+                        "precompact",
+                        line.len() as i64,
+                        digest
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                result.ignored_metadata += 1;
+                continue;
             }
             cx.checkpoint().map_err(|e| e.to_string())?;
             let normalized = normalize_host_event(&grant, context, route, line)?;

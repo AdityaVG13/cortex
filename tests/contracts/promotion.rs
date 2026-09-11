@@ -5,7 +5,7 @@
 //! lesson explicit widening, authority and a disconfirming check. Cases
 //! travel with their nearest counterexample.
 
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
 use cortex_tests::support::solo_state;
 use serde_json::json;
 

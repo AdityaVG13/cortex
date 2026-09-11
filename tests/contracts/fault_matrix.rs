@@ -2,7 +2,7 @@
 //! Retired with the listener: F13 port conflicts, F14 partial TLS configuration,
 //! F15 handshake survival, F18 body limits, and F19 partial-request survival.
 //! HTTP status/envelope assertions are not kernel contracts.
-use cortex_daemon::CortexRuntime;
+use cortex_kernel::CortexRuntime;
 use cortex_tests::support::{run_with_cx, solo_state};
 
 #[test]

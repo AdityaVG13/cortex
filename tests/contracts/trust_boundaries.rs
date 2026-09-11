@@ -1,7 +1,8 @@
 //! Memory is data; explicit local callers, never payload fields, select owners.
 //! Retired: HTTP Bearer/SSRF authentication, events-stream rate limiting and
 //! /admin/users status checks. MCP caller-scope refusal replaces HTTP denial.
-use cortex_daemon::handlers::{mcp::handle_mcp_message_with_caller, operations::{dispatch, Caller, Operation}};
+use cortex_daemon::handlers::mcp::handle_mcp_message_with_caller;
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
 use cortex_tests::support::{run_with_cx, solo_state, team_state};
 use serde_json::json;
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// SessionStart: spawn local `cortex hook-boot` and relay its hook JSON.
-// Never probes HTTP. A missing binary is UNAVAILABLE, not an empty brain.
+// SessionStart: spawn local `cortex hook-boot` with the host stdin payload
+// and relay its hook JSON. Never probes HTTP. A missing binary is
+// UNAVAILABLE, not an empty brain.
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { resolveCortexBinary } = require(path.join(__dirname, 'resolve-binary.cjs'));
@@ -52,10 +53,19 @@ function resolveBinary(env = process.env) {
   return resolved;
 }
 
+function readStdin() {
+  try {
+    return require('fs').readFileSync(0, 'utf8');
+  } catch (_) {
+    return '';
+  }
+}
+
 function runHookBoot(options = {}) {
   const env = options.env || process.env;
   const spawnSyncImpl = options.spawnSyncImpl || spawnSync;
   const stdoutWrite = options.stdoutWrite || ((text) => process.stdout.write(text));
+  const stdin = Object.prototype.hasOwnProperty.call(options, 'stdin') ? options.stdin : '';
   const agent = resolveAgent(env);
   let binaryPath;
   try {
@@ -70,6 +80,7 @@ function runHookBoot(options = {}) {
   const args = buildBootArgs(agent);
   const result = spawnSyncImpl(binaryPath, args, {
     env,
+    input: stdin,
     encoding: 'utf8',
     timeout: 8000
   });
@@ -88,7 +99,7 @@ function runHookBoot(options = {}) {
   return { ok: true, agent, binaryPath, args };
 }
 
-if (require.main === module) runHookBoot();
+if (require.main === module) runHookBoot({ stdin: readStdin() });
 
 module.exports = {
   unavailable,

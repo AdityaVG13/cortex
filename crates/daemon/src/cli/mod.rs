@@ -1,6 +1,5 @@
 mod boot;
 mod capture;
-mod cycle;
 pub use capture::run_capture_cli;
 mod cleanup;
 mod common;

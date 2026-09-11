@@ -2,7 +2,8 @@
 //! Allow, CORS preflight, query/path/body extractors, and 202 notification replies.
 //! The local MCP boundary takes parsed Value, so raw-byte -32700 parsing is not
 //! claimed here. JSON-RPC request errors and domain invalid_request survive.
-use cortex_daemon::handlers::{mcp::handle_mcp_message_with_caller, operations::{dispatch, Caller, Operation}};
+use cortex_daemon::handlers::mcp::handle_mcp_message_with_caller;
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
 use cortex_tests::support::{run_with_cx, solo_state};
 use serde_json::{json, Value};
 

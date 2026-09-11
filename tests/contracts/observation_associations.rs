@@ -1,5 +1,5 @@
 //! Mechanism contracts, not held-out retrieval-quality evidence.
-use cortex_daemon::runtime::{
+use cortex_kernel::runtime::{
     CortexRuntime,
     observation::{ObservationEvent, ObservationRole, SourceSpec},
 };
@@ -74,7 +74,7 @@ fn learned_routes_are_scoped_explainable_reversible_and_permission_gated() {
         let mut support = vec![a.source_id.clone(), b.source_id.clone()];
         support.sort();
         assert_eq!(routes[0].support_sources, support);
-        use cortex_daemon::runtime::associations::AssociationAssessment;
+        use cortex_kernel::runtime::associations::AssociationAssessment;
         let baseline = routes[0].score;
         assert!(
             runtime

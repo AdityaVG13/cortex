@@ -4,13 +4,16 @@
 //! hook leaves presence unknown; the whole path runs in-process with no
 //! daemon.
 
-use cortex_daemon::adapter::{
+use cortex_logic::adapter::{
     decide, degradation_matrix, CapabilityManifest, EventKind, HookDecision, Presence,
     SnapshotState,
 };
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::hook_event::{frame_from_host, process};
-use cortex_daemon::runtime::CortexRuntime;
+use cortex_daemon::hook_boot::session_start_context;
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::auth::CortexPaths;
+use cortex_kernel::hook_event::{frame_from_host, load_capture_sidecar, process, run_with_paths};
+use cortex_kernel::runtime::host_capture::{ADAPTER_VERSION, HostCaptureGrant};
+use cortex_kernel::runtime::CortexRuntime;
 use cortex_tests::support::{run_with_cx, solo_state};
 use serde_json::json;
 
@@ -219,11 +222,11 @@ fn compaction_checkpoints_and_new_turn_delivers_counted_orientation_without_a_da
 }
 
 /// Claude coverage matrix: Stop is SessionEnd (session lifecycle, no observe flag);
-/// Edit/Write remain ToolResult via PostToolUse matcher; V5 native still needs
-/// a trusted final UUID for live final capture.
+/// Edit/Write remain ToolResult via PostToolUse matcher; live final capture
+/// still needs a trusted final UUID.
 #[test]
 fn claude_stop_edit_write_and_precompact_matrix_is_explicit() {
-    use cortex_daemon::adapter::EventKind;
+    use cortex_logic::adapter::EventKind;
     assert_eq!(EventKind::parse("Stop"), Some(EventKind::SessionEnd));
     assert_eq!(EventKind::parse("PreCompact"), Some(EventKind::Compaction));
     assert_eq!(EventKind::parse("PostToolUse"), Some(EventKind::ToolResult));
@@ -254,6 +257,247 @@ fn claude_stop_edit_write_and_precompact_matrix_is_explicit() {
         assert!(
             out.outcome.decision != HookDecision::QueryRequired || !out.additional_context.is_empty() || true,
             "Edit ToolResult is processed: {out:?}"
+        );
+    });
+}
+
+#[test]
+fn live_hook_does_not_fall_through_to_cqr() {
+    if !cortex_tests::in_subprocess(
+        "live_hook_does_not_fall_through_to_cqr",
+        &[("CORTEX_CAPTURE", None)],
+    ) {
+        return;
+    }
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let db = home.path().join("cortex.db");
+        let runtime = CortexRuntime::open_db(&db).unwrap();
+        let caller = || Caller {
+            owner_id: None,
+            agent: "claude-code",
+            principal: "solo".into(),
+        };
+        dispatch(
+            &cx,
+            runtime.state(),
+            caller(),
+            Operation::Commit,
+            &json!({"decision": "HOOKCUT-1 ledger writes must be idempotent under retry"}),
+        )
+        .await
+        .unwrap();
+        let paths = CortexPaths::resolve_with_overrides(
+            Some(&home.path().to_string_lossy()),
+            Some(&db.to_string_lossy()),
+        );
+        let turn = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s-cut", "prompt": "how should HOOKCUT-1 ledger retries behave?"});
+        let raw = serde_json::to_vec(&turn).unwrap();
+        let printed = run_with_paths(&cx, "UserPromptSubmit", &raw, &paths)
+            .await
+            .unwrap();
+        assert!(
+            printed.is_none(),
+            "absent sidecar must not emit CQR orientation: {printed:?}"
+        );
+        let compact = json!({"hook_event_name": "PreCompact", "session_id": "s-cut", "goal": "ship HOOKCUT-1"});
+        let compact_raw = serde_json::to_vec(&compact).unwrap();
+        assert!(
+            run_with_paths(&cx, "PreCompact", &compact_raw, &paths)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let status = dispatch(
+            &cx,
+            runtime.state(),
+            caller(),
+            Operation::Checkpoint,
+            &json!({"thread": "session:s-cut", "action": "status"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !status.to_string().contains("HOOKCUT-1"),
+            "live hook must not write a CQR checkpoint without a sidecar: {status}"
+        );
+        let manifest = CapabilityManifest::claude_code_plugin();
+        let frame = frame_from_host("UserPromptSubmit", &turn, manifest);
+        let out = process(&cx, &runtime, "claude-code", &frame, &turn)
+            .await
+            .unwrap();
+        assert!(
+            out.additional_context.contains("HOOKCUT-1")
+                || out.additional_context.contains("idempotent")
+                || out.additional_context.contains("ledger writes"),
+            "process() remains the CQR hook seam: {}",
+            out.additional_context
+        );
+    });
+}
+
+#[test]
+fn session_start_orients_from_cwd() {
+    run_with_cx(|cx| async move {
+        let runtime = CortexRuntime::from_state(solo_state());
+        let caller = || Caller {
+            owner_id: None,
+            agent: "claude-code",
+            principal: "solo".into(),
+        };
+        dispatch(
+            &cx,
+            runtime.state(),
+            caller(),
+            Operation::Commit,
+            &json!({"decision": "SESSIONSTART-1 ledger retries must be idempotent"}),
+        )
+        .await
+        .unwrap();
+        let cwd_only = json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "s-orient",
+            "cwd": "/tmp/SESSIONSTART-1-project"
+        });
+        assert_eq!(
+            frame_from_host("SessionStart", &cwd_only, CapabilityManifest::claude_code_plugin()).input,
+            "/tmp/SESSIONSTART-1-project",
+            "SessionStart must orient on cwd when prompt is absent"
+        );
+        let cwd_frame = frame_from_host(
+            "SessionStart",
+            &cwd_only,
+            CapabilityManifest::claude_code_plugin(),
+        );
+        let cwd_out = process(&cx, &runtime, "claude-code", &cwd_frame, &cwd_only)
+            .await
+            .unwrap();
+        assert!(
+            cwd_out.additional_context.contains("CORTEX ORIENTATION")
+                && cwd_out.additional_context.contains("SESSIONSTART-1"),
+            "cwd-only SessionStart must retrieve the project fact without a prompt: {}",
+            cwd_out.additional_context
+        );
+        let cwd_hooked = session_start_context(&cx, "claude-code", &runtime, &cwd_only)
+            .await
+            .expect("hook-boot cwd-only SessionStart context");
+        assert!(
+            cwd_hooked.contains("CORTEX ORIENTATION") && cwd_hooked.contains("SESSIONSTART-1"),
+            "hook-boot cwd-only must use the same orient View: {cwd_hooked}"
+        );
+        let elsewhere = json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "s-orient-elsewhere",
+            "cwd": "/tmp/other-repo"
+        });
+        let else_frame = frame_from_host(
+            "SessionStart",
+            &elsewhere,
+            CapabilityManifest::claude_code_plugin(),
+        );
+        let else_out = process(&cx, &runtime, "claude-code", &else_frame, &elsewhere)
+            .await
+            .unwrap();
+        assert!(
+            !else_out.additional_context.contains("SESSIONSTART-1"),
+            "a foreign cwd must not retrieve this project's fact: {}",
+            else_out.additional_context
+        );
+        let start = json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "s-orient",
+            "cwd": "/tmp/SESSIONSTART-1-project",
+            "prompt": "SESSIONSTART-1 continue ledger retry work"
+        });
+        let frame = frame_from_host("SessionStart", &start, CapabilityManifest::claude_code_plugin());
+        assert_eq!(
+            frame.input, "SESSIONSTART-1 continue ledger retry work",
+            "SessionStart prompt wins over cwd for the orient task"
+        );
+        let out = process(&cx, &runtime, "claude-code", &frame, &start)
+            .await
+            .unwrap();
+        assert!(
+            out.additional_context.contains("CORTEX ORIENTATION"),
+            "SessionStart injects the orient View, not a raw boot dump: {}",
+            out.additional_context
+        );
+        assert!(
+            out.additional_context.contains("SESSIONSTART-1"),
+            "cwd cue must reach orient: {}",
+            out.additional_context
+        );
+        let hooked = session_start_context(&cx, "claude-code", &runtime, &start)
+            .await
+            .expect("hook-boot SessionStart context");
+        assert!(
+            hooked.contains("CORTEX ORIENTATION") && hooked.contains("SESSIONSTART-1"),
+            "hook-boot must use the same orient View: {hooked}"
+        );
+    });
+}
+
+#[test]
+fn live_hook_reads_home_capture_file() {
+    if !cortex_tests::in_subprocess(
+        "live_hook_reads_home_capture_file",
+        &[("CORTEX_CAPTURE", None)],
+    ) {
+        return;
+    }
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let db = home.path().join("cortex.db");
+        let runtime = CortexRuntime::open_db(&db).unwrap();
+        runtime
+            .register_host_capture(
+                &cx,
+                HostCaptureGrant {
+                    key: "local-host".into(),
+                    scope: "project".into(),
+                    host_version: "fixture-v1".into(),
+                    adapter_version: ADAPTER_VERSION.into(),
+                    max_bytes: 4096,
+                    live: true,
+                    history: true,
+                },
+            )
+            .await
+            .unwrap();
+        let paths = CortexPaths::resolve_with_overrides(
+            Some(&home.path().to_string_lossy()),
+            Some(&db.to_string_lossy()),
+        );
+        std::fs::write(
+            paths.capture_sidecar(),
+            r#"{"grant":"local-host","host_version":"fixture-v1","native_user_prompts":true}"#,
+        )
+        .unwrap();
+        assert!(
+            load_capture_sidecar(&paths).is_some(),
+            "operator sidecar file must load when CORTEX_CAPTURE is unset"
+        );
+        let session = "225407e0-7c32-4812-b130-aa0d54039690";
+        let prompt = "ea0dd413-83bc-43a2-8913-506964f73808";
+        let turn = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session,
+            "prompt_id": prompt,
+            "prompt": "FILESIDECAR-1 remember the ledger retry rule"
+        });
+        let raw = serde_json::to_vec(&turn).unwrap();
+        let printed = run_with_paths(&cx, "UserPromptSubmit", &raw, &paths)
+            .await
+            .unwrap();
+        let hits = runtime
+            .query_observations(&cx, "project", "FILESIDECAR-1", 8, 16 * 1024, false)
+            .await
+            .unwrap();
+        assert!(
+            hits.evidence
+                .iter()
+                .any(|item| item.text.contains("FILESIDECAR-1")),
+            "home capture.json must capture without CORTEX_CAPTURE: printed={printed:?} hits={hits:?}"
         );
     });
 }

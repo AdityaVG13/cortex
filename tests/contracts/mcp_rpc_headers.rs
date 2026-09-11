@@ -13,13 +13,16 @@ fn health_runtime_paths_remain_scoped_to_requested_home() {
         state.pid_path = state.home.join("cortex.pid");
         let public = build_health_payload(&cx, &state, false).await.unwrap();
         assert!(public["stats"].get("home").is_none());
-        for key in ["token_path", "db_path", "pid_path"] {
+        for key in ["token_path", "db_path", "pid_path", "port", "ipc_endpoint", "ipc_kind"] {
             assert!(public["runtime"].get(key).is_none(), "{public}");
         }
         let private = build_health_payload(&cx, &state, true).await.unwrap();
         assert_eq!(private["stats"]["home"], json!(state.home.display().to_string()));
         for (key, filename) in [("token_path", "cortex.token"), ("db_path", "cortex.db"), ("pid_path", "cortex.pid")] {
             assert_eq!(private["runtime"][key], json!(state.home.join(filename).display().to_string()));
+        }
+        for key in ["port", "ipc_endpoint", "ipc_kind"] {
+            assert!(private["runtime"].get(key).is_none(), "{private}");
         }
         assert_eq!(public["stats"]["decisions"], private["stats"]["decisions"]);
     });

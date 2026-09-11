@@ -59,4 +59,4 @@ Stored as:
 
 ## Integration
 
-This skill uses the `cortex_store` MCP tool with your `$ARGUMENTS` as the decision text.
+This skill uses the `cortex_commit` MCP tool with your `$ARGUMENTS` as the decision text. `cortex_store` is a legacy alias.

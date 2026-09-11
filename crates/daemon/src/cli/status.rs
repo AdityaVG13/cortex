@@ -13,8 +13,6 @@ struct StatusRepair {
 #[derive(Debug, Clone)]
 pub(crate) enum StatusRuntimeProbe {
     Ready(String),
-    Starting(String),
-    WrongIdentity(String),
     Unavailable(String),
     Error(String),
 }
@@ -57,8 +55,8 @@ fn status_repair_json(repair: &StatusRepair) -> Value {
 pub(crate) fn build_status_report(paths: &auth::CortexPaths, runtime_probe: StatusRuntimeProbe, db_exists: bool) -> StatusReport {
     let (status, detail) = match runtime_probe {
         StatusRuntimeProbe::Ready(detail) => ("ready", detail),
-        StatusRuntimeProbe::Starting(detail) | StatusRuntimeProbe::Unavailable(detail) => ("needs_action", detail),
-        StatusRuntimeProbe::WrongIdentity(detail) | StatusRuntimeProbe::Error(detail) => ("error", detail),
+        StatusRuntimeProbe::Unavailable(detail) => ("needs_action", detail),
+        StatusRuntimeProbe::Error(detail) => ("error", detail),
     };
     let next = if status == "ready" {
         status_connect_next_action()

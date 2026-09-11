@@ -1,5 +1,5 @@
 //! Registered-only, revision-bound, restartable base population.
-use cortex_daemon::runtime::{CortexRuntime, inventory::InventoryStatus, observation::SourceSpec};
+use cortex_kernel::runtime::{CortexRuntime, inventory::InventoryStatus, observation::SourceSpec};
 use cortex_tests::support::run_with_cx;
 
 #[test]
@@ -187,5 +187,46 @@ fn capture_commit_before_progress_checkpoint_is_replayable() {
             .unwrap();
         assert_eq!(done.status, InventoryStatus::Ready);
         assert!(done.entries[0].receipt.as_ref().unwrap().duplicate);
+    });
+}
+
+#[test]
+fn reconcile_marks_changed_files_and_counts_later_registrations() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        let first = home.path().join("first.md");
+        std::fs::write(&first, "original").unwrap();
+        let key = format!("file:{}", first.canonicalize().unwrap().display());
+        runtime
+            .register_source(&cx, SourceSpec::document(&key, "project"))
+            .await
+            .unwrap();
+        let inventory = runtime.inventory_sources(&cx).await.unwrap();
+        runtime
+            .bootstrap_inventory(&cx, &inventory.revision, 1, 65536)
+            .await
+            .unwrap();
+        std::fs::write(&first, "changed after inventory").unwrap();
+        let second = home.path().join("second.md");
+        std::fs::write(&second, "later").unwrap();
+        runtime
+            .register_source(
+                &cx,
+                SourceSpec::document(
+                    format!("file:{}", second.canonicalize().unwrap().display()),
+                    "project",
+                ),
+            )
+            .await
+            .unwrap();
+        let reconciled = runtime
+            .reconcile_inventory(&cx, &inventory.revision)
+            .await
+            .unwrap();
+        assert_eq!(reconciled.entries.len(), 1);
+        assert_eq!(reconciled.entries[0].status, InventoryStatus::SourceChanged);
+        assert_eq!(reconciled.untracked_registrations, 1);
+        assert_eq!(reconciled.next_index, 1);
     });
 }

@@ -48,7 +48,8 @@ fn stability_for_item(item: &ContextItem) -> u8 {
 pub const BOOT_CONSTRAINTS_MAX: usize = 40;
 pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
     // Cheap cache key: the durable set's cardinality, newest id and newest
-    // update; the capsule is rebuilt only when that changes.
+    // update; the capsule is rebuilt only when that changes. Project paths
+    // are part of the key so a scoped boot cannot reuse an unscoped cache.
     let key: String = conn
         .query_row(
             "SELECT (SELECT COUNT(*) FROM decisions) || ':' || COALESCE((SELECT MAX(id) FROM decisions),0) || ':' || COALESCE((SELECT MAX(updated_at) FROM decisions),'')",
@@ -56,6 +57,7 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
             |r| r.get(0),
         )
         .unwrap_or_default();
+    let key = format!("{key}|{}", super::capsules::boot_paths().join("\u{1f}"));
     if let Some((cached, omitted)) = super::cache::cache_get(conn, "constraints_capsule", &key) {
         return (cached, omitted);
     }
@@ -76,6 +78,10 @@ fn build_constraints_capsule_uncached(conn: &Connection) -> (String, usize) {
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .map(|rows| rows.flatten().collect())
         .unwrap_or_default();
+    let rows: Vec<(i64, String, String)> = rows
+        .into_iter()
+        .filter(|(id, ..)| super::capsules::decision_in_boot_scope(conn, *id))
+        .collect();
     if rows.is_empty() {
         return (String::new(), 0);
     }
@@ -102,10 +108,13 @@ pub fn compile_for_owner(
     agent: &str,
     max_tokens: usize,
     owner: Option<i64>,
+    paths: &[String],
 ) -> BootResult {
     super::capsules::set_boot_owner(owner);
+    super::capsules::set_boot_paths(paths);
     let result = compile(conn, home, agent, max_tokens);
     super::capsules::set_boot_owner(None);
+    super::capsules::set_boot_paths(&[]);
     result
 }
 pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -> BootResult {
@@ -169,11 +178,17 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
             ));
         }
     }
-    let truth_candidates = rank_candidates(
+    let mut truth_candidates = rank_candidates(
         fetch_rank_candidates(conn),
-        boot_rank_top_n(),
+        40,
         deterministic_now(conn),
     );
+    if !super::capsules::boot_paths().is_empty() {
+        truth_candidates.retain(|candidate| {
+            super::capsules::target_in_boot_scope(conn, candidate.source_kind, candidate.source_id)
+        });
+    }
+    truth_candidates.truncate(boot_rank_top_n());
     if !truth_candidates.is_empty() {
         items.push(ContextItem::new(
             "## TRUTH",

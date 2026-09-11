@@ -31,7 +31,6 @@ pub struct RuntimeState {
     pub db_path: std::path::PathBuf,
     pub token_path: std::path::PathBuf,
     pub pid_path: std::path::PathBuf,
-    pub port: u16,
     pub rate_limiter: crate::rate_limit::RateLimiter,
     pub team_mode: bool,
     pub default_owner_id: Option<i64>,

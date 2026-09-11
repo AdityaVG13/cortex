@@ -4,12 +4,12 @@
 //! hosts, `resnapshot_required` on epoch or scope gaps, boot base always
 //! carries durable constraints, feed unread boundary is canonical.
 
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::presence::{
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_logic::presence::{
     decide, ChangeCursor, CurrentEpochs, CursorError, PresenceDecision, CHANGE_RULE_VERSION,
 };
-use cortex_daemon::protocol::envelope::PresentRepresentation;
-use cortex_daemon::protocol::{ContextPresence, LogicalId};
+use cortex_logic::protocol::envelope::PresentRepresentation;
+use cortex_logic::protocol::{ContextPresence, LogicalId};
 use cortex_tests::support::solo_state;
 use serde_json::json;
 
@@ -136,7 +136,7 @@ fn unchanged_card_is_redelivered_after_compaction_and_suppressed_only_with_exact
         let policy_epoch = caps["brain"]["policy_epoch"].as_str().unwrap();
         let revision = {
             let conn = state.db.lock(cx).await.unwrap();
-            cortex_daemon::db::records::heads(&conn, "decision:1")
+            cortex_kernel::db::records::heads(&conn, "decision:1")
                 .unwrap()
                 .remove(0)
         };

@@ -2,10 +2,10 @@
 //! `synchronous` pragma; a deposit is one atomic batch; idempotency is
 //! principal-scoped with canonical-payload comparison through the local runtime.
 
-use cortex_daemon::db::{configure_with_profile, DurabilityProfile};
-use cortex_daemon::protocol::AckProfile;
-use cortex_daemon::runtime::CortexRuntime;
-use cortex_daemon::store_spi::sqlite::ack_profile;
+use cortex_kernel::db::{configure_with_profile, DurabilityProfile};
+use cortex_logic::protocol::AckProfile;
+use cortex_kernel::runtime::CortexRuntime;
+use cortex_kernel::store_spi::sqlite::ack_profile;
 use cortex_tests::support::{run_with_cx, solo_state, test_conn};
 
 #[test]
@@ -88,7 +88,7 @@ fn library_idempotency_is_principal_scoped_and_payload_checked() {
             )
             .await;
         assert!(
-            matches!(conflict, Err(cortex_daemon::CortexError::Conflict(ref m)) if m.starts_with("idempotency_conflict")),
+            matches!(conflict, Err(cortex_kernel::CortexError::Conflict(ref m)) if m.starts_with("idempotency_conflict")),
             "different payload must conflict"
         );
         let count: i64 = runtime
@@ -206,7 +206,7 @@ fn local_store_replays_by_idempotency_key_and_rejects_payload_conflict() {
             .await;
         // HTTP status/envelope claims are retired; the public local error is typed.
         assert!(
-            matches!(conflict, Err(cortex_daemon::CortexError::Conflict(ref message)) if message.starts_with("idempotency_conflict")),
+            matches!(conflict, Err(cortex_kernel::CortexError::Conflict(ref message)) if message.starts_with("idempotency_conflict")),
             "{conflict:?}"
         );
     });
@@ -218,8 +218,8 @@ fn local_store_replays_by_idempotency_key_and_rejects_payload_conflict() {
 #[test]
 fn recall_does_not_block_behind_a_held_write_lock() {
     run_with_cx(|cx| async move {
-        use cortex_daemon::handlers::recall::{execute_unified_recall, RecallContext};
-        use cortex_daemon::state::SIDE_EFFECT_LOCK_WAIT_MS;
+        use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
+        use cortex_kernel::state::SIDE_EFFECT_LOCK_WAIT_MS;
         let runtime = CortexRuntime::from_state(solo_state());
         let state = runtime.state().clone();
         runtime

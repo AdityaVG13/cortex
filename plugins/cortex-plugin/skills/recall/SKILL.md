@@ -48,4 +48,4 @@ Cortex adapts detail level to token budget:
 
 ## Integration
 
-This skill uses the `cortex_recall` MCP tool with your `$ARGUMENTS` as the query.
+This skill uses the `cortex_query` MCP tool with your `$ARGUMENTS` as the need. Prefer `cortex_orient` once at session start. `cortex_recall` is a legacy alias.

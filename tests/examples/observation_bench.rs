@@ -1,5 +1,5 @@
 //! Targeted V5 Path-A measurement. No speedup, power-loss or reader-quality claim.
-use cortex_daemon::runtime::{
+use cortex_kernel::runtime::{
     CortexRuntime,
     observation::{ObservationEvent, SourceSpec},
 };

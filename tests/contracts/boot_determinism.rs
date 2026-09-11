@@ -13,13 +13,13 @@ async fn store_decision(runtime: &CortexRuntime, cx: &asupersync::Cx, decision: 
         provenance: DecisionProvenance::from_fields("boot-determinism-agent", None, None),
         confidence: None, ttl_seconds: None,
         retention_class: Some(serde_json::from_value(serde_json::json!(retention)).expect("retention")),
-        anchors: vec![], fields: None, owner_id: None, benchmark: false,
+        anchors: vec![], paths: vec![], thread: None, fields: None, owner_id: None, benchmark: false,
     }).expect("deposit");
     assert!(outcome.target_id.is_some());
 }
 
 async fn fetch_boot(runtime: &CortexRuntime, cx: &asupersync::Cx) -> String {
-    let boot = runtime.boot(cx, BootInput { agent: "boot-determinism-agent".into(), max_tokens: 600, owner_id: None }).await.expect("boot");
+    let boot = runtime.boot(cx, BootInput { agent: "boot-determinism-agent".into(), max_tokens: 600, owner_id: None, ..Default::default() }).await.expect("boot");
     assert!(!boot.boot_prompt.is_empty());
     assert!(boot.token_estimate > 0);
     assert!(!boot.capsules.is_empty());

@@ -113,16 +113,31 @@ fn arg_list(args: &Value, keys: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn looks_like_fs_path(s: &str) -> bool {
+    s.contains('/') || s.contains('\\')
+}
+
+fn commit_paths(args: &Value, entry: &Value) -> Vec<String> {
+    let mut paths = arg_list(args, &["paths"]);
+    paths.extend(arg_list(entry, &["paths"]));
+    if let Some(cwd) = arg_str(args, &["cwd"]).or_else(|| arg_str(entry, &["cwd"])) {
+        if looks_like_fs_path(cwd) && !paths.iter().any(|p| p == cwd) {
+            paths.push(cwd.to_string());
+        }
+    }
+    paths
+}
+
 /// Model-facing tool schemas: short, workflow-oriented, expert controls kept
 /// out of the description.
 pub fn tool_schemas() -> Vec<Value> {
     let profiles: Vec<&str> = LensProfile::ALL.iter().map(|p| p.as_str()).collect();
     vec![
         json!({"name":"cortex_capabilities","description":"What this brain can do: operations, Lens profiles, response statuses, epochs and adapter capabilities. Cache by version.","inputSchema":{"type":"object","properties":{}}}),
-        json!({"name":"cortex_orient","description":"Situation brief for a task or Thread: constraints, known facts with their limits, failed attempts, open work, unresolved conflicts, evidence handles. Also surfaces attributed V5 observations when present (observations section). Call once when you start.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"What you are trying to do"},"thread":{"type":"string","description":"Thread id or label (optional)"},"budget":{"type":"number","description":"Output budget in bytes (default 2000)"},"evidence":{"type":"string","enum":["brief","support","exact"]},"observation_scope":{"type":"string","description":"V5 observation scope (default project)"},"observations":{"type":"boolean","description":"Include V5 observation hits (default true)"}}}}),
-        json!({"name":"cortex_query","description":"Ask memory a question with a profile: answer, changes, attempts, procedures, conflicts, uncertainty, compare, history, audit, map. Returns Cards with epistemic status, applicability and expansion handles; leads are separate from supported answers. V5 observations appear in a separate observations section, never as Cards.","inputSchema":{"type":"object","properties":{"need":{"type":"string","description":"The question or need"},"profile":{"type":"string","enum":profiles},"needs":{"type":"array","items":{"type":"string"},"description":"Typed needs: current_constraints, open_obligations, last_verified_outcome, failed_attempts, conflicts, as_known, changes, procedures"},"thread":{"type":"string"},"time":{"type":"string","description":"valid_at instant for historical views"},"budget":{"type":"number"},"evidence":{"type":"string","enum":["brief","support","exact"]},"paths":{"type":"array","items":{"type":"string"}},"symbols":{"type":"array","items":{"type":"string"}},"observation_scope":{"type":"string"},"observations":{"type":"boolean"}},"required":["need"]}}),
-        json!({"name":"cortex_expand","description":"Exact source for a Card alias (m1, m2 …) from a View you received, a logical reference, or a V5 observation ref (obs:<source_id>). Aliases are valid only with their receipt.","inputSchema":{"type":"object","properties":{"alias":{"type":"string"},"receipt":{"type":"string","description":"receipt id from the View"},"reference":{"type":"string","description":"decision::12 or obs:<source_id>"}}}}),
-        json!({"name":"cortex_commit","description":"Deposit one or more entries (decisions, observations, attempts) atomically with an idempotency key. Optional evidence[] cites V5 obs:<source_id> refs (promoted_from); unknown cites fail closed. Returns a Receipt with the durability vector; return_view answers the write with a fresh View.","inputSchema":{"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"local_id":{"type":"string"},"text":{"type":"string"},"kind":{"type":"string"},"context":{"type":"string"}},"required":["text"]}},"decision":{"type":"string","description":"Shorthand for a single decision entry"},"idempotency_key":{"type":"string"},"return_view":{"type":"boolean"},"retention_class":{"type":"string","enum":["durable","operational","audit","ephemeral"]},"evidence":{"type":"array","items":{"type":"string"},"description":"obs:<source_id> citations promoted into this Deposit"}}}}),
+        json!({"name":"cortex_orient","description":"Situation brief for a task or Thread: constraints, known facts with their limits, failed attempts, open work, unresolved conflicts, evidence handles. Surfaces attributed observations and, after an explicit route rebuild, evidence-closed assembly bundles. Call once when you start.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"What you are trying to do"},"thread":{"type":"string","description":"Thread id or label (optional)"},"paths":{"type":"array","items":{"type":"string"},"description":"Project roots for this task"},"cwd":{"type":"string","description":"Working directory treated as a project root"},"budget":{"type":"number","description":"Output budget in bytes (default 2000)"},"evidence":{"type":"string","enum":["brief","support","exact"]},"observation_scope":{"type":"string","description":"Observation and assembly scope (default project)"},"observations":{"type":"boolean","description":"Include attributed observation hits (default true)"},"assemblies":{"type":"boolean","description":"Include compiled assembly bundles when cue routes are enabled (default true)"}}}}),
+        json!({"name":"cortex_query","description":"Ask memory a question with a profile: answer, changes, attempts, procedures, conflicts, uncertainty, compare, history, audit, map. Returns Cards with epistemic status, applicability and expansion handles; leads are separate from supported answers. Attributed observations and compiled assemblies appear in separate sections, never as Cards.","inputSchema":{"type":"object","properties":{"need":{"type":"string","description":"The question or need"},"profile":{"type":"string","enum":profiles},"needs":{"type":"array","items":{"type":"string"},"description":"Typed needs: current_constraints, open_obligations, last_verified_outcome, failed_attempts, conflicts, as_known, changes, procedures"},"thread":{"type":"string"},"time":{"type":"string","description":"valid_at instant for historical views"},"budget":{"type":"number"},"evidence":{"type":"string","enum":["brief","support","exact"]},"paths":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"},"symbols":{"type":"array","items":{"type":"string"}},"observation_scope":{"type":"string"},"observations":{"type":"boolean"},"assemblies":{"type":"boolean"}},"required":["need"]}}),
+        json!({"name":"cortex_expand","description":"Exact source for a Card alias (m1, m2 …) from a View you received, a logical reference, an observation ref (obs:<source_id>), an assembly (asm:<id>), or a revision (rev:<id>). Aliases are valid only with their receipt.","inputSchema":{"type":"object","properties":{"alias":{"type":"string"},"receipt":{"type":"string","description":"receipt id from the View"},"reference":{"type":"string","description":"decision::12, obs:<source_id>, asm:<id>, or rev:<id>"}}}}),
+        json!({"name":"cortex_commit","description":"Deposit one or more entries (decisions, observations, attempts) atomically with an idempotency key. Optional evidence[] cites obs:<source_id> refs (promoted_from); unknown cites fail closed. Returns a Receipt with the durability vector; return_view answers the write with a fresh View.","inputSchema":{"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"local_id":{"type":"string"},"text":{"type":"string"},"kind":{"type":"string"},"context":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}},"thread":{"type":"string"}},"required":["text"]}},"decision":{"type":"string","description":"Shorthand for a single decision entry"},"paths":{"type":"array","items":{"type":"string"},"description":"Project roots recorded on this Deposit"},"cwd":{"type":"string"},"thread":{"type":"string"},"idempotency_key":{"type":"string"},"return_view":{"type":"boolean"},"retention_class":{"type":"string","enum":["durable","operational","audit","ephemeral"]},"evidence":{"type":"array","items":{"type":"string"},"description":"obs:<source_id> citations promoted into this Deposit"}}}}),
         json!({"name":"cortex_checkpoint","description":"Durable Thread state: checkpoint (goal, state), obligations (create / transition / verify with a checker predicate on an artifact / revalidate on a new artifact), attempts (inputs, artifacts, exit status, failure), or status. A successor or post-compaction context resumes from this, not from your transcript.","inputSchema":{"type":"object","properties":{"thread":{"type":"string"},"action":{"type":"string","enum":["checkpoint","status","obligation","transition","verify","revalidate","attempt"]},"goal":{"type":"string"},"state":{"type":"object"},"note":{"type":"string"},"title":{"type":"string"},"predicate":{},"obligation":{"type":"string"},"to":{"type":"string"},"artifact":{"type":"string"},"checker":{"type":"string"},"passed":{"type":"boolean"},"attempt":{"type":"object"}},"required":["thread"]}}),
         json!({"name":"cortex_resolve","description":"Resolve competing heads of a record with authority and rationale. Creates a resolution revision; rejected evidence is kept.","inputSchema":{"type":"object","properties":{"record":{"type":"string"},"considered":{"type":"array","items":{"type":"string"}},"rationale":{"type":"string"},"body":{"type":"object"},"keepId":{"type":"number","description":"Legacy conflict resolution: decision id to keep"},"action":{"type":"string","description":"Legacy: keep|merge|archive"}}}}),
         json!({"name":"cortex_feedback","description":"Report a task outcome (success|partial|failure) and which memory sources were actually used, so usefulness statistics stay separate from truth.","inputSchema":{"type":"object","properties":{"outcome":{"type":"string","enum":["success","partial","failure"]},"taskClass":{"type":"string"},"memorySources":{"type":"array","items":{"type":"string"}},"qualityScore":{"type":"number"},"notes":{"type":"string"}},"required":["outcome"]}}),
@@ -160,7 +175,15 @@ pub async fn capabilities(cx: &asupersync::Cx, state: &RuntimeState) -> Result<V
                 "relationship": "promoted_from",
                 "note": "Explicit Deposit citation only; capture never auto-promotes."
             },
-            "note": "V5 capture hits are not CQR Cards and never change admission."
+            "note": "Attributed observations are not CQR Cards and never change admission."
+        },
+        "assembly_bridge": {
+            "query_orient_field": "assemblies",
+            "scope_arg": "observation_scope",
+            "opt_out": "assemblies=false",
+            "expand_refs": ["asm:<assembly_id>", "rev:<revision_id>"],
+            "enabled_by": "rebuild_assembly_routes",
+            "note": "Compiled bundles stay off until cue routes are rebuilt. Ranking does not change CQR Cards or epistemic status."
         },
         "removed_tools": {
             "cortex_boot_audit": "cortex_orient",
@@ -204,9 +227,15 @@ async fn run_lens(
     let mut ctx = RecallContext::from_caller(caller.owner_id, state);
     ctx.paths.extend(arg_list(args, &["paths"]));
     ctx.paths.extend(frame.handles.paths.iter().cloned());
+    if let Some(cwd) = arg_str(args, &["cwd"]) {
+        if looks_like_fs_path(cwd) && !ctx.paths.iter().any(|p| p == cwd) {
+            ctx.paths.push(cwd.to_string());
+        }
+    }
     ctx.symbols.extend(arg_list(args, &["symbols"]));
     ctx.symbols.extend(frame.handles.symbols.iter().cloned());
     ctx.as_of = arg_str(args, &["time", "as_of", "valid_at"]).map(str::to_string);
+    ctx.session_id = arg_str(args, &["thread"]).map(str::to_string);
     // History and audit search the cold partition too; every other profile
     // discloses it as not searched.
     ctx.include_cold = matches!(frame.profile, LensProfile::History | LensProfile::Audit)
@@ -441,6 +470,77 @@ async fn attach_observation_evidence(
     }
 }
 
+/// Evidence-closed assembly bundles. Separate from CQR Cards. Omitted while
+/// cue routes are disabled so default recall is unchanged.
+async fn attach_assembly_evidence(
+    cx: &asupersync::Cx,
+    state: &RuntimeState,
+    text: &str,
+    args: &Value,
+    out: &mut Value,
+) {
+    if arg_bool(args, &["assemblies", "include_assemblies"]).unwrap_or(true) == false {
+        return;
+    }
+    let scope = arg_str(args, &["observation_scope", "scope"]).unwrap_or("project");
+    let runtime = crate::CortexRuntime::from_state(state.clone());
+    let query = if text.trim().is_empty() {
+        arg_list(args, &["paths", "symbols"])
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        text.to_string()
+    };
+    let cues = crate::runtime::assembly::tokenize_cues(&query);
+    let presence: Option<crate::protocol::ContextPresence> = args
+        .get("context_presence")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok());
+    let attested_brain = args["context_presence"]["brain_epoch"]
+        .as_str()
+        .map(str::to_string);
+    let attested_policy = args["context_presence"]["policy_epoch"]
+        .as_str()
+        .map(str::to_string);
+    let context_epoch = arg_str(args, &["context_epoch"]).unwrap_or("");
+    let presence = if context_epoch.is_empty() { None } else { presence };
+    match runtime
+        .compile_assemblies(
+            cx,
+            scope,
+            &cues,
+            4,
+            presence.as_ref(),
+            attested_brain.as_deref(),
+            attested_policy.as_deref(),
+            context_epoch,
+        )
+        .await
+    {
+        Ok(compiled) if compiled.status == "disabled" => {}
+        Ok(compiled) => {
+            out["assemblies"] = json!({
+                "status": compiled.status,
+                "scope": compiled.scope,
+                "bundles": compiled.bundles,
+                "brief": compiled.brief,
+                "note": "Evidence-closed assembly bundles, not CQR Cards. Expand asm:<id> for exact members."
+            });
+        }
+        Err(err) => {
+            out["assemblies"] = json!({
+                "status": "unavailable",
+                "scope": scope,
+                "bundles": [],
+                "brief": "",
+                "error": err,
+                "note": "Assembly compiler incomplete; CQR Cards are unchanged."
+            });
+        }
+    }
+}
+
 pub async fn dispatch(
     cx: &asupersync::Cx,
     state: &RuntimeState,
@@ -485,6 +585,7 @@ pub async fn dispatch(
                 }
             }
             attach_observation_evidence(cx, state, text, args, &mut out).await;
+            attach_assembly_evidence(cx, state, text, args, &mut out).await;
             Ok(out)
         }
         Operation::Expand => expand(cx, state, &caller, args).await,
@@ -788,6 +889,67 @@ async fn compare(cx: &asupersync::Cx, state: &RuntimeState, caller: &Caller<'_>,
 async fn expand(cx: &asupersync::Cx, state: &RuntimeState, caller: &Caller<'_>, args: &Value) -> Result<Value, String> {
     // Observation references are exact attributed evidence, not CQR sources.
     if let Some(raw) = arg_str(args, &["reference", "source", "ref"]) {
+        if let Some(assembly_id) = raw.strip_prefix("asm:") {
+            let runtime = crate::CortexRuntime::from_state(state.clone());
+            return match runtime.get_assembly(cx, assembly_id).await {
+                Ok(stored) => match runtime.expand_assembly(cx, assembly_id).await {
+                    Ok(members) => Ok(json!({
+                        "status": ResponseStatus::Ok.as_str(),
+                        "reference": raw,
+                        "representation": "exact",
+                        "assembly": {
+                            "id": stored.id,
+                            "revision_id": stored.revision_id,
+                            "kind": stored.kind,
+                            "scope": stored.scope,
+                            "members": stored.members.iter().zip(members).map(|(spec, body)| json!({
+                                "role": spec.role.as_str(),
+                                "revision_id": spec.revision_id,
+                                "expand": format!("rev:{}", spec.revision_id),
+                                "body": body
+                            })).collect::<Vec<_>>(),
+                            "trust": {
+                                "kind": "assembly_membership",
+                                "instruction": false,
+                                "privilege": "none",
+                                "provenance": stored.id
+                            }
+                        }
+                    })),
+                    Err(err) => Ok(json!({
+                        "status": ResponseStatus::Unavailable.as_str(),
+                        "reference": raw,
+                        "error": err
+                    })),
+                },
+                Err(err) => Ok(json!({
+                    "status": if err.contains("missing") {
+                        ResponseStatus::NoMatch.as_str()
+                    } else {
+                        ResponseStatus::Unavailable.as_str()
+                    },
+                    "reference": raw,
+                    "error": err
+                })),
+            };
+        }
+        if let Some(revision_id) = raw.strip_prefix("rev:") {
+            let conn = state.db_read.lock(cx).await.map_err(|e| e.to_string())?;
+            return match records::revision_body(&conn, revision_id).map_err(|e| e.to_string())? {
+                Some(body) => Ok(json!({
+                    "status": ResponseStatus::Ok.as_str(),
+                    "reference": raw,
+                    "representation": "exact",
+                    "revision": revision_id,
+                    "body": body
+                })),
+                None => Ok(json!({
+                    "status": ResponseStatus::NoMatch.as_str(),
+                    "reference": raw,
+                    "error": "revision_missing"
+                })),
+            };
+        }
         if let Some(source_id) = raw
             .strip_prefix("obs:")
             .or_else(|| raw.strip_prefix("observation::"))
@@ -1155,6 +1317,10 @@ async fn commit(cx: &asupersync::Cx, state: &RuntimeState, caller: &Caller<'_>, 
                 ttl_seconds: None,
                 retention_class: retention,
                 anchors: Vec::new(),
+                paths: commit_paths(args, entry),
+                thread: arg_str(entry, &["thread"])
+                    .or_else(|| arg_str(args, &["thread"]))
+                    .map(str::to_string),
                 fields: entry.get("fields").cloned(),
                 owner_id: caller.owner_id,
                 benchmark: false,

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 /// advertised, so hosts that serialize every schema into the prompt pay for
 /// eight descriptions, not twenty-six.
 pub fn mcp_tools() -> Vec<Value> {
-    crate::handlers::operations::tool_schemas()
+    cortex_kernel::handlers::operations::tool_schemas()
 }
 
 /// Operator/administrative tools that still have a real dispatcher path.

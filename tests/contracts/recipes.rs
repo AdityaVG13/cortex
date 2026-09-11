@@ -4,9 +4,9 @@
 //! scope write preserves reuse, environment change invalidates, unsupported
 //! fingerprint never means unchanged.
 
-use cortex_daemon::db::compiled::{bump_guard, guard_epoch, run_compiled};
-use cortex_daemon::db::records::{append_commit, append_revision, NewRevision};
-use cortex_daemon::recipe::{evaluate, Fact, Limits, Predicate, RecipeError, Snapshot, Step};
+use cortex_kernel::db::compiled::{bump_guard, guard_epoch, run_compiled};
+use cortex_kernel::db::records::{append_commit, append_revision, NewRevision};
+use cortex_logic::recipe::{evaluate, Fact, Limits, Predicate, RecipeError, Snapshot, Step};
 use cortex_tests::support::test_conn;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -449,7 +449,7 @@ fn compiled_reads_reuse_until_a_guard_moves_in_the_database() {
 #[test]
 fn query_runs_named_templates_and_proposed_plans_through_compiled_reads() {
     cortex_tests::support::run_with_cx(|cx| async move {
-        use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
+        use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
         use cortex_tests::support::solo_state;
         let state = solo_state();
         let caller = || Caller {

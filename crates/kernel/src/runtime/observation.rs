@@ -1,6 +1,6 @@
-//! V5 exact intake. Source registration is an operator/library action, never
-//! inferred from event text. A source cursor and all its accepted occurrences
-//! commit together. This module does not interpret prose or perform learning.
+//! Exact observation intake. Source registration is an operator/library action,
+//! never inferred from event text. A source cursor and all its accepted
+//! occurrences commit together. This module does not interpret prose or learn.
 use super::CortexRuntime;
 use crate::db::{compiled, outbox, records};
 use asupersync::Cx;

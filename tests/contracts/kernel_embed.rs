@@ -1,12 +1,11 @@
 //! cortex-kernel embed contract: a Rust host opens the brain in-process,
-//! deposits one decision and lenses it back. Failure-first: the test binds
-//! the daemon's default port itself before opening the runtime and asserts
-//! no listener appeared on any new port, so an `open()` that started a
-//! server (or needed one) would fail here. The crate must not link axum:
-//! `cargo tree -p cortex-kernel -i axum` reports no such package.
+//! deposits one decision and lenses it back. Failure-first: the test records
+//! this process's listen set before `open()` and asserts no new listener
+//! appeared, so an `open()` that started a server (or needed one) would fail
+//! here. The crate must not link axum: `cargo tree -p cortex-kernel -i axum`
+//! reports no such package.
 
 use cortex_kernel::{BootInput, CortexError, CortexRuntime, LensInput};
-use std::net::TcpListener;
 
 fn listening_ports() -> Vec<u16> {
     // Ports this process is listening on, via `lsof` when available; the
@@ -23,8 +22,6 @@ fn listening_ports() -> Vec<u16> {
 #[test]
 fn kernel_opens_deposits_and_lenses_without_a_server_or_a_port() {
     cortex_tests::support::run_with_cx(|cx| async move {
-    // Hold the daemon port so any attempt to serve on it fails loudly.
-    let _guard = TcpListener::bind(("127.0.0.1", cortex_kernel::DEFAULT_CORTEX_PORT)).ok();
     let before = listening_ports();
     let dir = tempfile::Builder::new().prefix("cortex-kernel-embed-").tempdir().unwrap();
     let db = dir.path().join("cortex.db");

@@ -34,15 +34,16 @@ Cortex is a persistent memory daemon on `localhost:7437`. It stores decisions, p
 <details>
 <summary><b>Claude Code</b> — MCP, automatic</summary>
 
-Already connected via MCP plugin. Use `cortex_boot`, `cortex_recall`, `cortex_store` tools directly.
+Already connected via MCP plugin. Use `cortex_orient`, `cortex_query`, `cortex_commit`. SessionStart injects the same orient View. After `cortex setup`, live hooks read `~/.cortex/capture.json` when `CORTEX_CAPTURE` is unset.
 
 ```bash
 claude plugin marketplace add AdityaVG13/cortex
 claude plugin install cortex@cortex-marketplace
+cortex setup
 cortex status --json
 ```
 
-Expected status: `ready`. Repair: if the plugin reports a missing binary, build/install `cortex` or set `CORTEX_APP_BINARY`, then restart the MCP client. SessionStart boots and MCP tools both spawn local `cortex` — they do not need an HTTP daemon.
+Expected status: `ready`. Repair: if the plugin reports a missing binary, build/install `cortex` or set `CORTEX_APP_BINARY`, then restart the MCP client. SessionStart and MCP tools both spawn local `cortex` — they do not need an HTTP daemon.
 
 </details>
 

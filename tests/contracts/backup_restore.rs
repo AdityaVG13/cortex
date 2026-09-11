@@ -7,11 +7,11 @@
 #[path = "../support/mod.rs"]
 mod support;
 
-use cortex_daemon::db::backup::{backup_to, last_verified_restore, restore_from};
-use cortex_daemon::db::records::{brain_epochs, heads};
-use cortex_daemon::runtime::CortexRuntime;
-use cortex_daemon::store_spi::sqlite::{current_frontier, SqliteStore};
-use cortex_daemon::store_spi::{BrainStore, StoreSpiError};
+use cortex_kernel::db::backup::{backup_to, last_verified_restore, restore_from};
+use cortex_kernel::db::records::{brain_epochs, heads};
+use cortex_kernel::runtime::CortexRuntime;
+use cortex_kernel::store_spi::sqlite::{current_frontier, SqliteStore};
+use cortex_kernel::store_spi::{BrainStore, StoreSpiError};
 use cortex_tests::support::open_file_db;
 use std::fs;
 use support::unique_temp_dir;
@@ -24,7 +24,7 @@ fn seeded_home(label: &str, texts: &[&str]) -> (std::path::PathBuf, std::path::P
     for text in texts {
         conn.execute("INSERT INTO decisions (decision, type, source_agent, status, retention_class) VALUES (?1, 'decision', 'seed', 'active', 'durable')", [text]).unwrap();
     }
-    cortex_daemon::db::records::import_legacy(&conn).unwrap();
+    cortex_kernel::db::records::import_legacy(&conn).unwrap();
     (home, db)
 }
 
@@ -169,7 +169,7 @@ fn auto_repair_salvages_history_and_authoritative_tables() {
     let (home, db) = seeded_home("bk-repair", &["repair keeps history"]);
     {
         let conn = open_file_db(&db);
-        cortex_daemon::traces::record_store_write(
+        cortex_logic::traces::record_store_write(
             &conn,
             "seed",
             "repair keeps history",
@@ -179,7 +179,7 @@ fn auto_repair_salvages_history_and_authoritative_tables() {
             None,
         );
     }
-    let result = cortex_daemon::db::auto_repair(&db, "t").expect("auto_repair");
+    let result = cortex_kernel::db::auto_repair(&db, "t").expect("auto_repair");
     assert_eq!(result.decisions_recovered, 1);
     let conn = open_file_db(&db);
     let versions: i64 = conn

@@ -12,7 +12,7 @@ fn admin_acl_team_mode_matrix() {
         let state = team_state(1);
         {
             let conn = state.db.lock(&cx).await.unwrap();
-            cortex_daemon::db::create_team_mode_tables(&conn).unwrap();
+            cortex_kernel::db::create_team_mode_tables(&conn).unwrap();
             for (id, role) in [(1, "owner"), (2, "admin"), (3, "member")] {
                 conn.execute("INSERT INTO users (id, username, display_name, api_key_hash, role) VALUES (?1, ?2, ?2, ?2, ?3)", rusqlite::params![id, format!("user-{id}"), role]).unwrap();
             }

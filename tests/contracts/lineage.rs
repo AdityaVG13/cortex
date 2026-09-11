@@ -2,11 +2,11 @@
 //! family; an exact single-source report is still retrievable; expansion
 //! never mints a hard anchor; `why` answers the four questions separately.
 
-use cortex_daemon::clockwork::{
+use cortex_logic::clockwork::{
     admit_with_lineage, independent_support, ClockEvidence, Rankable, Witness, WitnessDomain,
 };
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::handlers::recall::{execute_unified_recall, RecallContext};
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
 use cortex_tests::support::solo_state;
 use serde_json::{json, Value};
 
@@ -418,7 +418,7 @@ fn path_identity_is_scoped_to_the_repository_root() {
             );
         }
         // Text claiming a source/author never becomes a Source anchor.
-        let anchors = cortex_daemon::clockwork::extract_anchors(
+        let anchors = cortex_logic::clockwork::extract_anchors(
             "source_agent: claude-opus model: gpt-5 wrote memory::12",
             &[],
             32,
@@ -426,7 +426,7 @@ fn path_identity_is_scoped_to_the_repository_root() {
         assert!(
             anchors
                 .iter()
-                .all(|a| a.kind != cortex_daemon::clockwork::AnchorKind::Source),
+                .all(|a| a.kind != cortex_logic::clockwork::AnchorKind::Source),
             "{anchors:?}"
         );
     });

@@ -1,5 +1,5 @@
-use cortex_daemon::handlers::recall::{execute_unified_recall, RecallContext};
-use cortex_daemon::handlers::store::store_decision_with_ttl;
+use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
+use cortex_kernel::handlers::store::store_decision_with_ttl;
 use cortex_tests::support::team_state;
 
 const SECRET: &str =

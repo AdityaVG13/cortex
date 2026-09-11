@@ -3,15 +3,15 @@
 //! one file: `cargo test -p cortex-tests --test falsifiers` plus the listed
 //! companions. A falsifier is a claim the system must be *unable* to make.
 
-use cortex_daemon::clockwork::{
+use cortex_logic::clockwork::{
     admit_with_lineage, independent_support, ClockEvidence, Rankable, Witness, WitnessDomain,
 };
-use cortex_daemon::db::feedback_ledger::adaptive_policy;
-use cortex_daemon::db::promotion::{promote, Promotion, PromotionRule};
-use cortex_daemon::db::records;
-use cortex_daemon::eval::accounting::Accounting;
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::runtime::CortexRuntime;
+use cortex_kernel::db::feedback_ledger::adaptive_policy;
+use cortex_kernel::db::promotion::{promote, Promotion, PromotionRule};
+use cortex_kernel::db::records;
+use cortex_logic::eval::accounting::Accounting;
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::runtime::CortexRuntime;
 use cortex_tests::support::{open_file_db, solo_state};
 use serde_json::json;
 
@@ -188,12 +188,12 @@ fn f05_failing_run_is_never_remembered_as_verified() {
     cortex_tests::support::run_with_cx(|cx| async move {
         let runtime = CortexRuntime::from_state(solo_state());
         let payload = json!({"hook_event_name": "PostToolUse", "session_id": "f05", "tool_name": "Bash", "tool_use_id": "t", "tool_input": {"command": "cargo test -p x"}, "tool_response": {"stdout": "test result: FAILED. 3 passed; 2 failed", "exit_code": 101}});
-        let frame = cortex_daemon::hook_event::frame_from_host(
+        let frame = cortex_kernel::hook_event::frame_from_host(
             "PostToolUse",
             &payload,
-            cortex_daemon::adapter::CapabilityManifest::claude_code_plugin(),
+            cortex_logic::adapter::CapabilityManifest::claude_code_plugin(),
         );
-        let out = cortex_daemon::hook_event::process(&cx, &runtime, "f05", &frame, &payload)
+        let out = cortex_kernel::hook_event::process(&cx, &runtime, "f05", &frame, &payload)
             .await
             .expect("process host event");
         assert!(out.capture_receipt.is_some());

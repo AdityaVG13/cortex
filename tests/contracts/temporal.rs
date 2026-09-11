@@ -14,7 +14,7 @@ async fn store(cx: &asupersync::Cx, runtime: &CortexRuntime, text: &str, confide
         context: None, entry_type: Some("decision".into()), source_agent: AGENT.into(),
         provenance: DecisionProvenance::from_fields(AGENT, Some("claude-opus"), None),
         confidence: Some(confidence), ttl_seconds: None, retention_class: None,
-        anchors: vec![], fields: None, owner_id: None, benchmark: false,
+        anchors: vec![], paths: vec![], thread: None, fields: None, owner_id: None, benchmark: false,
     }).expect("deposit")
 }
 
@@ -54,7 +54,7 @@ fn contradiction_closes_old_window_and_as_of_recovers_it() {
         let boundary = recall(&cx, &runtime, Some(new_from.clone())).await;
         assert!(excerpts(&boundary).contains(&NEW_FACT));
         assert!(!excerpts(&boundary).contains(&OLD_FACT), "half-open windows");
-        let boot = runtime.boot(&cx, BootInput { agent: AGENT.into(), max_tokens: 600, owner_id: None }).await.unwrap();
+        let boot = runtime.boot(&cx, BootInput { agent: AGENT.into(), max_tokens: 600, owner_id: None, ..Default::default() }).await.unwrap();
         assert!(boot.boot_prompt.lines().any(|l| l == "## TRUTH"));
         let expected = format!("FACT? {NEW_FACT}  (valid {} → now)  [d{new_id}]", &new_from[..10]);
         assert!(boot.boot_prompt.lines().any(|l| l == expected), "{}", boot.boot_prompt);

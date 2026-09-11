@@ -13,9 +13,9 @@
 //!    - delta cursor withholding a durable decision from a fresh context
 //!      (fixed by presence-safe orientation).
 
-use cortex_daemon::compiler::compile;
-use cortex_daemon::handlers::recall::{execute_unified_recall, RecallContext};
-use cortex_daemon::handlers::store::store_decision_with_ttl;
+use cortex_kernel::compiler::compile;
+use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
+use cortex_kernel::handlers::store::store_decision_with_ttl;
 use cortex_tests::support::solo_state;
 use serde_json::Value;
 use std::fs;
@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 const AGENT: &str = "baseline-agent";
 
-async fn store(cx: &asupersync::Cx, state: &cortex_daemon::state::RuntimeState, text: &str) -> i64 {
+async fn store(cx: &asupersync::Cx, state: &cortex_kernel::state::RuntimeState, text: &str) -> i64 {
     let mut conn = state.db.lock(&cx).await.expect("lock");
     let (entry, id) = store_decision_with_ttl(
         &mut conn,
@@ -42,7 +42,7 @@ async fn store(cx: &asupersync::Cx, state: &cortex_daemon::state::RuntimeState, 
 
 async fn recall(
     cx: &asupersync::Cx,
-    state: &cortex_daemon::state::RuntimeState,
+    state: &cortex_kernel::state::RuntimeState,
     query: &str,
 ) -> Vec<Value> {
     let payload = execute_unified_recall(

@@ -1,12 +1,12 @@
 //! Model-free retrieval contracts through the local kernel; HTTP status claims retired.
 
-use cortex_daemon::clockwork::{
+use cortex_logic::clockwork::{
     parse_query_frame, project_target, rebuild_clock_projections, record_used_with,
     reject_used_with, traverse_hops, ClockOrigin, ClockTarget,
 };
 
-use cortex_daemon::handlers::recall::{execute_unified_recall, RecallContext};
-use cortex_daemon::handlers::store::store_decision_with_ttl;
+use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
+use cortex_kernel::handlers::store::store_decision_with_ttl;
 use cortex_tests::support::{solo_state, team_state};
 use serde_json::{json, Value};
 
@@ -14,7 +14,7 @@ const AGENT: &str = "cqr-agent";
 
 async fn store_owned(
     cx: &asupersync::Cx,
-    state: &cortex_daemon::state::RuntimeState,
+    state: &cortex_kernel::state::RuntimeState,
     text: &str,
     owner_id: Option<i64>,
 ) -> (Value, i64) {
@@ -23,7 +23,7 @@ async fn store_owned(
 
 async fn store_owned_with_confidence(
     cx: &asupersync::Cx,
-    state: &cortex_daemon::state::RuntimeState,
+    state: &cortex_kernel::state::RuntimeState,
     text: &str,
     owner_id: Option<i64>,
     confidence: f64,
@@ -48,7 +48,7 @@ async fn store_owned_with_confidence(
 
 async fn store_text(
     cx: &asupersync::Cx,
-    state: &cortex_daemon::state::RuntimeState,
+    state: &cortex_kernel::state::RuntimeState,
     text: &str,
 ) -> i64 {
     store_owned(&cx, state, text, None).await.1
@@ -56,7 +56,7 @@ async fn store_text(
 
 async fn recall_results(
     cx: &asupersync::Cx,
-    state: &cortex_daemon::state::RuntimeState,
+    state: &cortex_kernel::state::RuntimeState,
     query: &str,
     ctx: &RecallContext,
 ) -> Vec<Value> {
@@ -307,7 +307,7 @@ fn contract_6_rollback_hides_later_store() {
         .await;
         {
             let conn = state.db.lock(&cx).await.expect("database lock");
-            let (_, head) = cortex_daemon::traces::rollback_to(&conn, version_a).expect("rollback");
+            let (_, head) = cortex_logic::traces::rollback_to(&conn, version_a).expect("rollback");
             assert_eq!(head, version_a);
         }
         let got = excerpts(
@@ -797,7 +797,7 @@ fn contract_20_shared_anchor_link_cut_is_data_defined() {
 
 async fn store_contextual(
     cx: &asupersync::Cx,
-    state: &cortex_daemon::state::RuntimeState,
+    state: &cortex_kernel::state::RuntimeState,
     text: &str,
     context: Option<String>,
 ) -> i64 {

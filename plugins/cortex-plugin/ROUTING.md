@@ -16,14 +16,15 @@ Default agent id is `claude-code` (`CORTEX_PLUGIN_AGENT` overrides).
 
 ## SessionStart boot
 
-`hook-boot.cjs` spawns `cortex hook-boot --agent <agent>` and relays its JSON.
+`hook-boot.cjs` forwards SessionStart stdin to `cortex hook-boot --agent <agent>`
+and relays its JSON. The binary orients the same View as MCP (`cortex_orient`).
 It does not probe `/readiness`, `/health`, or any port.
 
 ## Other hooks
 
-`hook-event.cjs` already uses the same local pattern: resolve binary, spawn
-`cortex hook-event <kind>` (or V5 `capture host-cycle` when
-`CORTEX_V5_CAPTURE` is set), relay stdout. Missing binary → `UNAVAILABLE`.
+`hook-event.cjs` resolves the local binary, spawns `cortex hook <kind>`, and
+relays stdout. The kernel reads `CORTEX_CAPTURE` or `$CORTEX_HOME/capture.json`.
+Missing sidecar → silent. Missing binary → `UNAVAILABLE`.
 
 ## Environment inputs
 
@@ -52,12 +53,10 @@ Do not treat `UNAVAILABLE` as an empty brain.
 | Event / tool | Packaged hook | Path |
 |---|---|---|
 | SessionStart | `hook-boot.cjs` | Local `cortex hook-boot` |
-| UserPromptSubmit | `hook-event.cjs` | Local `hook-event` (V5 native when sidecar set) |
-| PostToolUse Bash | `hook-event.cjs` | V5 native (2.1.260 pin) or legacy ToolResult |
-| PostToolUse Edit/Write/MultiEdit | `hook-event.cjs` | Legacy ToolResult (matcher only) |
-| PreCompact | `hook-event.cjs` | Compaction checkpoint |
-| Stop | `hook-event.cjs` | SessionEnd lifecycle |
-| Read / other tools | — | Not covered by the native Bash adapter |
+| UserPromptSubmit | `hook-event.cjs` | `cortex hook`; observation when sidecar opts in, otherwise silent |
+| PostToolUse Bash / Read / Edit / Write / MultiEdit | `hook-event.cjs` | `cortex hook`; observation when the matching native_* flag is set, otherwise silent |
+| PreCompact | `hook-event.cjs` | `cortex hook`; silent observation checkpoint when opted in, otherwise silent |
+| Stop | `hook-event.cjs` | `cortex hook`; live final only with an explicit trusted identity |
 
 MCP stdio alone does **not** grant transcript access. Automatic capture needs
 the host hook events above. Unknown/private tool shapes fail closed.

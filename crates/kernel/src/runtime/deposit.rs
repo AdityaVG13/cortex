@@ -1,4 +1,4 @@
-use crate::clockwork::{ClockOrigin, QueryAnchor};
+use crate::clockwork::{AnchorKind, ClockOrigin, QueryAnchor};
 use crate::handlers::store::{
     store_decision_with_input_embedding_and_provenance_retention, DecisionProvenance, StoreError,
 };
@@ -29,6 +29,11 @@ pub struct DepositInput<'a> {
     pub ttl_seconds: Option<i64>,
     pub retention_class: Option<RetentionClass>,
     pub anchors: Vec<QueryAnchor>,
+    /// Caller project roots. Projected as explicit path anchors so later
+    /// lens/orient/boot with a cwd can admit this row and drop a foreign repo.
+    pub paths: Vec<String>,
+    /// Optional thread/session label. Task-clock evidence, not an eligibility filter.
+    pub thread: Option<String>,
     /// Typed fields (case/procedure/counterexample bodies) merged into the
     /// authoritative revision body; free text stays representable.
     pub fields: Option<Value>,
@@ -98,6 +103,8 @@ pub fn deposit_decision(
         context.as_deref(),
         input.entry_type.as_deref(),
         input.owner_id,
+        &input.paths,
+        input.thread.as_deref(),
     );
     let canonical_hash = cortex_logic::traces::content_hash(&canonical);
     conn.execute_batch(crate::store_spi::sqlite::IDEMPOTENCY_DDL)
@@ -164,12 +171,43 @@ fn canonical_deposit(
     context: Option<&str>,
     entry_type: Option<&str>,
     owner_id: Option<i64>,
+    paths: &[String],
+    thread: Option<&str>,
 ) -> String {
     // Canonical comparison preserves Unicode and field identity; it is a
     // structured rendering, not an ad hoc string hash of the raw request.
     // The source agent is attribution on the record, not part of the
     // payload: a retry of the same deposit from another surface replays.
-    serde_json::to_string(&json!({"schema":"deposit/1","text":text,"context":context,"type":entry_type,"owner":owner_id})).unwrap_or_default()
+    // Paths and thread are the caller's scope: the same sentence in two
+    // repositories is two facts.
+    let mut paths: Vec<&str> = paths.iter().map(String::as_str).filter(|p| !p.is_empty()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    let thread = thread.map(str::trim).filter(|s| !s.is_empty());
+    serde_json::to_string(&json!({"schema":"deposit/1","text":text,"context":context,"type":entry_type,"owner":owner_id,"paths":paths,"thread":thread})).unwrap_or_default()
+}
+
+fn scope_anchors(paths: &[String], thread: Option<&str>) -> Vec<QueryAnchor> {
+    let mut extra = Vec::new();
+    for path in paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        extra.push(QueryAnchor {
+            kind: AnchorKind::Path,
+            value: crate::clockwork::normalize_anchor_value(AnchorKind::Path, trimmed),
+            specificity: 3,
+        });
+    }
+    if let Some(thread) = thread.map(str::trim).filter(|s| !s.is_empty()) {
+        extra.push(QueryAnchor {
+            kind: AnchorKind::Session,
+            value: thread.to_ascii_lowercase(),
+            specificity: 1,
+        });
+    }
+    extra
 }
 
 fn lookup_ledger(
@@ -230,12 +268,14 @@ fn deposit_inner(
     }
     crate::graph::ingest_for_target(conn, text, "decision", target_id, None, input.owner_id);
     if let Some(id) = target_id {
-        let origin = if input.anchors.is_empty() {
+        let mut anchors = input.anchors.clone();
+        anchors.extend(scope_anchors(&input.paths, input.thread.as_deref()));
+        let origin = if anchors.is_empty() {
             ClockOrigin::DeterministicExtract
         } else {
             ClockOrigin::Explicit
         };
-        crate::clockwork::project_target(conn, text, &input.anchors, "decision", id, origin, None)
+        crate::clockwork::project_target(conn, text, &anchors, "decision", id, origin, None)
             .map_err(|err| {
                 StoreError::Internal(format!("clock projection failed for {id}: {err}"))
             })?;

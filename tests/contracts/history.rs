@@ -35,7 +35,7 @@ fn rollback_hides_later_store_from_recall_and_boot() {
         assert!(after.iter().all(|e| !e.contains("HISTORYBETA")));
         let alpha = recall_excerpts(&cx, &runtime, "HISTORYALPHA sqlite ledger").await;
         assert!(alpha.iter().any(|e| e == DECISION_A));
-        let boot = runtime.boot(&cx, BootInput { agent: AGENT.into(), max_tokens: 600, owner_id: None }).await.unwrap();
+        let boot = runtime.boot(&cx, BootInput { agent: AGENT.into(), max_tokens: 600, owner_id: None, ..Default::default() }).await.unwrap();
         assert!(!boot.boot_prompt.contains("HISTORYBETA"));
         let c = runtime.deposit(&cx, "c", DECISION_C, AGENT, None).await.unwrap();
         let version_c = c.entry["versionId"].as_i64().unwrap();

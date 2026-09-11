@@ -49,6 +49,9 @@ pub struct SourceInventory {
     pub next_index: usize,
     pub status: InventoryStatus,
     pub entries: Vec<InventoryEntry>,
+    /// Registrations that appeared after this revision was sealed.
+    #[serde(default)]
+    pub untracked_registrations: usize,
 }
 
 fn principal(runtime: &CortexRuntime) -> Result<String, String> {
@@ -227,6 +230,7 @@ impl CortexRuntime {
                 InventoryStatus::PartiallyIndexed
             },
             entries,
+            untracked_registrations: 0,
         };
         conn.execute(
             "INSERT INTO observation_inventories VALUES(?1,?2,?3)",
@@ -353,6 +357,101 @@ impl CortexRuntime {
             if blocked {
                 break;
             }
+        }
+        Ok(inventory)
+    }
+
+    /// Re-check this sealed revision against current grants and file metadata.
+    /// New registrations are counted, not added. The cursor never advances here.
+    pub async fn reconcile_inventory(
+        &self,
+        cx: &Cx,
+        revision: &str,
+    ) -> Result<SourceInventory, String> {
+        let principal = principal(self)?;
+        let mut inventory = self.read_inventory(cx, revision).await?;
+        let previous = serde_json::to_string(&inventory).map_err(|e| e.to_string())?;
+        let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
+        ensure(&conn)?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='observation_sources')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let current: Vec<String> = if exists {
+            let mut statement = conn
+                .prepare("SELECT source_key FROM observation_sources WHERE principal=?1 AND substr(source_key,1,5)='file:' ORDER BY source_key")
+                .map_err(|e| e.to_string())?;
+            statement
+                .query_map(params![principal], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?
+        } else {
+            Vec::new()
+        };
+        let known: std::collections::BTreeSet<_> = inventory
+            .entries
+            .iter()
+            .map(|entry| entry.source_key.clone())
+            .collect();
+        inventory.untracked_registrations = current.iter().filter(|key| !known.contains(*key)).count();
+        for entry in &mut inventory.entries {
+            if !current.iter().any(|key| key == &entry.source_key) {
+                mark(
+                    entry,
+                    InventoryStatus::PermissionRequired,
+                    "registration_missing",
+                );
+                continue;
+            }
+            match observation::source_capture_limit(&conn, &principal, &entry.source_key)
+                .and_then(|_| snapshot(&entry.source_key))
+            {
+                Err(error) => mark(entry, classify(&error), error),
+                Ok((bytes, current_revision)) => {
+                    entry.bytes = Some(bytes);
+                    if entry.source_revision.as_ref() != Some(&current_revision) {
+                        mark(
+                            entry,
+                            InventoryStatus::SourceChanged,
+                            "source_changed: reconcile",
+                        );
+                    }
+                }
+            }
+        }
+        inventory.status = if inventory.next_index == inventory.entries.len()
+            && inventory
+                .entries
+                .iter()
+                .all(|entry| entry.status == InventoryStatus::Ready)
+        {
+            InventoryStatus::Ready
+        } else if inventory.next_index < inventory.entries.len()
+            && inventory.entries[inventory.next_index].status != InventoryStatus::PartiallyIndexed
+        {
+            inventory.entries[inventory.next_index].status
+        } else {
+            InventoryStatus::PartiallyIndexed
+        };
+        let body = serde_json::to_string(&inventory).map_err(|e| e.to_string())?;
+        let updated = conn
+            .execute(
+                "UPDATE observation_inventories SET inventory_json=?3 WHERE principal=?1 AND revision=?2 AND inventory_json=?4 AND EXISTS(SELECT 1 FROM brain_meta WHERE singleton=1 AND restore_epoch=?5)",
+                params![
+                    principal,
+                    revision,
+                    body,
+                    previous,
+                    inventory.restore_epoch
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated != 1 {
+            return Err("inventory_resume_conflict".into());
         }
         Ok(inventory)
     }

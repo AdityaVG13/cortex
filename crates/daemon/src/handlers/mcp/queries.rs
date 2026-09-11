@@ -1,4 +1,4 @@
-use crate::handlers::recall::RecallContext;
+use cortex_kernel::handlers::recall::RecallContext;
 use serde_json::{json, Value};
 pub(crate) fn can_view_last_call(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallContext) -> bool {
     if !ctx.team_mode {

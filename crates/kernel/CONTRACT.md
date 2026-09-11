@@ -8,10 +8,14 @@ transport adapter over this crate; a Rust host path-deps it directly.
 **Public types.** `CortexRuntime` (`open(&CortexPaths)`, `open_db(&Path)`,
 `from_state`, `deposit`, `deposit_with_key`, `lens`, `boot`, `state`),
 `LensInput`, `BootInput`, `DepositOutcome`, `CortexError`
-(`Open | Rejected | Conflict | Recall | Internal | Lock`). Every module the daemon
-used to own is re-exported (`db`, `handlers::{operations,recall,store,…}`,
-`state`, `compiler`, `reflex`, `store_spi`, …) and carries the same
-semantics as before the extraction. No axum / http / hyper type appears in
+(`Open | Rejected | Conflict | Recall | Internal | Lock`). `deposit` /
+`cortex op commit` record caller `paths` / `cwd` / `thread` as explicit clock
+anchors. `lens` / `orient` / `boot` with those paths admit the matching project
+and drop a row whose explicit root is a different repository; unscoped rows
+stay visible. Every module the daemon
+used to own remains in this crate (`db`, `handlers::{operations,recall,store,…}`,
+`state`, `compiler`, `reflex`, `store_spi`, …). Hosts and contracts import
+`cortex_kernel` / `cortex_logic` directly. No axum / http / hyper type appears in
 any public signature.
 
 **Invariants.** `open()` never binds a socket, spawns a process or reads a
@@ -51,7 +55,7 @@ does not create a runtime or task context. Adapters must forward capabilities
 and handle fallible lock acquisition rather than treating cancellation as
 successful work.
 
-**V5 observation intake.** `runtime::observation` adds explicit local-principal
+**Observation intake.** `runtime::observation` adds explicit local-principal
 source registration, `observe`, normalized-JSONL `tail_observations`, source
 cursor inspection, source enable/disable, and exact observation lookup. Source
 roles are registered by the operator, never accepted from event bodies. Raw
@@ -89,15 +93,17 @@ home-boundary check. Configured `truncate` previews no longer limit retained
 source bytes. Source/record metadata is retained alongside the exact payload;
 retained payload bytes are not a whole-database storage measurement.
 
-**V5 inventory.** `inventory_sources`, `read_inventory`, `bootstrap_inventory`
+**Inventory.** `inventory_sources`, `read_inventory`, `bootstrap_inventory`, `reconcile_inventory`
 operate only on registered file keys for the trusted principal. Inventories are
 persisted revisions (at most 4,096 entries); bootstrap uses a contiguous CAS
 cursor and at most 128 sources / 16 MiB per invocation. Capture-before-checkpoint
 failure is replay-safe. A blocked or changed entry never silently advances.
 Restore epochs invalidate old progress. Ready means exact capture, not projection
 or delivery completeness; an inventory is not a globally atomic file snapshot.
+`reconcile_inventory` rechecks that sealed revision against current grants and
+file metadata. Later registrations are counted, not appended.
 
-**V5 retrieval and preparation.** `cycle::NeedSpec`, `query_observations`,
+**Retrieval and preparation.** `cycle::NeedSpec`, `query_observations`, `require_observation`,
 `subscribe_observations` and `prepare_observations` implement scoped exact any-cue
 joins over retained observations. Capture maintains postings and reverse needs
 inside its transaction. Catch-up projects at most 32 observations per slice;
@@ -112,13 +118,15 @@ lifting is claimed. Unknown prose stays attributed evidence. Permission,
 availability, projection debt and output limits qualify the response; incomplete
 bundles are not automatically delivered. Exact references permit later hydration.
 `rebuild_observation_projection` replaces only derived indexes; `retract_observation`
-excludes active evidence without deleting exact bytes.
+excludes active evidence without deleting exact bytes. `exclude_cues` drop optional
+candidates. `require_observation` adds mandatory children; a missing or retracted
+child yields `qualification_unavailable` rather than a prefix View.
 
 Delivery presence is an explicit host assertion bound to principal, need,
 context, fingerprint and restore epoch, expiring after five minutes. New content
 or a new context requires a fresh payload. Delivery bytes are not model tokens.
 
-**V5 host subsets.** `claude-visible-subset-v1` remains the legacy fixture adapter.
+**Host subsets.** `claude-visible-subset-v1` remains the legacy fixture adapter.
 `CLAUDE_2_1_260_ADAPTER` (`claude-code-2.1.260-v1`) requires the exact 2.1.260
 host-version pin. An isolated installed-host probe established that live
 `prompt_id` matches historical `promptId`, NOT the historical message `uuid`.
@@ -136,9 +144,9 @@ Known queue, budget, hook-context, ATIS latch, Bash request and last-prompt reco
 are non-evidence. Their byte offsets, lengths, kinds and SHA-256 markers commit
 with the raw cursor in `host_capture_metadata`; unknown/private shapes still
 block advancement. No raw private metadata body is copied into evidence.
-Operator-owned origin policy remains separate from payload origin claims. The
-opt-in bridge can derive user/Bash invocation identities from pinned native hook
-metadata without model-generated memory commands. Own deliveries are excluded,
+Operator-owned origin policy remains separate from payload origin claims.
+`resolve_host_invocation` derives user, Bash, and file-tool identities from the
+operator sidecar and host payload without model-generated memory commands. Own deliveries are excluded,
 origin conflicts fail closed, and raw JSONL cursors commit atomically with capture
 and metadata markers. `capture_and_prepare_host` composes exact intake with scoped
 needs; final/delivery-only events do not reinject. Capture may have committed
@@ -150,7 +158,7 @@ and Stop. This validates observed native protocol shapes and context-channel
 acceptance, NOT reader quality, real model-token savings, every tool shape or a
 fully deployed Cortex/host installation.
 
-**V5 associations.** Corpus routing is opt-in via `rebuild_associations`, bounded
+**Associations.** Corpus routing is opt-in via `rebuild_associations`, bounded
 to 512 eligible observations / 64 KiB each and 32 lexical features per source.
 Current authorization and source lineage are revalidated; copied text and connected
 lineages do not multiply support. Agent/tool derivatives and own deliveries are
@@ -158,14 +166,40 @@ not independent support. Learned candidates remain separately labeled and cannot
 alter source authority or hard gates. Explicit named usefulness assessments are
 idempotent, reversible and bounded in scoring effect; later tool success does not
 implicitly earn causal credit. `reset_associations` disables refresh until rebuild.
-No held-out benefit or full V4 neural/controller implementation is claimed.
+No held-out benefit or neural/controller implementation is claimed.
+
+**Assemblies.** `put_assembly` records exact membership over existing revision
+rows, including contradictions. Factoring is typed JSON (`raw` or
+`template_residual`); expand reconstructs the original bodies. Learning events
+are attributed, idempotent, retractable, and source-erasable. Cue routes stay
+disabled until `rebuild_assembly_routes`. `explain_assembly_routes` cites cues
+and training units; ranking is scoped utility, not a truth score. A
+`NeedSpec` with `learned: true` may add separately labeled
+`learned_assembly_route` / `assembly_exception` candidates only after that
+rebuild, still inside current grants and evidence closure. `compile_assemblies`
+is the evidence-closed View for those routes: `orient` / `query` attach an
+`assemblies` section (never Cards), `expand` hydrates `asm:` / `rev:`, and
+hooks inject the extractive brief. A missing required exception yields
+`qualification_unavailable` with no prefix claim. Host presence may omit
+payloads already attested in the current invocation. Default query, `lens`,
+and routes-off reads stay exact observation / CQR. No HDC or controller is
+claimed.
+
+**Host entry.** Live host events use `cortex hook <kind>`. `resolve_host_invocation`
+turns `CORTEX_CAPTURE` or `$CORTEX_HOME/capture.json` plus the host payload into
+a `HostInvocation`, or returns `None` so the command stays silent. CQR hook
+protocol remains `process()`, used by `cortex hook-boot` (SessionStart orient)
+and by hosts that call it directly. There is no second command name and no
+second environment name for that sidecar. `cortex setup` writes the sidecar
+file once; an existing operator file is left alone.
+`cortex capture host-cycle` remains the explicit-flag operator path.
 
 **Conformance.** `tests/contracts/observation_capture.rs`,
 `observation_inventory.rs`, `observation_cycle.rs`, `host_capture.rs`,
-`observation_associations.rs`, and `tests/contracts/kernel_embed.rs`
-(`kernel_opens_deposits_and_lenses_without_a_server_or_a_port`), plus every
-existing contract that reaches the engines through `cortex_daemon::…`
-re-exports.
+`observation_associations.rs`, `assembly.rs`, and `tests/contracts/kernel_embed.rs`
+(`kernel_opens_deposits_and_lenses_without_a_server_or_a_port`). Contracts
+import `cortex_kernel` / `cortex_logic` for brain types and `cortex_daemon`
+only for MCP, health presentation, and other process-edge surfaces.
 
 **No-claim boundaries.** Not a stable ABI across languages; not thread-safe
 beyond what `RuntimeState` (asupersync mutexes) provides; `boot()` compiles the

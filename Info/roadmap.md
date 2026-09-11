@@ -68,7 +68,7 @@ proof; fixtures and debug timings cannot substitute for it.
 | Transport cutover (plugin MCP/boot off HTTP) | Done — local `cortex mcp` / `hook-boot` stdio |
 | Truthful discovery | Done — eight ops; `cortex_boot`→orient; removed names `UNKNOWN_TOOL` |
 | Unified V5 access via ops | Done — `observations` on query/orient; `expand` `obs:<id>` |
-| Claude coverage matrix | Partial — Stop packaged; Edit/Write legacy ToolResult; Read not native |
+| Claude coverage matrix | Native prompt, Bash, Read, Edit, Write, MultiEdit, PreToolUse, PreCompact, Stop; other tools stay fail-closed |
 | Additional hosts | Not started — MCP interop first; capture only where hooks exist |
 | Release evidence | Open — held-out quality, crash/power-loss, release perf |
 

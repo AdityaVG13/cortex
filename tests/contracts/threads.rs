@@ -3,9 +3,9 @@
 //! failure query without a transcript, and a Thread survives a fresh
 //! process opening the same database.
 
-use cortex_daemon::db::threads::{OBLIGATION_STATES, transition_allowed};
-use cortex_daemon::handlers::operations::{Caller, Operation, dispatch};
-use cortex_daemon::runtime::CortexRuntime;
+use cortex_kernel::db::threads::{OBLIGATION_STATES, transition_allowed};
+use cortex_kernel::handlers::operations::{Caller, Operation, dispatch};
+use cortex_kernel::runtime::CortexRuntime;
 use cortex_tests::support::solo_state;
 use serde_json::json;
 
@@ -240,10 +240,10 @@ fn orient_with_thread_returns_a_self_contained_continuation() {
 fn team_boot_capsules_are_owner_scoped() {
     use cortex_tests::support::test_conn;
     let conn = test_conn();
-    cortex_daemon::db::create_team_mode_tables(&conn).unwrap();
+    cortex_kernel::db::create_team_mode_tables(&conn).unwrap();
     let owner =
-        cortex_daemon::db::upsert_owner_user(&conn, "owner", Some("owner"), "hash-owner").unwrap();
-    cortex_daemon::db::migrate_to_team_mode(&conn, owner).unwrap();
+        cortex_kernel::db::upsert_owner_user(&conn, "owner", Some("owner"), "hash-owner").unwrap();
+    cortex_kernel::db::migrate_to_team_mode(&conn, owner).unwrap();
     conn.execute("INSERT INTO users (username, display_name, api_key_hash, role) VALUES ('other', 'other', 'x', 'member')", []).unwrap();
     let other: i64 = conn
         .query_row("SELECT id FROM users WHERE username = 'other'", [], |r| {
@@ -255,7 +255,7 @@ fn team_boot_capsules_are_owner_scoped() {
     conn.execute("INSERT INTO messages (id, sender, recipient, message, timestamp, owner_id) VALUES ('m1', 'x', 'agent-1', 'SECRET-MESSAGE', '2026-09-05T00:00:00Z', ?1)", [other]).unwrap();
     let home = std::env::temp_dir();
     let mine =
-        cortex_daemon::compiler::compile_for_owner(&conn, &home, "agent-1", 4000, Some(owner));
+        cortex_kernel::compiler::compile_for_owner(&conn, &home, "agent-1", 4000, Some(owner), &[]);
     assert!(mine.boot_prompt.contains("mine"), "{}", mine.boot_prompt);
     assert!(
         !mine.boot_prompt.contains("SECRET-TASK"),
@@ -268,7 +268,7 @@ fn team_boot_capsules_are_owner_scoped() {
         mine.boot_prompt
     );
     let theirs =
-        cortex_daemon::compiler::compile_for_owner(&conn, &home, "agent-1", 4000, Some(other));
+        cortex_kernel::compiler::compile_for_owner(&conn, &home, "agent-1", 4000, Some(other), &[]);
     assert!(
         theirs.boot_prompt.contains("SECRET-TASK") && theirs.boot_prompt.contains("SECRET-MESSAGE"),
         "{}",

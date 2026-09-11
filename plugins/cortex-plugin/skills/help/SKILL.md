@@ -45,11 +45,13 @@ Ask naturally:
 
 ## Commands
 
-- `/cortex:status` - Show brain status (memories, daemon, mode)
-- `/cortex:recall <query>` - Search your memories
-- `/cortex:store <decision>` - Store a decision with context
+- `/cortex:status` - Show brain status (memories, local binary, mode)
+- `/cortex:recall <query>` - Search your memories (`cortex_query`)
+- `/cortex:store <decision>` - Store a decision (`cortex_commit`)
+
+Call `cortex_orient` once when a session starts. SessionStart injects that View automatically when the plugin is installed.
 
 ## Modes
 
 - **Solo mode** (default): Your brain is local at `~/.cortex/`
-- **Team mode**: Connect to a shared server with `CORTEX_URL` config
+- Live host capture: `~/.cortex/capture.json` after `cortex setup`, or `CORTEX_CAPTURE`

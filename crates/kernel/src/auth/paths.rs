@@ -13,22 +13,14 @@ pub struct CortexPaths {
     pub token: PathBuf,
     pub pid: PathBuf,
     pub lock: PathBuf,
-    pub port: u16,
-    pub bind: String,
-    pub ipc_endpoint: Option<String>,
     #[allow(dead_code)]
     pub write_buffer: PathBuf,
 }
 impl CortexPaths {
     pub fn resolve() -> Self {
-        Self::resolve_with_overrides(None, None, None, None)
+        Self::resolve_with_overrides(None, None)
     }
-    pub fn resolve_with_overrides(
-        home_override: Option<&str>,
-        db_override: Option<&str>,
-        port_override: Option<u16>,
-        bind_override: Option<&str>,
-    ) -> Self {
+    pub fn resolve_with_overrides(home_override: Option<&str>, db_override: Option<&str>) -> Self {
         let home = home_override
             .map(PathBuf::from)
             .or_else(|| std::env::var("CORTEX_HOME").ok().map(PathBuf::from))
@@ -37,34 +29,19 @@ impl CortexPaths {
             .map(PathBuf::from)
             .or_else(|| std::env::var("CORTEX_DB").ok().map(PathBuf::from))
             .unwrap_or_else(|| home.join("cortex.db"));
-        let port = port_override
-            .or_else(|| {
-                std::env::var("CORTEX_PORT")
-                    .ok()
-                    .map(|s| parse_port_or_exit(&s, "CORTEX_PORT"))
-            })
-            .unwrap_or(crate::DEFAULT_CORTEX_PORT);
-        let env_bind = std::env::var("CORTEX_BIND").ok();
-        let bind = resolve_bind(bind_override, env_bind.as_deref());
-        let ipc_endpoint = resolve_ipc_endpoint(&home, port);
         Self {
             token: home.join("cortex.token"),
             pid: home.join("cortex.pid"),
             lock: home.join("cortex.lock"),
-            ipc_endpoint,
             write_buffer: home.join("write_buffer.jsonl"),
             home,
             db,
-            port,
-            bind,
         }
     }
     pub fn resolve_from_args(args: &[String]) -> Self {
         let home = Self::find_flag(args, "--home");
         let db = Self::find_flag(args, "--db");
-        let port = Self::find_flag(args, "--port").map(|s| parse_port_or_exit(&s, "--port"));
-        let bind = Self::find_flag(args, "--bind");
-        Self::resolve_with_overrides(home.as_deref(), db.as_deref(), port, bind.as_deref())
+        Self::resolve_with_overrides(home.as_deref(), db.as_deref())
     }
     fn find_flag(args: &[String], flag: &str) -> Option<String> {
         args.iter()
@@ -73,45 +50,17 @@ impl CortexPaths {
             .cloned()
     }
     pub fn to_json(&self) -> String {
-        serde_json::json!({"home":self.home.display().to_string(),"db":self.db.
-display().to_string(),"token":self.token.display().to_string(),"pid":self.pid.display().to_string(),"port":self.port,"bind":&self.
-bind,"ipc_endpoint":self.ipc_endpoint.clone(),"ipc_kind":if self.ipc_endpoint.is_some(){Some(default_ipc_kind())}else{None},})
+        serde_json::json!({
+            "home": self.home.display().to_string(),
+            "db": self.db.display().to_string(),
+            "token": self.token.display().to_string(),
+            "pid": self.pid.display().to_string(),
+        })
         .to_string()
     }
-}
-fn normalize_bind(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-fn resolve_bind(bind_override: Option<&str>, env_bind: Option<&str>) -> String {
-    bind_override
-        .and_then(normalize_bind)
-        .or_else(|| env_bind.and_then(normalize_bind))
-        .unwrap_or_else(|| "127.0.0.1".to_string())
-}
-/// A port that does not parse or is 0 is a configuration error, never a
-/// silent fallback: every client resolves the same way, so a typo would make
-/// the whole system self-consistently wrong versus user intent.
-pub fn parse_port(raw: &str) -> Result<u16, String> {
-    match raw.trim().parse::<u16>() {
-        Ok(0) => Err(format!(
-            "port must be 1-65535, got 0 (ephemeral binds are not addressable by clients)"
-        )),
-        Ok(port) => Ok(port),
-        Err(_) => Err(format!("port must be 1-65535, got {raw:?}")),
-    }
-}
-fn parse_port_or_exit(raw: &str, source: &str) -> u16 {
-    match parse_port(raw) {
-        Ok(port) => port,
-        Err(err) => {
-            eprintln!("[cortex] invalid {source}: {err}");
-            std::process::exit(2);
-        }
+    /// Operator-owned live capture sidecar. `CORTEX_CAPTURE` overrides this file.
+    pub fn capture_sidecar(&self) -> PathBuf {
+        self.home.join("capture.json")
     }
 }
 pub fn default_home_root() -> PathBuf {
@@ -119,37 +68,6 @@ pub fn default_home_root() -> PathBuf {
         .or_else(|_| std::env::var("HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
-}
-fn default_ipc_kind() -> &'static str {
-    if cfg!(windows) {
-        "named-pipe"
-    } else {
-        "unix-socket"
-    }
-}
-fn env_truthy(key: &str) -> bool {
-    std::env::var(key).ok().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
-}
-fn resolve_ipc_endpoint(home: &std::path::Path, port: u16) -> Option<String> {
-    if env_truthy("CORTEX_DISABLE_IPC") {
-        return None;
-    }
-    if let Ok(raw) = std::env::var("CORTEX_IPC_ENDPOINT") {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-    if cfg!(windows) {
-        return Some(format!(r"\\.\pipe\cortex-daemon-{port}"));
-    }
-    let socket = home.join("runtime").join(format!("cortexd-{port}.sock"));
-    Some(socket.display().to_string())
 }
 #[cfg(unix)]
 pub fn restrict_file_to_owner(path: &Path) -> std::io::Result<()> {

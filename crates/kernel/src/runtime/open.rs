@@ -65,6 +65,9 @@ pub struct BootInput {
     pub agent: String,
     pub max_tokens: usize,
     pub owner_id: Option<i64>,
+    /// Project roots for this boot. Explicitly scoped facts from a foreign
+    /// root are omitted; unscoped rows stay.
+    pub paths: Vec<String>,
 }
 
 /// Inputs of one Lens call over the library boundary.
@@ -78,6 +81,8 @@ pub struct LensInput {
     pub symbols: Vec<String>,
     pub as_of: Option<String>,
     pub owner_id: Option<i64>,
+    /// Thread/session label forwarded to the task clock.
+    pub thread: Option<String>,
 }
 
 /// An open brain. Cloning shares the same connections; opening twice on the
@@ -106,8 +111,6 @@ impl CortexRuntime {
         let paths = CortexPaths::resolve_with_overrides(
             Some(&home.to_string_lossy()),
             Some(&db_path.to_string_lossy()),
-            None,
-            None,
         );
         Self::open(&paths)
     }
@@ -144,6 +147,22 @@ impl CortexRuntime {
         agent: &str,
         owner_id: Option<i64>,
     ) -> Result<DepositOutcome, CortexError> {
+        self.deposit_with_scope(cx, request_id, idempotency_key, text, agent, owner_id, &[], None)
+            .await
+    }
+
+    /// Deposit with caller project/thread scope projected onto the row.
+    pub async fn deposit_with_scope(
+        &self,
+        cx: &Cx,
+        request_id: &str,
+        idempotency_key: Option<&str>,
+        text: &str,
+        agent: &str,
+        owner_id: Option<i64>,
+        paths: &[String],
+        thread: Option<&str>,
+    ) -> Result<DepositOutcome, CortexError> {
         let mut conn = self.state.db.lock(cx).await?;
         Ok(deposit_decision(
             &mut conn,
@@ -162,6 +181,8 @@ impl CortexRuntime {
                 ttl_seconds: None,
                 retention_class: None,
                 anchors: Vec::new(),
+                paths: paths.to_vec(),
+                thread: thread.map(str::to_string),
                 fields: None,
                 owner_id,
                 benchmark: false,
@@ -192,6 +213,7 @@ impl CortexRuntime {
             &input.agent,
             max_tokens,
             owner,
+            &input.paths,
         ))
     }
 
@@ -201,6 +223,7 @@ impl CortexRuntime {
         ctx.paths = input.paths;
         ctx.symbols = input.symbols;
         ctx.as_of = input.as_of;
+        ctx.session_id = input.thread;
         let budget = if input.budget == 0 { 320 } else { input.budget };
         let k = if input.k == 0 { 8 } else { input.k };
         execute_unified_recall(

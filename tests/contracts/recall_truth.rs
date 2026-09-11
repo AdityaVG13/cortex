@@ -1,6 +1,6 @@
 //! Recall truth is a kernel contract; URL encoding and HTTP status checks retired.
-use cortex_daemon::handlers::store::store_decision_with_ttl;
-use cortex_daemon::{runtime::LensInput, CortexRuntime};
+use cortex_kernel::handlers::store::store_decision_with_ttl;
+use cortex_kernel::{runtime::LensInput, CortexRuntime};
 use cortex_tests::support::{run_with_cx, solo_state};
 use serde_json::json;
 

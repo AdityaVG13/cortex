@@ -7,8 +7,6 @@ pub(crate) fn redact_private_runtime_details(payload: &mut Value) {
         runtime.remove("db_path");
         runtime.remove("token_path");
         runtime.remove("pid_path");
-        runtime.remove("ipc_endpoint");
-        runtime.remove("ipc_kind");
         runtime.remove("executable");
         runtime.remove("owner");
     }
@@ -34,7 +32,7 @@ pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, inc
         let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).unwrap_or(0);
         let ev: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap_or(0);
         let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0)).unwrap_or(0);
-        let retrieval = crate::handlers::recall::clock_health_payload(&conn);
+        let retrieval = cortex_kernel::handlers::recall::clock_health_payload(&conn);
         (m, d, e, ev, freelist, retrieval)
     };
     let (storage_bytes, backup_count, log_bytes, heavy_metrics_source, cache_age_secs) = {
@@ -77,8 +75,6 @@ pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, inc
     let degraded = state.degraded_mode.load(std::sync::atomic::Ordering::Relaxed);
     let db_corrupted = state.db_corrupted.load(std::sync::atomic::Ordering::Relaxed);
     let executable = std::env::current_exe().ok().map(|path| path.display().to_string()).unwrap_or_default();
-    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
-    let ipc_kind = if ipc_endpoint.is_some() { Some(if cfg!(windows) { "named-pipe" } else { "unix-socket" }) } else { None };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
     let budgets = state
         .rate_limiter
@@ -120,12 +116,9 @@ pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, inc
         "runtime": {
             "version": env!("CARGO_PKG_VERSION"),
             "mode": if state.team_mode { "team" } else { "solo" },
-            "port": state.port,
             "db_path": state.db_path.display().to_string(),
             "token_path": state.token_path.display().to_string(),
             "pid_path": state.pid_path.display().to_string(),
-            "ipc_endpoint": ipc_endpoint,
-            "ipc_kind": ipc_kind,
             "executable": executable,
             "owner": daemon_owner
         }
@@ -138,13 +131,21 @@ pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, inc
 pub fn build_readiness_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
     let executable = std::env::current_exe().ok().map(|path| path.display().to_string()).unwrap_or_default();
     let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
-    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
-    let ipc_kind = if ipc_endpoint.is_some() { Some(if cfg!(windows) { "named-pipe" } else { "unix-socket" }) } else { None };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
-    let mut payload = json!({"status":if ready{"ready"}else{"starting"},"ready":ready,"runtime":{"version":env!(
-"CARGO_PKG_VERSION"),"mode":if state.team_mode{"team"}else{"solo"},"port":state.port,"db_path":state.db_path.display().to_string()
-,"token_path":state.token_path.display().to_string(),"pid_path":state.pid_path.display().to_string(),"ipc_endpoint":ipc_endpoint,
-"ipc_kind":ipc_kind,"executable":executable,"owner":daemon_owner},"stats":{"home":state.home.display().to_string()}});
+    let mut payload = json!({
+        "status": if ready { "ready" } else { "starting" },
+        "ready": ready,
+        "runtime": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "mode": if state.team_mode { "team" } else { "solo" },
+            "db_path": state.db_path.display().to_string(),
+            "token_path": state.token_path.display().to_string(),
+            "pid_path": state.pid_path.display().to_string(),
+            "executable": executable,
+            "owner": daemon_owner
+        },
+        "stats": { "home": state.home.display().to_string() }
+    });
     if !include_private_runtime {
         redact_private_runtime_details(&mut payload);
     }

@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 cortex-daemon = { path = "../crates/daemon" }
 cortex-kernel = { path = "../crates/kernel" }
+cortex-logic = { path = "../crates/logic" }
 asupersync = "0.4.10"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3.27"
@@ -254,3 +255,7 @@ path = "contracts/host_capture.rs"
 [[test]]
 name = "observation_associations"
 path = "contracts/observation_associations.rs"
+
+[[test]]
+name = "assembly"
+path = "contracts/assembly.rs"

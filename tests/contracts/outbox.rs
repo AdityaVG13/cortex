@@ -3,14 +3,14 @@
 //! is idempotent and generation-checked; debt is visible and hard debt
 //! refuses intake; telemetry is pruned; brain health is semantic.
 
-use cortex_daemon::db::outbox::{
+use cortex_kernel::db::outbox::{
     claim_next, complete, debt, enqueue_for_commit, maintain_slice, prune_telemetry,
     DEBT_HARD_LIMIT_JOBS, FEED_MAX_ROWS,
 };
-use cortex_daemon::db::records::append_commit;
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::store_spi::sqlite::SqliteStore;
-use cortex_daemon::store_spi::BrainStore;
+use cortex_kernel::db::records::append_commit;
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::store_spi::sqlite::SqliteStore;
+use cortex_kernel::store_spi::BrainStore;
 use cortex_tests::support::{open_file_db, solo_state, test_conn};
 use serde_json::json;
 
@@ -105,7 +105,7 @@ fn hard_debt_refuses_intake_with_an_actionable_error() {
         let state = solo_state();
         {
             let conn = state.db.lock(cx).await.unwrap();
-            cortex_daemon::db::records::ensure_authoritative_schema(&conn).unwrap();
+            cortex_kernel::db::records::ensure_authoritative_schema(&conn).unwrap();
             let seq = append_commit(&conn, "solo", None, "process_crash").unwrap();
             let mut stmt = conn.prepare("INSERT INTO outbox (job_id, commit_sequence, job_kind, state, generation, payload_json, attempts) VALUES (?1, ?2, ?3, 'pending', 0, '{}', 0)").unwrap();
             for i in 0..DEBT_HARD_LIMIT_JOBS {
@@ -153,7 +153,7 @@ fn hard_debt_refuses_intake_with_an_actionable_error() {
 #[test]
 fn telemetry_is_pruned_as_its_own_retention_class() {
     let conn = test_conn();
-    cortex_daemon::db::records::ensure_authoritative_schema(&conn).unwrap();
+    cortex_kernel::db::records::ensure_authoritative_schema(&conn).unwrap();
     for i in 0..(FEED_MAX_ROWS + 50) {
         conn.execute("INSERT INTO feed (id, agent, kind, summary, timestamp) VALUES (?1, 'a', 'note', 'x', ?2)", rusqlite::params![format!("f{i}"), format!("2026-09-05T00:00:{:02}.{:03}Z", (i / 1000) % 60, i % 1000)]).unwrap();
     }

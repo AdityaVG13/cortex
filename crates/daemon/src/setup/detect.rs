@@ -6,14 +6,14 @@ pub(crate) fn step_detect() -> Vec<DetectedTool> {
     if let Some(config_path) = find_claude_code_config() {
         found.push(DetectedTool {
             name: "Claude Code",
-            agent_name: "claude",
+            agent_name: "claude-code",
             config_path: Some(config_path),
             config_method: ConfigMethod::JsonMerge,
         });
     } else if command_exists("claude") {
         found.push(DetectedTool {
             name: "Claude Code",
-            agent_name: "claude",
+            agent_name: "claude-code",
             config_path: None,
             config_method: ConfigMethod::CliCommand { program: "claude", args: &["mcp", "add", "cortex", "-s", "user", "--"] },
         });

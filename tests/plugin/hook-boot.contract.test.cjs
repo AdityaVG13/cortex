@@ -54,8 +54,10 @@ test('successful local hook-boot relays stdout verbatim', () => {
   fs.writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const lines = [];
   const calls = [];
+  const stdin = '{"hook_event_name":"SessionStart","cwd":"/tmp/repo","session_id":"s-1"}';
   const result = runHookBoot({
     env: emptyHomeEnv({ CORTEX_APP_BINARY: binaryPath, CORTEX_PLUGIN_AGENT: 'codex' }),
+    stdin,
     spawnSyncImpl: (binary, args, opts) => {
       calls.push({ binary, args, opts });
       return {
@@ -69,6 +71,7 @@ test('successful local hook-boot relays stdout verbatim', () => {
 
   assert.equal(result.ok, true);
   assert.deepEqual(calls[0].args, ['hook-boot', '--agent', 'codex']);
+  assert.equal(calls[0].opts.input, stdin);
   assert.equal(
     lines.join('').trim(),
     '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"boot"}}'

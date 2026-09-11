@@ -1,9 +1,8 @@
-//! `cortex hook-event <kind>`: the native in-process hook entry. Reads the
-//! host's event payload from stdin, builds an `EventFrame` under the plugin
-//! manifest, decides via the pure protocol, and executes the decision
-//! against the brain opened directly (no daemon required). The host sees a
-//! hookSpecificOutput envelope plus a `cortex` block that states exactly what
-//! was observed, decided, captured and delivered.
+//! `cortex hook <kind>`: the live observation entry. Reads the host payload
+//! from stdin. When `CORTEX_CAPTURE` or `$CORTEX_HOME/capture.json` selects
+//! this event, it captures and prepares through `host_capture`. Missing or
+//! non-matching sidecars stay silent. CQR orient / deposit / checkpoint stay
+//! on `process()`, `cortex hook-boot`, `cortex op`, and MCP.
 
 use crate::adapter::{
     CapabilityManifest, EventFrame, EventKind, HookDecision, HookOutcome, SnapshotState, decide,
@@ -105,6 +104,9 @@ pub fn frame_from_host(
         Some(EventKind::PromptDelta | EventKind::NewTurn) => s(payload, &["prompt", "user_prompt"])
             .unwrap_or("")
             .to_string(),
+        Some(EventKind::SessionStart) => s(payload, &["prompt", "cwd", "source"])
+            .unwrap_or("")
+            .to_string(),
         _ => String::new(),
     };
     let needs = match kind {
@@ -133,6 +135,70 @@ pub fn frame_from_host(
         commit_required: kind == Some(EventKind::Compaction),
         capabilities: manifest,
     }
+}
+
+fn looks_like_fs_path(s: &str) -> bool {
+    s.contains('/') || s.contains('\\')
+}
+
+/// Ticket stem inside a path leaf (`SESSIONSTART-1-project` → `SESSIONSTART-1`).
+/// This is host cue expansion, not CQR hard-handle admission.
+fn ticket_stem(segment: &str) -> Option<String> {
+    let mut parts = segment.split('-');
+    let prefix = parts.next()?;
+    let number = parts.next()?;
+    if prefix.len() >= 2
+        && prefix.bytes().all(|b| b.is_ascii_alphabetic())
+        && !number.is_empty()
+        && number.bytes().all(|b| b.is_ascii_digit())
+    {
+        Some(format!("{prefix}-{number}"))
+    } else {
+        None
+    }
+}
+
+fn expand_cwd_cues(cwd: &str) -> String {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return String::new();
+    }
+    let mut out = vec![cwd.to_string()];
+    let segments: Vec<&str> = cwd
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .collect();
+    if let Some(leaf) = segments.last() {
+        if *leaf != cwd {
+            out.push((*leaf).to_string());
+        }
+    }
+    for segment in &segments {
+        if let Some(ticket) = ticket_stem(segment) {
+            if !out.iter().any(|s| s == &ticket) {
+                out.push(ticket);
+            }
+        }
+    }
+    out.join(" ")
+}
+
+/// Cwd-only SessionStart keeps the raw path on the frame; CQR gets the leaf,
+/// any ticket stem, and `paths: [cwd]` so a folder name can admit a project fact.
+fn session_orient_query(frame: &EventFrame) -> (String, Vec<String>) {
+    let cwd = frame.scope.trim();
+    let input = frame.input.trim();
+    let mut paths = Vec::new();
+    if !cwd.is_empty() && looks_like_fs_path(cwd) {
+        paths.push(cwd.to_string());
+    }
+    let task = if !cwd.is_empty() && looks_like_fs_path(cwd) && (input.is_empty() || input == cwd)
+    {
+        expand_cwd_cues(cwd)
+    } else {
+        frame.input.clone()
+    };
+    (task, paths)
 }
 
 /// Execute one frame against an open brain.
@@ -253,9 +319,9 @@ pub async fn process(
             Some(EventKind::SessionStart | EventKind::NewTurn | EventKind::PromptDelta),
             HookDecision::Deliver,
         ) => {
+            let (task, paths) = session_orient_query(frame);
             if let (SnapshotState::Fresh, Some(snapshot)) = (reflex_state, reflex.as_ref()) {
-                let warm =
-                    crate::reflex::level0(snapshot, &frame.input, frame.thread.as_deref(), 8);
+                let warm = crate::reflex::level0(snapshot, &task, frame.thread.as_deref(), 8);
                 result.reflex = json!({"state": reflex_state, "level0": !warm.fallback, "fallback": warm.fallback, "micros": warm.micros, "suppressed": warm.suppressed});
                 if !warm.fallback {
                     let lines: Vec<String> = warm
@@ -273,7 +339,10 @@ pub async fn process(
             } else {
                 result.reflex = json!({"state": reflex_state, "level0": false, "fallback": true});
             }
-            let args = json!({"task": frame.input, "needs": frame.needs, "budget": DELIVERY_BUDGET.min(frame.capabilities.max_delivery_bytes), "thread": frame.thread});
+            let mut args = json!({"task": task, "needs": frame.needs, "budget": DELIVERY_BUDGET.min(frame.capabilities.max_delivery_bytes), "thread": frame.thread});
+            if !paths.is_empty() {
+                args["paths"] = json!(paths);
+            }
             match dispatch(cx, runtime.state(), caller(), Operation::Orient, &args).await {
                 Ok(view) => {
                     let text = render_view(&view);
@@ -322,6 +391,25 @@ fn render_view(view: &Value) -> String {
             }
         }
     }
+    if let Some(items) = view
+        .pointer("/observations/items")
+        .and_then(Value::as_array)
+    {
+        for item in items.iter().take(6) {
+            let preview = item.get("preview").and_then(Value::as_str).unwrap_or("");
+            let expand = item.get("expand").and_then(Value::as_str).unwrap_or("");
+            if !preview.is_empty() {
+                lines.push(format!("- [obs] {preview} ({expand})"));
+            }
+        }
+    }
+    if let Some(brief) = view
+        .pointer("/assemblies/brief")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        lines.push(brief.to_string());
+    }
     if let Some(receipt) = view
         .get("receipt")
         .and_then(|r| r.get("receipt_id"))
@@ -334,7 +422,53 @@ fn render_view(view: &Value) -> String {
     lines.join("\n")
 }
 
-pub async fn run(cx: &asupersync::Cx, kind: &str, agent: &str) -> Result<(), String> {
+/// Env `CORTEX_CAPTURE` wins. Otherwise the operator sidecar at
+/// [`crate::auth::CortexPaths::capture_sidecar`]. Missing both is silent, not CQR.
+pub fn load_capture_sidecar(paths: &crate::auth::CortexPaths) -> Option<String> {
+    match std::env::var("CORTEX_CAPTURE") {
+        Ok(value) if !value.trim().is_empty() => Some(value),
+        _ => std::fs::read_to_string(paths.capture_sidecar())
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
+    }
+}
+
+/// Write the installed sidecar once. Existing operator files are left alone.
+pub fn write_installed_capture_sidecar(
+    paths: &crate::auth::CortexPaths,
+    sidecar: &Value,
+) -> Result<bool, String> {
+    let path = paths.capture_sidecar();
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("Cannot create {}: {err}", parent.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(sidecar).map_err(|err| err.to_string())?;
+    crate::auth::write_secret_file(&path, &bytes).map_err(|err| format!("Cannot write {}: {err}", path.display()))?;
+    Ok(true)
+}
+
+fn unavailable_envelope(host_event: &str, reason: &str) -> Value {
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": host_event,
+            "additionalContext": "Cortex: memory unavailable for this event. Do not assume the brain is empty."
+        },
+        "cortex": {
+            "event": null,
+            "decision": "UNAVAILABLE",
+            "reason": reason,
+            "overflow": false,
+            "presence": "unknown",
+            "automatic_capture": false,
+            "counted": false
+        }
+    })
+}
+
+pub async fn run(cx: &asupersync::Cx, kind: &str, _agent: &str) -> Result<(), String> {
     use std::io::Read;
     let limit = crate::runtime::observation::MAX_CAPTURE_BYTES;
     let mut raw = Vec::new();
@@ -343,28 +477,79 @@ pub async fn run(cx: &asupersync::Cx, kind: &str, agent: &str) -> Result<(), Str
         .take(limit as u64 + 1)
         .read_to_end(&mut raw)
         .map_err(|err| err.to_string())?;
+    if let Some(value) = run_with_paths(cx, kind, &raw, &crate::auth::CortexPaths::resolve()).await? {
+        println!("{value}");
+    }
+    Ok(())
+}
+
+/// Observation-only live hook. `None` means silent: no sidecar, or this
+/// event is not opted in. CQR stays on [`process`].
+pub async fn run_with_paths(
+    cx: &asupersync::Cx,
+    kind: &str,
+    raw: &[u8],
+    paths: &crate::auth::CortexPaths,
+) -> Result<Option<Value>, String> {
+    let limit = crate::runtime::observation::MAX_CAPTURE_BYTES;
     if raw.len() > limit {
         return Err("hook_input_byte_limit".into());
     }
     let payload: Value =
-        serde_json::from_slice(&raw).map_err(|err| format!("invalid_hook_json: {err}"))?;
-    let manifest = CapabilityManifest::claude_code_plugin();
-    let frame = frame_from_host(kind, &payload, manifest);
+        serde_json::from_slice(raw).map_err(|err| format!("invalid_hook_json: {err}"))?;
     let host_event = s(&payload, &["hook_event_name"]).unwrap_or(kind);
-    let paths = crate::auth::CortexPaths::resolve();
-    let runtime = CortexRuntime::open(&paths).map_err(|err| format!("brain unavailable: {err}"))?;
-    let result = process(cx, &runtime, agent, &frame, &payload).await?;
-    if matches!(
-        frame.kind,
-        Some(
-            EventKind::SessionStart
-                | EventKind::NewTurn
-                | EventKind::PromptDelta
-                | EventKind::ToolResult
-        )
-    ) && (!result.additional_context.is_empty() || !result.context_replace.is_empty())
-    {
-        println!("{}", result.host_envelope(host_event));
+    let Some(sidecar_raw) = load_capture_sidecar(paths) else {
+        return Ok(None);
+    };
+    let sidecar: Value = match serde_json::from_str(&sidecar_raw) {
+        Ok(value) => value,
+        Err(err) => {
+            return Ok(Some(unavailable_envelope(
+                host_event,
+                &format!("invalid capture invocation sidecar: {err}"),
+            )));
+        }
+    };
+    match crate::runtime::host_capture::resolve_host_invocation(kind, &sidecar, &payload) {
+        Ok(Some(invocation)) => {
+            let runtime =
+                CortexRuntime::open(paths).map_err(|err| format!("brain unavailable: {err}"))?;
+            let (_receipt, view) = runtime
+                .capture_and_prepare_host(
+                    cx,
+                    &invocation.grant,
+                    &invocation.context,
+                    raw,
+                    &invocation.invocation_context,
+                    invocation.present.as_deref(),
+                )
+                .await?;
+            if let Some(view) = view {
+                let mut context = String::new();
+                if view.status == "ready" && !view.payload.is_empty() {
+                    context.push_str(&view.payload);
+                }
+                if !view.assembly_brief.is_empty() {
+                    if !context.is_empty() {
+                        context.push('\n');
+                    }
+                    context.push_str(&view.assembly_brief);
+                }
+                if !context.is_empty() {
+                    return Ok(Some(json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": host_event,
+                            "additionalContext": context
+                        }
+                    })));
+                }
+            }
+            Ok(None)
+        }
+        Ok(None) => Ok(None),
+        Err(err) => Ok(Some(unavailable_envelope(
+            host_event,
+            &format!("invalid capture invocation sidecar: {err}"),
+        ))),
     }
-    Ok(())
 }

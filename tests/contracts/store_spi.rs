@@ -2,10 +2,10 @@
 //! reference store. Failure-first: each law names the behavior a wrong
 //! backend would violate.
 
-use cortex_daemon::protocol::{LogicalId, PayloadAvailability};
-use cortex_daemon::runtime::{CortexRuntime, LensInput};
-use cortex_daemon::store_spi::sqlite::SqliteStore;
-use cortex_daemon::store_spi::{
+use cortex_logic::protocol::{LogicalId, PayloadAvailability};
+use cortex_kernel::runtime::{CortexRuntime, LensInput};
+use cortex_kernel::store_spi::sqlite::SqliteStore;
+use cortex_kernel::store_spi::{
     BrainStore, CandidateProfile, Durability, Op, Predicate, ReadSnapshot, ScanLimits,
     StoreSpiError, WriteIntent, WriteTransaction,
 };

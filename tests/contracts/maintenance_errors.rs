@@ -27,9 +27,9 @@
 //! compile-error red against pre-fix code; failures there are additive
 //! visibility and never change what the purge counts).
 
-use cortex_daemon::aging;
-use cortex_daemon::compaction;
-use cortex_daemon::db::{initialize_schema, run_pending_migrations_quiet};
+use cortex_kernel::aging;
+use cortex_kernel::compaction;
+use cortex_kernel::db::{initialize_schema, run_pending_migrations_quiet};
 use rusqlite::Connection;
 
 fn open_fresh_db() -> Connection {

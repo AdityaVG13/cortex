@@ -1,4 +1,4 @@
-use crate::constants::{CONTROL_CENTER_LOCK_FILE, CONTROL_CENTER_OWNER_TAG, DEFAULT_DAEMON_PORT, LOCAL_DAEMON_LOCK_WAIT_SECS};
+use crate::constants::{CONTROL_CENTER_LOCK_FILE, CONTROL_CENTER_OWNER_TAG, LOCAL_DAEMON_LOCK_WAIT_SECS};
 use crate::daemon::paths::{default_cortex_dir, is_disallowed_daemon_binary_path, resolved_cortex_paths};
 use crate::daemon::process::apply_hidden_daemon_process_flags;
 use fs2::FileExt;
@@ -71,8 +71,6 @@ impl DaemonState {
         let paths = resolved_cortex_paths();
         let home = paths.home.clone().ok_or_else(|| "Could not resolve Cortex home path for app-managed local mode.".to_string())?;
         let db = paths.db.clone().ok_or_else(|| "Could not resolve Cortex database path for app-managed local mode.".to_string())?;
-        let bind = "127.0.0.1".to_string();
-        let port = paths.port.unwrap_or(DEFAULT_DAEMON_PORT);
 
         let mut command = Command::new(&exe_path);
         command
@@ -81,10 +79,6 @@ impl DaemonState {
             .arg(home.display().to_string())
             .arg("--db")
             .arg(db.display().to_string())
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("--bind")
-            .arg(bind)
             .env("CORTEX_DAEMON_OWNER", CONTROL_CENTER_OWNER_TAG)
             .env("CORTEX_DAEMON_OWNER_SOURCE", "control-center-app")
             .env("CORTEX_DAEMON_OWNER_MODE", "app-managed-local")

@@ -1,5 +1,5 @@
-//! V5 intake: source authorization, exact occurrences, and atomic source cursors.
-use cortex_daemon::runtime::{
+//! Intake: source authorization, exact occurrences, and atomic source cursors.
+use cortex_kernel::runtime::{
     CortexRuntime,
     observation::{ObservationEvent, SourceSpec},
 };
@@ -32,7 +32,7 @@ fn file_import_preserves_exact_registered_source_and_reports_sql_failure() {
             .unwrap();
         let conn = runtime.state().db.lock(&cx).await.unwrap();
         assert_eq!(
-            cortex_daemon::indexer::index_all(&conn, home.path(), None).unwrap(),
+            cortex_kernel::indexer::index_all(&conn, home.path(), None).unwrap(),
             1
         );
         let captured: Vec<Vec<u8>> = conn
@@ -48,7 +48,7 @@ fn file_import_preserves_exact_registered_source_and_reports_sql_failure() {
             "indexer must retain the entire registered source, not selected sections or previews"
         );
         assert_eq!(
-            cortex_daemon::indexer::index_all(&conn, home.path(), None).unwrap(),
+            cortex_kernel::indexer::index_all(&conn, home.path(), None).unwrap(),
             1
         );
         let count: i64 = conn
@@ -60,7 +60,7 @@ fn file_import_preserves_exact_registered_source_and_reports_sql_failure() {
         );
         conn.execute_batch("CREATE TEMP TRIGGER deny_file_capture BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT, 'file capture rejected'); END;").unwrap();
         std::fs::write(&path, format!("{text}changed\n")).unwrap();
-        let result = cortex_daemon::indexer::index_all(&conn, home.path(), None);
+        let result = cortex_kernel::indexer::index_all(&conn, home.path(), None);
         assert!(
             format!("{result:?}").contains("file capture rejected"),
             "SQL failure must reach caller: {result:?}"
@@ -73,7 +73,7 @@ fn file_import_preserves_exact_registered_source_and_reports_sql_failure() {
             "failed revision must roll back receipt and source"
         );
         assert_eq!(
-            cortex_daemon::indexer::index_file(&conn, &path, Some(7)).unwrap_err(),
+            cortex_kernel::indexer::index_file(&conn, &path, Some(7)).unwrap_err(),
             "source_not_authorized"
         );
         drop(conn);
@@ -510,9 +510,18 @@ fn cli_capture_roundtrip_and_checkpoint_stdout_are_quiet_when_requested() {
     );
     assert!(present.status.success());
     assert!(present.stdout.is_empty());
-    let checkpoint = invoke(
+    let removed = invoke(
         &home,
         &["hook-event", "PreCompact"],
+        br#"{"hook_event_name":"PreCompact","session_id":"capture-test"}"#,
+    );
+    assert!(
+        !removed.status.success(),
+        "hook-event is not a command; the live host entry is hook"
+    );
+    let checkpoint = invoke(
+        &home,
+        &["hook", "PreCompact"],
         br#"{"hook_event_name":"PreCompact","session_id":"capture-test"}"#,
     );
     assert!(

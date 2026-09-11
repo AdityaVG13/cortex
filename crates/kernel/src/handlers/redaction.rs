@@ -9,6 +9,7 @@ static GITHUB_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static SLACK_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static AWS_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static GENERIC_SECRET_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
+static AUTHORIZATION_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 
 pub fn redact_secrets(text: &str) -> String {
     let bearer = BEARER_REDACTION_RE
@@ -46,11 +47,16 @@ pub fn redact_secrets(text: &str) -> String {
         .as_ref()
         .map(|re| re.replace_all(&slack, "[redacted]").to_string())
         .unwrap_or(slack);
-    GENERIC_SECRET_REDACTION_RE
+    let generic = GENERIC_SECRET_REDACTION_RE
         .get_or_init(|| {
             Regex::new(r#"(?i)(?:api[_-]?key|secret|token)\s*[:=]\s*["']?[A-Za-z0-9_\-]{20,}"#).ok()
         })
         .as_ref()
         .map(|re| re.replace_all(&aws, "[redacted]").to_string())
-        .unwrap_or(aws)
+        .unwrap_or(aws);
+    AUTHORIZATION_REDACTION_RE
+        .get_or_init(|| Regex::new(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+").ok())
+        .as_ref()
+        .map(|re| re.replace_all(&generic, "[redacted]").to_string())
+        .unwrap_or(generic)
 }

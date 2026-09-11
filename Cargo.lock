@@ -593,6 +593,7 @@ dependencies = [
  "asupersync",
  "cortex-daemon",
  "cortex-kernel",
+ "cortex-logic",
  "proptest",
  "rusqlite",
  "serde",

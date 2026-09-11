@@ -4,9 +4,9 @@
 //! it; history/audit profiles search the cold partition and the watermark
 //! says so; other profiles disclose it as not searched.
 
-use cortex_daemon::db::cold::{cold_count, decode, encode, hydrate, move_to_cold};
-use cortex_daemon::handlers::operations::{dispatch, Caller, Operation};
-use cortex_daemon::handlers::recall::{unfold_source, RecallContext};
+use cortex_kernel::db::cold::{cold_count, decode, encode, hydrate, move_to_cold};
+use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
+use cortex_kernel::handlers::recall::{unfold_source, RecallContext};
 use cortex_tests::support::{solo_state, test_conn};
 use serde_json::json;
 
@@ -37,7 +37,7 @@ fn durable_low_score_rows_are_never_archived_by_the_aging_gc() {
     let conn = test_conn();
     conn.execute("INSERT INTO decisions (decision, type, source_agent, status, retention_class, score, pinned, last_accessed, created_at) VALUES ('rare old durable constraint', 'constraint', 'a', 'active', 'durable', 0.01, 0, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')", []).unwrap();
     conn.execute("INSERT INTO memories (text, type, source_agent, status, retention_class, score, pinned, last_accessed, created_at) VALUES ('stale operational chatter', 'note', 'a', 'active', 'operational', 0.01, 0, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')", []).unwrap();
-    let report = cortex_daemon::aging::run_aging_pass(&conn);
+    let report = cortex_kernel::aging::run_aging_pass(&conn);
     assert!(report.failures.is_empty(), "{:?}", report.failures);
     let durable: String = conn
         .query_row(
@@ -85,7 +85,7 @@ fn archived_rows_move_to_a_cold_segment_and_stay_recoverable_and_findable() {
             let conn = state.db.lock(cx).await.unwrap();
             conn.execute("UPDATE decisions SET status = 'archived', updated_at = '2020-01-01T00:00:00Z' WHERE id = ?1", [id]).unwrap();
             let mut failures = Vec::new();
-            let moved = cortex_daemon::compaction::strip_archived_text_with_retention_for_test(
+            let moved = cortex_kernel::compaction::strip_archived_text_with_retention_for_test(
                 &conn,
                 &mut failures,
                 30,

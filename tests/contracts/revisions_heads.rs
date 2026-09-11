@@ -6,10 +6,10 @@
 #[path = "../support/mod.rs"]
 mod support;
 
-use cortex_daemon::db::records::{
+use cortex_kernel::db::records::{
     append_commit, append_revision, heads, import_legacy, resolve_heads, revision_body, NewRevision,
 };
-use cortex_daemon::runtime::CortexRuntime;
+use cortex_kernel::runtime::CortexRuntime;
 use cortex_tests::cortex_bin;
 use cortex_tests::support::{solo_state, test_conn};
 use rusqlite::Connection;
@@ -51,7 +51,7 @@ fn migration_creates_authoritative_tables_without_touching_legacy_rows() {
         "erasures",
     ] {
         assert!(
-            cortex_daemon::db::table_exists(&conn, table),
+            cortex_kernel::db::table_exists(&conn, table),
             "missing {table}"
         );
     }

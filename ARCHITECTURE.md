@@ -2,7 +2,7 @@
 
 Cortex is a private, local-first memory library for AI tools. `cortex-kernel` owns SQLite semantics; the `cortex` executable provides in-process CLI, hooks and MCP stdio. Asupersync owns runtime capabilities, locks, channels and timers. No HTTP listener or proxy is built. The separate Control Center and HTTP SDKs are legacy clients for earlier tagged releases, not clients of this runtime.
 
-Clock-Quorum Recall (CQR) remains the production semantic retrieval engine. The unreleased V5 observation path adds separately labeled exact any-cue retrieval; it does not promote captured prose into CQR facts. The daemon does not download, load, or run language, embedding, or reranking models. Older databases may still contain inert `embeddings` rows; they are not read. `~/.cortex/models` is neither required nor created.
+Clock-Quorum Recall (CQR) is the explicit semantic engine (`cortex op`, `cortex boot`, MCP commit/query). Host hooks use the observation cycle: exact attributed capture and any-cue preparation. Observation does not promote captured prose into CQR facts. The daemon does not download, load, or run language, embedding, or reranking models. Older databases may still contain inert `embeddings` rows; they are not read. `~/.cortex/models` is neither required nor created.
 
 Current version: **0.6.0**.
 
@@ -42,13 +42,17 @@ Local process/file access is the trust boundary. Async APIs receive the host-own
 
 ---
 
-## V5 observation cycle (unreleased)
+## Automatic observation cycle
 
-`runtime/observation.rs` owns explicit source grants and atomic occurrence/cursor/receipt intake. `inventory.rs` snapshots registered file candidates and resumes bounded base population without crawling unregistered paths. `cycle.rs` maintains scoped postings and reverse any-cue subscriptions, revalidates current source permissions on reads, and qualifies delivery against coverage, size limits and explicit context presence. Exact sources remain independently retrievable after derived-index replacement or retraction.
+Host live events enter through one command: `cortex hook <kind>`. The plugin script only resolves the binary and relays stdin/stdout. `CORTEX_CAPTURE` is read inside that command. If the sidecar selects this event, the kernel runs `host_capture` (exact intake + prepare). If the sidecar omits this event, or is unset, the command stays silent. CQR orient / tool-result deposit / checkpoint stay on `cortex hook-boot`, `process()`, `cortex op`, and MCP. There is no `hook-event` command and no second env name for the sidecar.
 
-`host_capture.rs` provides a version-pinned Claude-shaped fixture subset and an origin firewall for live/history overlap. The optional plugin invocation sidecar selects capture-and-prepare without model-generated memory commands; missing native identities and unresolved origin fail closed. `associations.rs` adds opt-in lineage-deduplicated local routes and reversible named usefulness assessments. Learned navigation neither changes source authority nor proves causal utility.
+`cortex capture` is the operator surface for the same observation store: register/enable/put/tail/file/get, inventory/bootstrap/reconcile, subscribe/prepare/query/require, and flagged `host-register` / `host-put` / `host-tail` / `host-cycle`. `host-cycle` is the explicit-flag form used by operators and contracts; the plugin does not spawn it.
 
-These surfaces have native contract coverage, not installed-host or reader-quality certification. The CLI is `cortex capture`; see README and `crates/kernel/CONTRACT.md` for commands, bounds and no-claim boundaries. No host configuration is automatically installed, and no full V5 release-performance or power-loss claim follows from transactional fixtures.
+`runtime/observation.rs` owns source grants and atomic occurrence/cursor/receipt intake. `inventory.rs` snapshots registered file candidates, resumes bounded bootstrap, and reconciles a sealed revision against later grants without adding those grants to the old denominator. `cycle.rs` maintains scoped postings and reverse any-cue subscriptions, applies exclude cues, walks required-child closure, revalidates current source permissions on reads, and qualifies delivery against coverage, size limits and explicit context presence.
+
+`host_capture.rs` accepts the fixture string-tool subset plus structured Bash, Read, Edit, Write and MultiEdit reports. PreToolUse prepares from tool input and does not store the request. PreCompact records a silent checkpoint. Origin policy is operator-owned, never parsed from hook stdin as authority. `associations.rs` is opt-in local routing with reversible named usefulness assessments. `assembly.rs` stores exact revision membership plus an attributed learning ledger; cue routes stay off until rebuild and never change epistemic status. After rebuild, `orient` / `query` compile evidence-closed assembly bundles next to CQR Cards, and hooks inject that brief. Learned navigation neither changes source authority nor proves causal utility.
+
+These surfaces have native contract coverage, not installed-host or reader-quality certification. See README and `crates/kernel/CONTRACT.md` for bounds and no-claim language.
 
 ## Two layers of truth
 
@@ -92,7 +96,9 @@ Projection extracts inspectable handles from the text (and from explicit `paths`
 - Morphological variants of term anchors (`cache` also stores `caching`)
 - Path ancestors (`src/auth.rs` also evidence-links `src`)
 
-Origin is `explicit` if the client sent anchors, else `deterministic_extract`. Query expansion on read never writes new facts.
+Origin is `explicit` if the client sent anchors or project `paths` / `thread`, else `deterministic_extract`. Query expansion on read never writes new facts.
+
+A query or boot that names project paths treats those explicit roots as a filter: a fact stored under `/Users/x/repoa` is ineligible for `/Users/x/repob`. A fact with no stored root stays eligible (ignorance never demotes). The same paths are a hard task-clock, so a cwd-only orient can admit the repo's facts without a ticket in the sentence.
 
 ---
 
@@ -194,28 +200,50 @@ Three independent gates, all SQL:
 
 ## Crate map
 
+Three Rust crates. Brain types live in `cortex-kernel` or `cortex-logic`. Import those crates directly. `cortex-daemon` is the process edge only (CLI, MCP stdio, plugin spawn, setup).
+
 ```text
-crates/logic/src/clockwork/
-  anchors.rs        kinds, extraction, morph variants on persist
-  query.rs          QueryFrame, temporal mode
-  morph.rs          stem / variants / hay_has_lexical
-  bridge.rs         expand_query_frame
-  evidence.rs       ClockEvidence, ClockWhy
-  quorum.rs         admit + RankKey
-  links.rs          project, hops, used_with, DDL
+cortex-logic          pure types, no SQLite
+  adapter             EventKind, decide(), hook protocol
+  clockwork/          CQR admit math: anchors, query, morph, quorum, links
+  capture             deterministic tool-result facts
+  protocol, traces, conflict, graph, lens, budgets, presence, recipe, eval
 
-crates/logic/src/graph/     entities, closed synonym clusters
-crates/logic/src/traces/    traces, versions, HEAD
-crates/logic/src/conflict/  Jaccard classes
+cortex-kernel         the brain (SQLite + engines)
+  runtime/open        CortexRuntime::open / deposit / lens / boot
+  runtime/observation exact source grants, observe, tail, get
+  runtime/cycle       needs, prepare, require, exclude
+  runtime/inventory   file inventory, bootstrap, reconcile
+  runtime/host_capture host shapes, origin firewall, hook sidecar resolve
+  runtime/associations opt-in learned routes
+  runtime/assembly    exact membership, learning ledger, opt-in cue routes
+  runtime/deposit     CQR fact write
+  hook_event          cortex hook: observation only; CQR stays on process() / hook-boot
+  handlers/           store, recall (CQR SQL), operations, redaction
+  compiler, db, reflex, indexer, crystallize, compaction, store_spi
 
-crates/kernel/src/handlers/recall/engine_clockwork.rs   six arms + gates
-crates/kernel/src/handlers/store/                       write + project
-crates/kernel/src/compiler/                             boot pack
-crates/kernel/src/db/                                   schema, FTS, migrations
-crates/kernel/src/runtime/                              CortexRuntime (embed entry)
+cortex-daemon         process edge only
+  main + cli/         cortex binary: capture, hook, boot, op, mcp, serve
+  mcp_native          MCP stdio
+  hook_boot           SessionStart orient
+  setup, prompt_inject
+  handlers/mcp        MCP dispatch
+
+cortex-tests          public contracts in tests/contracts/
+plugins/cortex-plugin hook-event.cjs -> cortex hook <kind>
+                      hook-boot.cjs  -> cortex hook-boot
 ```
 
-Admission math lives in `cortex-logic`. Candidate SQL lives in the kernel; the daemon only adds transport. Rebuild projections without changing admit.
+Host vs operator:
+
+| Intent | Command |
+|--------|---------|
+| Live host event | `cortex hook <kind>` (plugin always) |
+| SessionStart CQR boot | `cortex hook-boot` |
+| Observation admin | `cortex capture …` |
+| Semantic CQR | `cortex op`, `cortex boot`, MCP |
+
+Admission math lives in `cortex-logic`. Candidate SQL lives in the kernel. Rebuild projections without changing admit.
 
 ---
 
@@ -223,27 +251,19 @@ Admission math lives in `cortex-logic`. Candidate SQL lives in the kernel; the d
 
 | Source | Fields |
 |--------|--------|
-| CLI | `--home`, `--db`, `--port`, `--bind` |
-| Environment | `CORTEX_HOME`, `CORTEX_DB`, `CORTEX_PORT`, `CORTEX_BIND` |
-| Defaults | `~/.cortex`, `cortex.db`, `cortex.token`, port `7437` |
+| CLI | `--home`, `--db` |
+| Environment | `CORTEX_HOME`, `CORTEX_DB`, `CORTEX_CAPTURE` (live hook sidecar) |
+| Defaults | `~/.cortex`, `cortex.db` |
 | Budgets | `~/.cortex/budgets.toml` |
 
 Operator-critical environment variables (meanings derived from the definition sites):
 
 | Variable | Meaning |
 |----------|---------|
-| `CORTEX_HOME` | Root of all state: db, token, pid, lock, tls (`auth/keys.rs:9`) |
-| `CORTEX_DB` | SQLite database path override (`auth/paths.rs:33`) |
-| `CORTEX_PORT` | Daemon listen port; default `7437` (`auth/paths.rs:36`) |
-| `CORTEX_BIND` | Daemon bind address; default localhost (`auth/paths.rs:38`) |
-| `CORTEX_TLS_CERT` | TLS certificate path; required for team mode (`tls.rs:10`) |
-| `CORTEX_TLS_KEY` | TLS private-key path; required for team mode (`tls.rs:13`) |
-| `CORTEX_ALLOW_INSECURE_REMOTE` | `=1` explicitly allows serving plain HTTP on non-local binds; temporary override (`server/runtime.rs:79`) |
-| `CORTEX_API_KEY` | Client-side API key for remote daemon targets (`cli/common.rs:92`) |
-| `CORTEX_API_BASE` / `CORTEX_BASE_URL` | Client-side base URL of a remote daemon (`cli/common.rs:91`) |
-| `CORTEX_RATE_LIMIT_REQUESTS_PER_MIN` | Per-minute request budget; over-budget requests get 429 (`crates/logic/src/rate_limit/mod.rs:97`) |
-| `CORTEX_RECALL_{FAST,BALANCED,DEEP}_BUDGET` | Per-policy recall token budgets (`handlers/recall/engine.rs:438-440`) |
-| `CORTEX_IDLE_SHUTDOWN_SECS` | Idle-auto-shutdown threshold (`cli/daemon/startup.rs:38`) |
+| `CORTEX_HOME` | Root of local state: db, token, pid, lock |
+| `CORTEX_DB` | SQLite database path override |
+| `CORTEX_CAPTURE` | JSON sidecar for `cortex hook`; grant, host_version, origins, and opt-in native_* flags |
+| `CORTEX_PLUGIN_AGENT` | Agent id the plugin passes to `--agent` |
 
 The complete `CORTEX_*` variable surface is enumerated in the source (`grep CORTEX_ crates/`); undocumented variables are internal tuning knobs with no stability guarantee (declared no-claim boundary — they may change or disappear without notice).
 

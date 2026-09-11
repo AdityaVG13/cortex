@@ -19,7 +19,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
-use cortex_daemon::compiler;
+use cortex_kernel::compiler;
 use cortex_tests::support::test_conn;
 use tempfile::Builder;
 

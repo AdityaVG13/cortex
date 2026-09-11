@@ -5,15 +5,15 @@
 //! rebases without touching a record; a shadowed collector reports
 //! disagreements instead of asserting equivalence.
 
-use cortex_daemon::db::addresses;
-use cortex_daemon::store_spi::conformance::{
+use cortex_kernel::db::addresses;
+use cortex_kernel::store_spi::conformance::{
     digest_set, resolve_index, resolve_security, run_suite, verify_digest, verify_rotation,
     ConformanceLevel, DigestDescriptor, IndexResolution, IntegrityVerdict,
 };
-use cortex_daemon::store_spi::dispatch::{shadow_compare, StoreHandle};
-use cortex_daemon::store_spi::memory::MemoryStore;
-use cortex_daemon::store_spi::sqlite::SqliteStore;
-use cortex_daemon::store_spi::{BrainStore, Durability, Op, WriteIntent, WriteTransaction};
+use cortex_kernel::store_spi::dispatch::{shadow_compare, StoreHandle};
+use cortex_kernel::store_spi::memory::MemoryStore;
+use cortex_kernel::store_spi::sqlite::SqliteStore;
+use cortex_kernel::store_spi::{BrainStore, Durability, Op, WriteIntent, WriteTransaction};
 use cortex_tests::support::open_file_db;
 
 fn temp_db() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -181,9 +181,9 @@ fn address_overlay_rebases_without_touching_records_and_measures_short_address_a
     let receipt = tx.commit(Durability::ProcessCrash).unwrap();
     let conn = store.connection();
     // Legacy rows become authoritative records; addresses reference records, never legacy ids.
-    cortex_daemon::db::records::import_legacy(conn).unwrap();
+    cortex_kernel::db::records::import_legacy(conn).unwrap();
     let legacy_id = receipt.entries["a"].value.parse::<i64>().unwrap();
-    let id = cortex_daemon::db::records::record_for_legacy(conn, "decision", legacy_id)
+    let id = cortex_kernel::db::records::record_for_legacy(conn, "decision", legacy_id)
         .unwrap()
         .expect("record for legacy decision");
     conn.execute("INSERT INTO records (record_id, kind, scope_id, retention, created_sequence) SELECT 'rec-other', kind, scope_id, retention, created_sequence FROM records WHERE record_id = ?1", [&id]).unwrap();
