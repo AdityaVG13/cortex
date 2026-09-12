@@ -106,21 +106,24 @@ pub fn restrict_file_to_owner(path: &Path) -> std::io::Result<()> {
 // wrap of the same FFI, not a safe language form.
 // Safe facade: `restrict_file_to_owner` is the only crate-visible entry and
 // holds no raw HANDLE / ACL. OwnedHandle / LocalMemory Drop are the only
-// CloseHandle / LocalFree sites. Inner K1-K9 calls stay (A).
+// CloseHandle / LocalFree sites. Inner K1-K5 and K8-K9 stay (A) FFI.
+// K6-K7 are safe reads of the K5-filled TOKEN_USER buffer (PSID at offset 0;
+// documented IsValidSid checks: SID_REVISION and SubAuthorityCount).
 //
 // FFI boundary contract (60-FFI-PATTERNS):
-// C/Win32 promises: OpenProcessToken, GetTokenInformation, IsValidSid, and
-// CloseHandle are BOOL APIs (0 = failure). BOOL failures convey GetLastError,
-// which is per-thread and valid only until the next Win32 call on this thread.
-// Exception: IsValidSid documents no extended error -- FALSE is InvalidData,
-// not last_os_error. SetEntriesInAclW and SetNamedSecurityInfoW return a DWORD
-// Win32 code (ERROR_SUCCESS or a WinError.h value); do not call GetLastError
-// for those. None of these APIs callback into Rust, longjmp, or unwind through
-// Rust frames. GetCurrentProcess is a non-owning pseudo-handle and must never
-// be CloseHandle'd. SetNamedSecurityInfoW copies DACL data; it does not take
+// C/Win32 promises: OpenProcessToken, GetTokenInformation, and CloseHandle are
+// BOOL APIs (0 = failure). BOOL failures convey GetLastError, which is
+// per-thread and valid only until the next Win32 call on this thread.
+// SetEntriesInAclW and SetNamedSecurityInfoW return a DWORD Win32 code
+// (ERROR_SUCCESS or a WinError.h value); do not call GetLastError for those.
+// None of these APIs callback into Rust, longjmp, or unwind through Rust
+// frames. GetCurrentProcess is a non-owning pseudo-handle and must never be
+// CloseHandle'd. SetNamedSecurityInfoW copies DACL data; it does not take
 // ownership of the ACL pointer. TOKEN_USER / EXPLICIT_ACCESS_W / TRUSTEE_W /
 // ACL are windows_sys #[repr(C)] layouts; SID bytes in the token buffer are
-// little-endian (Win32).
+// little-endian (Win32). SID validation is a safe in-buffer parse (Revision
+// == SID_REVISION and SubAuthorityCount <= 15), matching the documented
+// IsValidSid contract without a Win32 call.
 // Rust promises: `restrict_file_to_owner` is the thin safe wrapper (F-1).
 // Paths become UTF-16 with a trailing NUL and no interior NUL. This crate
 // calls Win32; Win32 never calls back, so catch_unwind at an extern-"C" entry
@@ -260,7 +263,7 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     use std::ptr::{null_mut, NonNull};
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Security::{
-        GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER,
+        GetTokenInformation, TokenUser, SID_AND_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     let mut token: HANDLE = null_mut();
@@ -337,24 +340,16 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
             "Windows token user information is too small",
         ));
     }
-    // SAFETY (K6, A): GetTokenInformation succeeded and `returned_len` is
-    // at least size_of::<TOKEN_USER>(). The buffer is usize-aligned and
-    // stays owned by `token_info` for the rest of this function, so the
-    // SID pointer derived from this copy remains in-bounds after the
-    // post-read range check below.
-    // ABI: #[repr(C)] TOKEN_USER copy. `User.Sid` is a pointer Win32 planted
-    // in this same buffer -- not a separately owned allocation (no LocalFree
-    // of the SID; CurrentUserSid keeps `_token_info` alive). No GetLastError
-    // at this site. No FFI resource to Drop here.
-    // Unavoidable BECAUSE interpreting a C-written TOKEN_USER is a raw
-    // pointer read of a #[repr(C)] FFI struct (Reference § Pointer types
-    // https://doc.rust-lang.org/reference/types/pointer.html).
-    // Alternatives FAIL: (1) bytemuck/zerocopy -- TOKEN_USER contains a
-    // PSID pointer, not Pod; (2) byte-parse without deref -- still trusts
-    // the same C layout via raw reads; (3) transmute -- still unsafe, no
-    // safer.
-    let token_user = unsafe { *token_info.as_ptr().cast::<TOKEN_USER>() };
-    if token_user.User.Sid.is_null() {
+    // K6 (C): TOKEN_USER.User.Sid is a PSID at offset 0 of the buffer K5
+    // filled. windows-sys SID_AND_ATTRIBUTES.Sid is the first field, so the
+    // leading usize is that pointer. Reading the owned Vec needs no unsafe.
+    // Later FFI (K8) uses wrapping_add on this Vec after the in-buffer check.
+    const _: () = {
+        assert!(std::mem::offset_of!(TOKEN_USER, User) == 0);
+        assert!(std::mem::offset_of!(SID_AND_ATTRIBUTES, Sid) == 0);
+    };
+    let sid_addr = token_info[0];
+    if sid_addr == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Windows token user SID is missing",
@@ -363,7 +358,6 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     let init_len = std::cmp::min(returned_len as usize, token_info.len() * word_size);
     let buf_start = token_info.as_ptr() as usize;
     let buf_end = buf_start.saturating_add(init_len);
-    let sid_addr = token_user.User.Sid as usize;
     if sid_addr < buf_start || sid_addr >= buf_end {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -373,10 +367,26 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     let sid_offset = sid_addr - buf_start;
     const SID_FIXED: usize = 8;
     const SID_MAX_SUB_AUTHORITIES: u8 = 15;
+    const SID_REVISION: u8 = 1;
     if sid_offset.saturating_add(SID_FIXED) > init_len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Windows token user SID header is truncated",
+        ));
+    }
+    // K7 (C): documented IsValidSid contract is Revision == SID_REVISION and
+    // SubAuthorityCount <= SID_MAX_SUB_AUTHORITIES, plus a readable SID. The
+    // SID bytes live in this owned Vec; a Win32 IsValidSid call is not required.
+    let Some(revision) = token_info_le_byte(&token_info, sid_offset) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID header is truncated",
+        ));
+    };
+    if revision != SID_REVISION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID is invalid",
         ));
     }
     let Some(sub_count) = token_info_le_byte(&token_info, sid_offset + 1) else {
@@ -398,23 +408,14 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
             "Windows token user SID extends past the token buffer",
         ));
     }
-    // SAFETY (K7, A): `token_user.User.Sid` was checked non-null, in the
-    // initialized prefix, and the SID byte length implied by
-    // SubAuthorityCount fits in that prefix. IsValidSid only reads.
-    // Win32 IsValidSid documents no GetLastError; FALSE is InvalidData, not
-    // last_os_error. No ownership transfer. No callback / longjmp.
-    // Unavoidable BECAUSE SID validation is Win32 FFI (Nomicon § FFI).
-    // Alternatives FAIL: (1) skip IsValidSid -- would feed a garbage SID
-    // to SetEntriesInAclW; (2) hand-rolled SID parser -- reimplements
-    // Win32 SID layout and still reads FFI memory; (3) crate-wrapped
-    // IsValidSid -- same extern-C call.
-    if unsafe { IsValidSid(token_user.User.Sid) } == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Windows token user SID is invalid",
-        ));
-    }
-    let sid = NonNull::new(token_user.User.Sid).ok_or_else(|| {
+    let sid = NonNull::new(
+        token_info
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_add(sid_offset)
+            .cast(),
+    )
+    .ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "Windows token user SID is missing",
