@@ -519,11 +519,16 @@ impl BrainStore for SqliteStore {
         self.conn
             .execute_batch("BEGIN DEFERRED")
             .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
-        let frontier = current_frontier(&self.conn);
-        Ok(SqliteSnapshot {
+        let mut snapshot = SqliteSnapshot {
             conn: &self.conn,
-            frontier,
-        })
+            frontier: Frontier {
+                provider: "sqlite".into(),
+                restore_epoch: String::new(),
+                opaque: Vec::new(),
+            },
+        };
+        snapshot.frontier = current_frontier(snapshot.conn);
+        Ok(snapshot)
     }
 
     fn begin_write(&mut self, intent: WriteIntent) -> Result<SqliteTx<'_>, StoreSpiError> {

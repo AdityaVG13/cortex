@@ -26,8 +26,12 @@ impl DaemonState {
         self.intentional_stop.load(Ordering::SeqCst)
     }
 
+    fn child_lock(&self) -> std::sync::MutexGuard<'_, Option<Child>> {
+        self.child.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn status(&self) -> Result<(bool, Option<u32>), String> {
-        let mut child = self.child.lock().map_err(|_| "Failed to lock managed daemon state.".to_string())?;
+        let mut child = self.child_lock();
         let Some(managed_child) = child.as_mut() else {
             return Ok((false, None));
         };
@@ -47,7 +51,7 @@ impl DaemonState {
     }
 
     pub fn ensure_local_daemon(&self) -> Result<Option<u32>, String> {
-        let mut child = self.child.lock().map_err(|_| "Failed to lock managed daemon state.".to_string())?;
+        let mut child = self.child_lock();
         if let Some(existing) = child.as_mut() {
             match existing.try_wait() {
                 Ok(Some(_)) => {
@@ -98,7 +102,7 @@ impl DaemonState {
 
     pub fn stop(&self) -> Result<(), String> {
         self.intentional_stop.store(true, Ordering::SeqCst);
-        let mut child = self.child.lock().map_err(|_| "Failed to lock managed daemon state.".to_string())?;
+        let mut child = self.child_lock();
         if let Some(managed_child) = child.as_mut() {
             match managed_child.try_wait() {
                 Ok(Some(_)) => {
