@@ -99,7 +99,16 @@ pub struct SqliteSnapshot<'a> {
 
 impl Drop for SqliteSnapshot<'_> {
     fn drop(&mut self) {
-        let _ = self.conn.execute_batch("COMMIT");
+        // Abort polarity. `BEGIN DEFERRED` is a read snapshot; COMMIT here
+        // would persist any writes that joined the txn through rusqlite's
+        // `&Connection` API (`SqliteStore::connection()` can alias this
+        // borrow). BrainStore `begin_write` needs `&mut self`, so `SqliteTx`
+        // cannot overlap, but that seam still can -- including on panic unwind.
+        // ROLLBACK matches `ImmediateWrite`, `SqliteSavepoint`, `SqliteTx`,
+        // and rusqlite::Transaction. For a true read-only txn it is equivalent
+        // to COMMIT except it also closes an aborted txn COMMIT would leave
+        // open.
+        let _ = self.conn.execute_batch("ROLLBACK");
     }
 }
 
