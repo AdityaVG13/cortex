@@ -76,6 +76,27 @@ fn lock_wait_env_overflow_must_not_panic_serve() {
             == 1;
         if initialized && child.try_wait().expect("poll initialized worker").is_none() {
             healthy = true;
+            let recorded = fs::read_to_string(home.join("cortex.pid")).unwrap_or_default();
+            assert_eq!(
+                recorded.trim(),
+                child.id().to_string(),
+                "serve must write cortex.pid so restore can see a live worker"
+            );
+            let backup = home.join("restore-while-serve.db");
+            fs::write(&backup, b"not-a-database").expect("write dummy backup");
+            let restore = run_bin(
+                &["restore", backup.to_str().expect("utf-8 backup")],
+                &home,
+            );
+            let restore_err = stderr_of(&restore);
+            assert!(
+                !restore.status.success(),
+                "restore must refuse while serve holds the home; stderr:\n{restore_err}"
+            );
+            assert!(
+                restore_err.contains("daemon appears active"),
+                "refusal must name the daemon-active gate; stderr:\n{restore_err}"
+            );
             break;
         }
         match child.try_wait().expect("poll serve") {

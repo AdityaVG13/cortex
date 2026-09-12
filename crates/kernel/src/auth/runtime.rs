@@ -2,13 +2,23 @@ use super::keys::cortex_dir;
 use super::paths::{CortexPaths, BASE62};
 use std::fs;
 use std::path::PathBuf;
-#[allow(dead_code)]
-pub fn write_pid() {
-    let dir = cortex_dir();
-    if let Err(e) = fs::create_dir_all(&dir) {
-        eprintln!("[cortex] WARNING: cannot create {}: {e}", dir.display());
+/// Record this process in `paths.pid` so destructive CLI (`cortex restore`)
+/// can see a live `cortex serve`. The flock on `paths.lock` is the real
+/// exclusion; this file is the documented, inspectable gate.
+pub fn write_pid_file(paths: &CortexPaths) -> Result<(), String> {
+    fs::create_dir_all(&paths.home).map_err(|e| format!("create home: {e}"))?;
+    fs::write(&paths.pid, format!("{}\n", std::process::id()))
+        .map_err(|e| format!("write {}: {e}", paths.pid.display()))
+}
+
+/// Remove `paths.pid` only when it still names this process.
+pub fn remove_own_pid_file(paths: &CortexPaths) {
+    let Ok(recorded) = fs::read_to_string(&paths.pid) else {
+        return;
+    };
+    if recorded.trim().parse::<u32>().ok() == Some(std::process::id()) {
+        let _ = fs::remove_file(&paths.pid);
     }
-    fs::write(dir.join("cortex.pid"), std::process::id().to_string()).ok();
 }
 pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
     let pid = stale_pid_candidate(paths)?;

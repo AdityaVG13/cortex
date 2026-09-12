@@ -3,12 +3,26 @@ use asupersync::Cx;
 use futures_util::future::{Either, select};
 use std::time::Duration;
 
+struct OwnPidFile(auth::CortexPaths);
+impl Drop for OwnPidFile {
+    fn drop(&mut self) {
+        auth::remove_own_pid_file(&self.0);
+    }
+}
+
 /// Optional headless worker. Cross-process writes are observed through SQLite's
 /// data version; idle ticks do not run maintenance passes. Each slice is capped.
 pub async fn run_daemon(cx: &Cx, paths: auth::CortexPaths, shutdown: impl std::future::Future<Output = ()>) -> Result<(), String> {
     std::fs::create_dir_all(&paths.home).map_err(|err| err.to_string())?;
     let _lock = auth::acquire_daemon_lock(&paths)?;
     let runtime = CortexRuntime::open(&paths).map_err(|err| err.to_string())?;
+    let _pid = match auth::write_pid_file(&paths) {
+        Ok(()) => Some(OwnPidFile(paths.clone())),
+        Err(err) => {
+            eprintln!("[cortex] WARNING: {err}");
+            None
+        }
+    };
     let mut shutdown = Box::pin(shutdown);
     let mut data_version = None;
     let mut pending = true;

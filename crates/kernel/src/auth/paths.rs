@@ -540,13 +540,19 @@ pub fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        // O_NOFOLLOW: a planted symlink must not redirect the secret. Mode is
+        // only applied on create; if the path already existed world-readable,
+        // fchmod before truncate so new bytes never sit at 0644.
         let mut file = fs::OpenOptions::new()
             .create(true)
             .write(true)
-            .truncate(true)
+            .truncate(false)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        file.set_len(0)?;
         file.write_all(contents)?;
         file.flush()?;
         restrict_file_to_owner(path)?;

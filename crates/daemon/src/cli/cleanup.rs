@@ -118,6 +118,17 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
         eprintln!("[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using.");
         std::process::exit(1);
     }
+    // Serve excludes via flock on `paths.lock` and may have crashed before
+    // writing the pid file. Hold that same lock for the copy so a worker
+    // cannot start mid-restore.
+    let _lock = match auth::acquire_daemon_lock(paths) {
+        Ok(lock) => lock,
+        Err(err) => {
+            eprintln!("[cortex] Error: daemon appears active ({err}).");
+            eprintln!("[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using.");
+            std::process::exit(1);
+        }
+    };
     match db::backup::restore_from(Path::new(restore_file), &paths.db, &paths.home) {
         Ok(report) => {
             let verified = report.integrity_ok && report.sample_reads_ok;
