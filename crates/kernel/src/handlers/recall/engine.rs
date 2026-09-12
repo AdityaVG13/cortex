@@ -697,6 +697,7 @@ pub fn apply_recall_ranking_boosts(
     }
 }
 pub fn normalize_text(input: &str) -> String {
+    let input = crate::clockwork::bound_query_text(input);
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch.is_ascii_whitespace() {
@@ -728,6 +729,7 @@ pub fn extract_keywords(text: &str) -> Vec<String> {
     normalize_text(text)
         .split_whitespace()
         .filter(|word| word.len() > 2 && !stop_words.contains(*word))
+        .take(crate::clockwork::MAX_QUERY_TOKENS)
         .map(str::to_string)
         .collect()
 }
@@ -735,6 +737,7 @@ pub fn extract_search_keywords(text: &str) -> Vec<String> {
     normalize_text(text)
         .split_whitespace()
         .filter(|word| word.len() > 1)
+        .take(crate::clockwork::MAX_QUERY_TOKENS)
         .map(str::to_string)
         .collect()
 }

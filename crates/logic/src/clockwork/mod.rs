@@ -27,7 +27,10 @@ pub use links::{
     CLOCK_DDL, DERIVED_GENERATION_KEY,
 };
 pub use morph::{hay_has_lexical, morph_stem, morph_variants, stems_match};
-pub use query::{parse_query_frame, query_signature, QueryAnchor, QueryFrame, TemporalMode};
+pub use query::{
+    bound_query_text, parse_query_frame, query_signature, QueryAnchor, QueryFrame, TemporalMode,
+    MAX_QUERY_BYTES, MAX_QUERY_TOKENS,
+};
 pub use quorum::{
     admit, admit_with_lineage, compare_rank_keys, RankKey, Rankable, RANK_TUPLE_VERSION,
 };

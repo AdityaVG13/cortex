@@ -91,6 +91,24 @@ impl QueryFrame {
     }
 }
 
+/// Byte cap for attacker-controlled query / need text. MCP stdin already
+/// allows 2 MiB; without a tighter bound, FTS, anchor extract, and per-token
+/// SQLite lookups run over the whole payload.
+pub const MAX_QUERY_BYTES: usize = 8 * 1024;
+/// Token / list cap for query terms, paths, symbols, and seed expansion.
+pub const MAX_QUERY_TOKENS: usize = 32;
+
+pub fn bound_query_text(raw: &str) -> &str {
+    if raw.len() <= MAX_QUERY_BYTES {
+        return raw;
+    }
+    let mut end = MAX_QUERY_BYTES;
+    while end > 0 && !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    &raw[..end]
+}
+
 pub fn parse_query_frame(
     raw: &str,
     owner_id: Option<i64>,
@@ -101,16 +119,17 @@ pub fn parse_query_frame(
     as_of: Option<String>,
     head_id: Option<i64>,
 ) -> QueryFrame {
+    let raw = bound_query_text(raw);
     let extracted = super::extract_anchors(raw, &[], super::MAX_ANCHORS_PER_QUERY);
     let mut extra = Vec::new();
-    for path in &paths {
+    for path in paths.iter().take(MAX_QUERY_TOKENS) {
         extra.push(QueryAnchor {
             kind: AnchorKind::Path,
             value: super::normalize_anchor_value(AnchorKind::Path, path),
             specificity: 3,
         });
     }
-    for symbol in &symbols {
+    for symbol in symbols.iter().take(MAX_QUERY_TOKENS) {
         extra.push(QueryAnchor {
             kind: AnchorKind::Symbol,
             value: super::normalize_anchor_value(AnchorKind::Symbol, symbol),
@@ -165,8 +184,8 @@ pub fn parse_query_frame(
         owner_id,
         session_id,
         goal_id,
-        paths,
-        symbols,
+        paths: paths.into_iter().take(MAX_QUERY_TOKENS).collect(),
+        symbols: symbols.into_iter().take(MAX_QUERY_TOKENS).collect(),
         head_id,
     }
 }

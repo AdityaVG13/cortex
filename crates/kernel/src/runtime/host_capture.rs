@@ -476,11 +476,24 @@ fn history_tool_name(response: &Value) -> &'static str {
         "Write"
     }
 }
+const SITUATION_MAX_DEPTH: usize = 8;
+const SITUATION_MAX_PARTS: usize = 32;
+
 fn collect_situation(value: &Value, out: &mut Vec<String>) {
+    collect_situation_at(value, out, 0);
+}
+
+fn collect_situation_at(value: &Value, out: &mut Vec<String>, depth: usize) {
+    if depth > SITUATION_MAX_DEPTH || out.len() >= SITUATION_MAX_PARTS {
+        return;
+    }
     let Some(object) = value.as_object() else {
         return;
     };
     for (key, child) in object {
+        if out.len() >= SITUATION_MAX_PARTS {
+            return;
+        }
         match key.to_ascii_lowercase().as_str() {
             "filepath" | "file_path" | "path" | "stdout" | "stderr" | "content" | "newstring"
             | "oldstring" | "new_string" | "old_string" | "command" | "prompt" => {
@@ -488,11 +501,16 @@ fn collect_situation(value: &Value, out: &mut Vec<String>) {
                     out.push(text.to_string());
                 }
             }
-            "file" | "tool_input" | "tool_response" => collect_situation(child, out),
+            "file" | "tool_input" | "tool_response" => {
+                collect_situation_at(child, out, depth + 1)
+            }
             "edits" => {
                 if let Some(items) = child.as_array() {
-                    for item in items {
-                        collect_situation(item, out);
+                    for item in items.iter().take(SITUATION_MAX_PARTS) {
+                        collect_situation_at(item, out, depth + 1);
+                        if out.len() >= SITUATION_MAX_PARTS {
+                            return;
+                        }
                     }
                 }
             }

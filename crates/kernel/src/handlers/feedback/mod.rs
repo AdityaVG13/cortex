@@ -165,6 +165,7 @@ fn value_string_array(args: &Value, keys: &[&str]) -> Vec<String> {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
+        .take(crate::clockwork::MAX_QUERY_TOKENS)
         .collect()
 }
 

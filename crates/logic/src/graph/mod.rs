@@ -310,7 +310,10 @@ pub fn resolve_query(conn: &Connection, query: &str) -> Vec<i64> {
         .iter()
         .filter_map(|m| resolve_mention_to_existing(conn, m))
         .collect();
-    for token in query.split_whitespace() {
+    for token in query
+        .split_whitespace()
+        .take(crate::clockwork::MAX_QUERY_TOKENS)
+    {
         let norm = normalize_token(token);
         if norm.len() < 2 || kind_class(&norm).is_some() {
             continue;

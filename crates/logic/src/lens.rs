@@ -204,7 +204,10 @@ impl NeedFrame {
     ) -> Self {
         let mut needs: Vec<Need> = Vec::new();
         let mut unresolved = Vec::new();
-        for raw in explicit_needs {
+        for raw in explicit_needs
+            .iter()
+            .take(crate::clockwork::MAX_QUERY_TOKENS)
+        {
             match Need::parse(raw) {
                 Some(need) => {
                     if !needs.contains(&need) {
@@ -219,13 +222,14 @@ impl NeedFrame {
                 needs.push(need);
             }
         }
+        let text = crate::clockwork::bound_query_text(text.trim());
         let handles = extract_handles(text);
-        if text.trim().is_empty() && needs.is_empty() {
+        if text.is_empty() && needs.is_empty() {
             unresolved.push("empty request".into());
         }
         Self {
             profile,
-            text: text.trim().to_string(),
+            text: text.to_string(),
             needs,
             handles,
             evidence,
@@ -237,7 +241,14 @@ impl NeedFrame {
 /// Deterministic handle extraction: paths (contain `/` and a dot or known
 /// dir), `path::symbol`, ticket keys (`ABC-123`), quoted phrases, legacy refs
 /// (`memory::12`, `decision::7`), and ISO date / "as of" cues.
+fn insert_capped(set: &mut BTreeSet<String>, value: String) {
+    if set.len() < crate::clockwork::MAX_QUERY_TOKENS {
+        set.insert(value);
+    }
+}
+
 pub fn extract_handles(text: &str) -> Handles {
+    let text = crate::clockwork::bound_query_text(text);
     let mut handles = Handles::default();
     let mut chars = text.char_indices().peekable();
     let mut in_quote: Option<usize> = None;
@@ -247,7 +258,7 @@ pub fn extract_handles(text: &str) -> Handles {
                 Some(start) => {
                     let phrase = text[start + 1..i].trim();
                     if !phrase.is_empty() {
-                        handles.quoted.insert(phrase.to_string());
+                        insert_capped(&mut handles.quoted, phrase.to_string());
                     }
                 }
                 None => in_quote = Some(i),
@@ -267,31 +278,31 @@ pub fn extract_handles(text: &str) -> Handles {
                 && id.bytes().all(|b| b.is_ascii_digit())
                 && !id.is_empty()
             {
-                handles.legacy_refs.insert(token.to_string());
+                insert_capped(&mut handles.legacy_refs, token.to_string());
                 continue;
             }
             if kind.contains('/') && !id.is_empty() {
-                handles.symbols.insert(token.to_string());
-                handles.paths.insert(kind.to_string());
+                insert_capped(&mut handles.symbols, token.to_string());
+                insert_capped(&mut handles.paths, kind.to_string());
                 continue;
             }
         }
         if token.contains('/') && token.len() > 2 && !token.starts_with("http") {
-            handles.paths.insert(token.to_string());
+            insert_capped(&mut handles.paths, token.to_string());
             continue;
         }
         if is_ticket(token) {
-            handles.tickets.insert(token.to_ascii_uppercase());
+            insert_capped(&mut handles.tickets, token.to_ascii_uppercase());
             continue;
         }
         if is_iso_date(token) {
-            handles.time_cues.insert(token.to_string());
+            insert_capped(&mut handles.time_cues, token.to_string());
         }
     }
     let lower = text.to_ascii_lowercase();
     for cue in ["as of", "before", "historical", "back then", "at the time"] {
         if lower.contains(cue) {
-            handles.time_cues.insert(cue.to_string());
+            insert_capped(&mut handles.time_cues, cue.to_string());
         }
     }
     handles

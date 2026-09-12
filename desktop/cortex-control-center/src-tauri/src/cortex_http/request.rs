@@ -112,11 +112,15 @@ pub fn send_cortex_request_with_port(
 
     stream.write_all(request.as_bytes()).map_err(|e| format!("Write failed: {e}"))?;
 
+    const MAX_HTTP_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
     let mut response = Vec::new();
-    if let Err(err) = stream.read_to_end(&mut response) {
+    if let Err(err) = Read::take(&mut *stream, MAX_HTTP_RESPONSE_BYTES as u64 + 1).read_to_end(&mut response) {
         if !should_use_partial_response_on_read_timeout(&err, response.len()) {
             return Err(format!("Read failed: {err}"));
         }
+    }
+    if response.len() > MAX_HTTP_RESPONSE_BYTES {
+        return Err("HTTP response exceeds 2 MiB".to_string());
     }
 
     if let Some(pos) = find_bytes(&response, b"\r\n\r\n") {

@@ -31,6 +31,9 @@ pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
         }
     }
     for token in frame.raw.split_whitespace() {
+        if seeds.len() >= super::MAX_QUERY_TOKENS {
+            break;
+        }
         let cleaned: String = token
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
@@ -40,6 +43,7 @@ pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
             push_unique(&mut seeds, cleaned);
         }
     }
+    seeds.truncate(super::MAX_QUERY_TOKENS);
 
     let mut extra_terms: Vec<String> = Vec::new();
     let mut extra_anchors: Vec<QueryAnchor> = Vec::new();

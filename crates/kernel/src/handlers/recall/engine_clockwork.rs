@@ -134,6 +134,7 @@ impl ScoredCandidate {
 pub fn run_clock_quorum_recall(
     conn: &Connection, query_text: &str, token_budget: usize, k: usize, ctx: &RecallContext, source_prefix: Option<&str>,
 ) -> Result<Vec<RecallItem>, String> {
+    let query_text = crate::clockwork::bound_query_text(query_text);
     let mut frame = parse_query_frame(
         query_text,
         ctx.caller_id,
