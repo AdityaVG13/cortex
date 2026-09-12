@@ -64,16 +64,21 @@ fn process_is_running_os(pid: u32) -> bool {
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     // SAFETY (K10W, A): `pid` is a DWORD already rejected as 0 by
     // `process_is_running`. PROCESS_QUERY_LIMITED_INFORMATION is the
-    // least-privilege existence probe; inherit-handle is FALSE. A non-null,
-    // non-INVALID handle is owned by us and released with CloseHandle before
-    // return. No other pointers. The wrapper does not panic.
+    // least-privilege existence probe; inherit-handle is BOOL FALSE (0).
+    // OpenProcess returns HANDLE, not BOOL: success is a closeable handle;
+    // documented failure is NULL with GetLastError set. INVALID_HANDLE_VALUE
+    // is CreateFile's failure sentinel, not OpenProcess's -- it is not owned
+    // and last-error is not this call's (stale ERROR_INVALID_PARAMETER would
+    // otherwise report a live pid dead). No other pointers.
+    // Between a closeable OpenProcess result and CloseHandle there is only
+    // sentinel comparison (no panic), so OwnedHandle is not required.
     //
     // ACCESS_DENIED is the EPERM analog (process exists, we cannot open it).
     // INVALID_PARAMETER is the usual "no such process" for a dead/unused PID.
     // Any other GetLastError -- including a failed query we cannot classify --
     // is treated as alive so `pid_file_live_pid` / restore stay closed.
-    // `last_os_error` is read immediately on the failure path only; CloseHandle
-    // is not called on that path, so it cannot clobber the OpenProcess error.
+    // `last_os_error` is read immediately, and only after NULL; CloseHandle is
+    // not called on that path, so it cannot clobber the OpenProcess error.
     //
     // Unavoidable BECAUSE process-open is Win32 FFI (Nomicon § FFI
     // https://doc.rust-lang.org/nomicon/ffi.html ; Reference § External
@@ -84,20 +89,25 @@ fn process_is_running_os(pid: u32) -> bool {
     // silent-proceed hole; (3) windows / windows-acl crates -- same
     // OpenProcess FFI, not a safe language form.
     let handle: HANDLE = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
-        // SAFETY (K10W-close, A): `handle` is the exclusive OpenProcess
-        // success result; null / INVALID_HANDLE_VALUE were rejected. CloseHandle
-        // is the documented destructor. Drop cannot surface the BOOL.
-        unsafe {
-            let _ = CloseHandle(handle);
-        }
+    if handle.is_null() {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(err) if err == ERROR_INVALID_PARAMETER as i32 => false,
+            Some(err) if err == ERROR_ACCESS_DENIED as i32 => true,
+            _ => true,
+        };
+    }
+    if handle == INVALID_HANDLE_VALUE {
         return true;
     }
-    match std::io::Error::last_os_error().raw_os_error() {
-        Some(err) if err == ERROR_INVALID_PARAMETER as i32 => false,
-        Some(err) if err == ERROR_ACCESS_DENIED as i32 => true,
-        _ => true,
+    // SAFETY (K10W-close, A): `handle` is the exclusive OpenProcess success
+    // result (NULL and INVALID_HANDLE_VALUE were rejected). CloseHandle is
+    // the documented destructor; the BOOL is discarded. The only code since
+    // OpenProcess is sentinel comparison, which cannot panic, so a Drop
+    // wrapper would not change leak behavior.
+    unsafe {
+        let _ = CloseHandle(handle);
     }
+    true
 }
 #[cfg(unix)]
 fn process_is_running_os(pid: u32) -> bool {
