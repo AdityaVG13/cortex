@@ -1,14 +1,64 @@
 use super::keys::cortex_dir;
 use super::paths::{CortexPaths, BASE62};
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 /// PID files hold one decimal u32. A replaced huge file must not OOM restore.
 pub const MAX_PID_FILE_BYTES: u64 = 64;
 
+fn open_pid_nofollow(path: &Path, write: bool) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = fs::OpenOptions::new();
+        if write {
+            opts.write(true).create(true).truncate(true);
+        } else {
+            opts.read(true);
+        }
+        opts.custom_flags(libc::O_NOFOLLOW).open(path)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        let mut opts = fs::OpenOptions::new();
+        if write {
+            opts.write(true).create(true).truncate(false);
+        } else {
+            opts.read(true);
+        }
+        let file = opts.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to use pid file through a reparse point",
+            ));
+        }
+        if write {
+            file.set_len(0)?;
+        }
+        Ok(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        if write {
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)
+        } else {
+            fs::File::open(path)
+        }
+    }
+}
+
 fn read_pid_file(path: &Path) -> Option<String> {
-    let file = fs::File::open(path).ok()?;
+    let file = open_pid_nofollow(path, false).ok()?;
     let mut raw = String::new();
     file.take(MAX_PID_FILE_BYTES + 1)
         .read_to_string(&mut raw)
@@ -21,7 +71,9 @@ fn read_pid_file(path: &Path) -> Option<String> {
 /// exclusion; this file is the documented, inspectable gate.
 pub fn write_pid_file(paths: &CortexPaths) -> Result<(), String> {
     fs::create_dir_all(&paths.home).map_err(|e| format!("create home: {e}"))?;
-    fs::write(&paths.pid, format!("{}\n", std::process::id()))
+    let mut file = open_pid_nofollow(&paths.pid, true)
+        .map_err(|e| format!("write {}: {e}", paths.pid.display()))?;
+    file.write_all(format!("{}\n", std::process::id()).as_bytes())
         .map_err(|e| format!("write {}: {e}", paths.pid.display()))
 }
 

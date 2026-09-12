@@ -346,10 +346,8 @@ fn clock_fts_query(frame: &QueryFrame) -> Option<String> {
         if matches!(t, "and" | "or" | "not") {
             continue;
         }
-        if t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            terms.push(t.to_string());
-        } else {
-            terms.push(format!("\"{}\"", t.replace('"', "\"\"")));
+        if let Some(quoted) = quote_fts_match_term(t) {
+            terms.push(quoted);
         }
     }
     terms.sort();
@@ -362,7 +360,7 @@ fn clock_fts_query(frame: &QueryFrame) -> Option<String> {
         .quoted_phrases
         .iter()
         .filter(|phrase| phrase.len() >= 2 && !phrase.contains('/'))
-        .map(|phrase| format!("\"{}\"", phrase.replace('"', "\"\"")))
+        .filter_map(|phrase| quote_fts_match_term(phrase))
         .collect();
     if phrases.is_empty() {
         Some(or_terms)

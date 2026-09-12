@@ -317,6 +317,18 @@ fn like_prefix(prefix: &str) -> String {
     out.push('%');
     out
 }
+/// FTS5 MATCH is a second query language on bind `?1` (`*`, `^`, `NEAR`,
+/// `col:`, quotes). Doubling `"` is not enough: a quoted phrase still treats
+/// trailing `*` as prefix and a leading `^` as initial-token. Strip those
+/// before wrapping so user text cannot change MATCH operators.
+fn quote_fts_match_term(term: &str) -> Option<String> {
+    let stripped: String = term.chars().filter(|c| *c != '*' && *c != '^').collect();
+    let t = stripped.trim();
+    if t.is_empty() {
+        return None;
+    }
+    Some(format!("\"{}\"", t.replace('"', "\"\"")))
+}
 pub fn crystal_source(crystal_id: i64, label: &str) -> String {
     format!("crystal::{crystal_id}::{label}")
 }
@@ -960,16 +972,16 @@ pub fn query_focus_terms(query_text: &str) -> Vec<String> {
 pub fn build_fts_query(groups: &[Vec<String>]) -> String {
     groups
         .iter()
-        .map(|group| {
-            let alternates = group
-                .iter()
-                .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            if group.len() > 1 {
-                format!("({alternates})")
+        .filter_map(|group| {
+            let alternates: Vec<String> = group.iter().filter_map(|t| quote_fts_match_term(t)).collect();
+            if alternates.is_empty() {
+                return None;
+            }
+            let joined = alternates.join(" OR ");
+            if alternates.len() > 1 {
+                Some(format!("({joined})"))
             } else {
-                alternates
+                Some(joined)
             }
         })
         .collect::<Vec<_>>()
