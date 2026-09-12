@@ -259,3 +259,6 @@ path = "contracts/observation_associations.rs"
 [[test]]
 name = "assembly"
 path = "contracts/assembly.rs"
+
+[lints.rust]
+unsafe_code = "deny"

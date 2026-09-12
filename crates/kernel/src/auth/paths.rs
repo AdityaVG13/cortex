@@ -80,6 +80,10 @@ struct OwnedHandle(windows_sys::Win32::Foundation::HANDLE);
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         if !self.0.is_null() {
+            // SAFETY: `self.0` is a process-token HANDLE this wrapper obtained
+            // from OpenProcessToken and owns exclusively. Non-null was checked.
+            // CloseHandle is the documented destructor; Drop cannot surface the
+            // BOOL, so the result is discarded.
             unsafe {
                 let _ = windows_sys::Win32::Foundation::CloseHandle(self.0);
             }
@@ -92,6 +96,9 @@ struct LocalMemory(*mut std::ffi::c_void);
 impl Drop for LocalMemory {
     fn drop(&mut self) {
         if !self.0.is_null() {
+            // SAFETY: `self.0` is the ACL pointer SetEntriesInAclW returned.
+            // Win32 allocates that ACL with LocalAlloc and requires the caller
+            // to LocalFree it. Non-null was checked; we own the pointer.
             unsafe {
                 let _ = windows_sys::Win32::Foundation::LocalFree(self.0);
             }
@@ -121,12 +128,18 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     let mut token: HANDLE = null_mut();
+    // SAFETY: GetCurrentProcess returns a pseudo-handle valid for this
+    // process for the duration of the call. `token` is a writable out-param
+    // on our stack. TOKEN_QUERY is a documented access mask.
     let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
     if opened == 0 {
         return Err(io::Error::last_os_error());
     }
     let token = OwnedHandle(token);
     let mut required_len = 0u32;
+    // SAFETY: `token.0` is an open token we own. A null buffer with length 0
+    // is the documented size query; Windows writes `required_len` and returns
+    // a length error we ignore.
     unsafe {
         let _ = GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut required_len);
     }
@@ -137,6 +150,9 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     let word_count = (required_len as usize).div_ceil(word_size);
     let mut token_info = vec![0usize; word_count];
     let mut returned_len = 0u32;
+    // SAFETY: `token_info` is a heap Vec whose byte length is at least
+    // `required_len`. The exclusive pointer is valid for that many bytes;
+    // Win32 writes the buffer before we read it.
     let filled = unsafe {
         GetTokenInformation(
             token.0,
@@ -155,6 +171,10 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
             "Windows token user information is too small",
         ));
     }
+    // SAFETY: GetTokenInformation succeeded and `returned_len` is at least
+    // size_of::<TOKEN_USER>(). The buffer is usize-aligned and stays owned
+    // by `token_info` for the rest of this function, so the SID pointer
+    // derived from this copy remains in-bounds.
     let token_user = unsafe { *token_info.as_ptr().cast::<TOKEN_USER>() };
     if token_user.User.Sid.is_null() {
         return Err(io::Error::new(
@@ -162,6 +182,8 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
             "Windows token user SID is missing",
         ));
     }
+    // SAFETY: `token_user.User.Sid` was checked non-null and addresses bytes
+    // inside the still-live `token_info` allocation. IsValidSid only reads.
     if unsafe { IsValidSid(token_user.User.Sid) } == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -199,12 +221,19 @@ pub fn restrict_file_to_owner(path: &Path) -> io::Result<()> {
         },
     };
     let mut acl: *mut ACL = null_mut();
+    // SAFETY: `access` is a fully initialized EXPLICIT_ACCESS_W on the stack;
+    // its trustee SID points into `current_user`, which is still alive. `acl`
+    // is a writable out-param. The old ACL is null (no merge).
     let result = unsafe { SetEntriesInAclW(1, &access, null(), &mut acl) };
     if result != ERROR_SUCCESS {
         return Err(win32_error(result));
     }
     let _acl_guard = LocalMemory(acl.cast());
     let wide_path = windows_path_to_wide(path);
+    // SAFETY: `wide_path` is a NUL-terminated UTF-16 path. `acl` is the ACL
+    // we just created and still own via `_acl_guard`. Owner/group/SACL
+    // pointers are null, which Win32 allows when those security-info bits
+    // are unset.
     let result = unsafe {
         SetNamedSecurityInfoW(
             wide_path.as_ptr(),
