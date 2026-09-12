@@ -66,12 +66,13 @@ fn process_is_running(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
-    // SAFETY: signal 0 only checks existence/permission and delivers nothing,
-    // so no process can be harmed. The `try_from` above guarantees the pid is
-    // non-negative and fits pid_t, so `kill` targets exactly one pid rather
-    // than the special negative forms (process group / all processes). No
-    // pointers are involved. A stale file containing pid 0 would query the
-    // caller's process group -- a liveness misreport at worst, never unsound.
+    // SAFETY (K10, A): signal 0 only checks existence/permission and delivers
+    // nothing, so no process can be harmed. The `try_from` above guarantees
+    // the pid is non-negative and fits pid_t, so `kill` targets exactly one
+    // pid rather than the special negative forms (process group / all
+    // processes). No pointers are involved. A stale file containing pid 0
+    // would query the caller's process group -- a liveness misreport at
+    // worst, never unsound.
     //
     // EPERM means the signal was denied but the target EXISTS (foreign-user
     // daemon, or a seccomp/sandbox denying kill outright). Treating it as dead
@@ -79,6 +80,16 @@ fn process_is_running(pid: u32) -> bool {
     // destructive-op gate and stale-pid cleanup -- silently proceed against a
     // live daemon in exactly the environments where signals are restricted.
     // Conservative direction: only ESRCH (and other real errors) count as dead.
+    //
+    // Unavoidable BECAUSE POSIX process-existence is a libc syscall (Nomicon
+    // § FFI https://doc.rust-lang.org/nomicon/ffi.html ; Reference § External
+    // blocks https://doc.rust-lang.org/reference/items/external-blocks.html ;
+    // canonical unavoidable §2: nix/rustix wrap the same kill(2)).
+    // Alternatives FAIL: (1) /proc/{pid} -- absent on macOS; (2) sysinfo
+    // (already a kernel dep) -- snapshots can omit foreign-user pids, flipping
+    // EPERM-alive to dead and opening the restore/stale-pid gates; (3)
+    // Command("kill","-0") -- exit 1 collapses ESRCH and EPERM, same silent-
+    // proceed bug this comment documents. Already a one-call wrapper; not (C).
     let rc = unsafe { libc::kill(pid, 0) };
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }

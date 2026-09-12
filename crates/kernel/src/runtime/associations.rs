@@ -317,6 +317,11 @@ impl CortexRuntime {
         let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
         ensure(&conn)?;
         ensure_feedback(&conn)?;
+        // Classification (C) REFACTORABLE -- `new_unchecked` is a safe rusqlite
+        // API that drops the `&mut Connection` exclusive-borrow `Transaction::new`
+        // / `transaction_with_behavior` already provide. Same crate already uses
+        // the mut form. Later pass: new_unchecked swap (`let mut conn` +
+        // `transaction_with_behavior`).
         let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         if !evidence(&tx, &principal, scope)?
@@ -359,6 +364,7 @@ impl CortexRuntime {
         let principal = self.observation_principal()?;
         let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
         ensure(&conn)?;
+        // (C) same new_unchecked swap as `record_association_feedback`.
         let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO observation_association_state VALUES(?1,?2,1) ON CONFLICT(principal,scope_label) DO UPDATE SET enabled=1", params![principal,scope]).map_err(|e| e.to_string())?;
@@ -371,6 +377,7 @@ impl CortexRuntime {
         let principal = self.observation_principal()?;
         let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
         ensure(&conn)?;
+        // (C) same new_unchecked swap as `record_association_feedback`.
         let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO observation_association_state VALUES(?1,?2,0) ON CONFLICT(principal,scope_label) DO UPDATE SET enabled=0", params![principal,scope]).map_err(|e| e.to_string())?;
@@ -390,6 +397,7 @@ impl CortexRuntime {
     ) -> Result<Vec<AssociationExplanation>, String> {
         let principal = self.observation_principal()?;
         let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
+        // (C) same new_unchecked swap as `record_association_feedback`.
         let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Deferred)
             .map_err(|e| e.to_string())?;
         let result = explain(&tx, &principal, scope, cues, limit)?;

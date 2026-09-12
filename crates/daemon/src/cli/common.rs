@@ -63,7 +63,18 @@ pub fn validate_cli_options_or_exit(args: &[String], value_flags: &[&str], boole
 pub fn apply_path_env(paths: &auth::CortexPaths) {
     // SAFETY: `apply_path_env` runs during single-threaded CLI startup, before
     // any runtime threads are spawned, so no other thread can read the
-    // environment concurrently.
+    // environment concurrently (`std::env::set_var` contract:
+    // https://doc.rust-lang.org/std/env/fn.set_var.html).
+    //
+    // Classification (C) REFACTORABLE -- not (A). `set_var` is unsafe in
+    // edition 2024 because env mutation races with concurrent `var`/`env`
+    // reads; that is a soundness obligation for THIS call, not a proof that
+    // env mutation is required. `main` already threads `CortexPaths` into
+    // `run`. Alternatives that succeed: (1) stop writing CORTEX_HOME /
+    // CORTEX_DB here and make remaining `env::var` readers take paths;
+    // (2) set the vars only on child `Command`s that must inherit them;
+    // (3) a Cortex-owned OnceLock path cell instead of the process env.
+    // Later pass: set_var redesign. Do not execute in this classify pass.
     unsafe {
         std::env::set_var("CORTEX_HOME", &paths.home);
         std::env::set_var("CORTEX_DB", &paths.db);
