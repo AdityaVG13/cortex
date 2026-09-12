@@ -1,7 +1,8 @@
 use crate::constants::*;
-use crate::cortex_http::request::{send_cortex_request_with_port, RequestTimeouts};
+use crate::cortex_http::request::{send_cortex_request_with_port, validate_cortex_auth_token, RequestTimeouts};
 use crate::daemon::paths::{daemon_port, resolved_cortex_paths, token_path, ResolvedCortexPaths};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
@@ -95,10 +96,34 @@ pub fn wait_for_reachability_blocking(port: u16, target: bool, timeout: Duration
         std::thread::sleep(Duration::from_millis(DAEMON_WAIT_POLL_MS));
     }
 }
+pub fn read_auth_token_from_path(path: &Path) -> Result<String, String> {
+    let meta = fs::symlink_metadata(path).map_err(|err| format!("Failed to read token at {}: {err}", path.display()))?;
+    if meta.file_type().is_symlink() {
+        return Err(format!("Refusing to read auth token through a symlink at {}", path.display()));
+    }
+    if !meta.is_file() {
+        return Err(format!("Auth token path is not a regular file: {}", path.display()));
+    }
+    if meta.len() > MAX_AUTH_TOKEN_BYTES {
+        return Err(format!("Auth token file exceeds {MAX_AUTH_TOKEN_BYTES} bytes at {}", path.display()));
+    }
+
+    let mut file = fs::File::open(path).map_err(|err| format!("Failed to open token at {}: {err}", path.display()))?;
+    let mut raw = String::new();
+    file.by_ref().take(MAX_AUTH_TOKEN_BYTES + 1).read_to_string(&mut raw).map_err(|err| format!("Failed to read token at {}: {err}", path.display()))?;
+    if raw.len() as u64 > MAX_AUTH_TOKEN_BYTES {
+        return Err(format!("Auth token file exceeds {MAX_AUTH_TOKEN_BYTES} bytes at {}", path.display()));
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    validate_cortex_auth_token(trimmed)?;
+    Ok(trimmed.to_string())
+}
+
 pub fn read_auth_token_once() -> Result<String, String> {
-    let path = token_path()?;
-    let token = fs::read_to_string(&path).map_err(|err| format!("Failed to read token at {}: {err}", path.display()))?;
-    Ok(token.trim().to_string())
+    read_auth_token_from_path(&token_path()?)
 }
 
 pub fn auth_token_ready() -> bool {
@@ -115,19 +140,13 @@ pub fn read_auth_token_with_retry_blocking(timeout: Duration) -> Result<String, 
     let mut last_error = format!("Auth token not ready at {}", path.display());
 
     loop {
-        match fs::read_to_string(&path) {
-            Ok(token) => {
-                let trimmed = token.trim();
-                if !trimmed.is_empty() {
-                    return Ok(trimmed.to_string());
-                }
+        match read_auth_token_from_path(&path) {
+            Ok(token) if !token.is_empty() => return Ok(token),
+            Ok(_) => {
                 last_error = format!("Auth token file is empty at {}", path.display());
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                last_error = format!("Auth token file not found at {}", path.display());
-            }
             Err(err) => {
-                last_error = format!("Failed to read token at {}: {err}", path.display());
+                last_error = err;
             }
         }
 

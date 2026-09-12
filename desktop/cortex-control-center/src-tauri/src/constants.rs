@@ -19,6 +19,7 @@ pub(crate) const LOCAL_DAEMON_LOCK_WAIT_SECS: u64 = 15;
 pub(crate) const LOCAL_DAEMON_START_WAIT_MS: u64 = (LOCAL_DAEMON_LOCK_WAIT_SECS * 1_000) + 2_000;
 pub(crate) const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
 pub(crate) const AUTH_TOKEN_POLL_MS: u64 = 100;
+pub(crate) const MAX_AUTH_TOKEN_BYTES: u64 = 8 * 1024;
 pub(crate) const SUPERVISOR_TICK_MS: u64 = 3_000;
 pub(crate) const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
 pub(crate) const CONTROL_CENTER_OWNER_TAG: &str = "control-center";

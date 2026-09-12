@@ -3,7 +3,7 @@ use crate::daemon::process::apply_hidden_process_flags;
 use serde::Deserialize;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 pub fn cortex_home() -> Result<PathBuf, String> {
@@ -27,8 +27,29 @@ pub struct ResolvedCortexPaths {
 pub fn default_cortex_dir() -> Result<PathBuf, String> {
     Ok(cortex_home()?.join(".cortex"))
 }
+pub fn validate_cortex_token_file_path(path: &Path, home: Option<&Path>) -> Result<(), String> {
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    if !file_name.eq_ignore_ascii_case("cortex.token") {
+        return Err("Auth token path must be a cortex.token file".to_string());
+    }
+    if path.components().any(|component| matches!(component, Component::ParentDir)) {
+        return Err("Auth token path must not contain '..'".to_string());
+    }
+    let Some(home) = home else {
+        return Err("Auth token path requires Cortex home".to_string());
+    };
+    let expected = home.join("cortex.token");
+    if normalized_path_for_guard(path) != normalized_path_for_guard(&expected) {
+        return Err("Auth token path must stay at Cortex home/cortex.token".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn token_path() -> Result<PathBuf, String> {
-    resolved_cortex_paths().token.ok_or_else(|| "Could not resolve Cortex token path".to_string())
+    let home = resolved_cortex_paths().home.ok_or_else(|| "Could not resolve Cortex home path".to_string())?;
+    let token = home.join("cortex.token");
+    validate_cortex_token_file_path(&token, Some(&home))?;
+    Ok(token)
 }
 
 pub fn cortex_db_path() -> Result<PathBuf, String> {
@@ -187,21 +208,22 @@ pub fn service_ensure_fallback_enabled() -> bool {
     path_binary_fallback_enabled_from_value(std::env::var(SERVICE_ENSURE_FALLBACK_ENV).ok().as_deref())
 }
 
-fn parse_paths_json(output: &[u8]) -> Result<ResolvedCortexPaths, String> {
+pub(crate) fn parse_paths_json(output: &[u8]) -> Result<ResolvedCortexPaths, String> {
     let json: serde_json::Value = serde_json::from_slice(output).map_err(|err| format!("Invalid JSON from `cortex paths --json`: {err}"))?;
     let port = json
         .get("port")
         .and_then(|value| value.as_u64())
         .map(|value| u16::try_from(value).map_err(|err| format!("Port value out of range ({value}): {err}")))
         .transpose()?;
+    let home = json.get("home").and_then(|value| value.as_str()).map(PathBuf::from);
 
     Ok(ResolvedCortexPaths {
-        home: json.get("home").and_then(|value| value.as_str()).map(PathBuf::from),
-        token: json.get("token").and_then(|value| value.as_str()).map(PathBuf::from),
+        token: home.as_ref().map(|dir| dir.join("cortex.token")),
         db: json.get("db").and_then(|value| value.as_str()).map(PathBuf::from),
-        pid: json.get("pid").and_then(|value| value.as_str()).map(PathBuf::from),
+        pid: home.as_ref().map(|dir| dir.join("cortex.pid")),
         port,
         bind: json.get("bind").and_then(|value| value.as_str()).map(|value| value.to_string()),
+        home,
     })
 }
 

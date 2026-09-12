@@ -1,4 +1,6 @@
-use super::paths::{is_disallowed_daemon_binary_path, path_binary_fallback_enabled_from_value, workspace_binary_candidates};
+use super::paths::{
+    is_disallowed_daemon_binary_path, parse_paths_json, path_binary_fallback_enabled_from_value, validate_cortex_token_file_path, workspace_binary_candidates,
+};
 use super::shutdown::{configure_shutdown_flush_connection, extract_error_detail, interpret_shutdown_response};
 use super::spawn::{local_app_managed_start_timeout_message, local_probe_allows_starting_retry};
 use super::state::{describe_daemon_state, DaemonState, LifecycleState};
@@ -173,6 +175,22 @@ fn local_probe_retry_requires_reachability_or_starting_signal() {
     assert!(local_probe_allows_starting_retry(&CortexReachabilityProbe { reachable: true, starting: false, identity_mismatch: false }));
     assert!(local_probe_allows_starting_retry(&CortexReachabilityProbe { reachable: false, starting: true, identity_mismatch: false }));
     assert!(!local_probe_allows_starting_retry(&CortexReachabilityProbe { reachable: false, starting: false, identity_mismatch: false }));
+}
+
+#[test]
+fn token_file_path_must_be_home_cortex_token_and_ignores_json_retarget() {
+    let home = Path::new("C:/cortex-test/testuser/.cortex");
+    assert!(validate_cortex_token_file_path(&home.join("cortex.token"), Some(home)).is_ok());
+    assert!(validate_cortex_token_file_path(Path::new("/etc/passwd"), Some(home)).is_err());
+    assert!(validate_cortex_token_file_path(&home.join("..").join(".ssh").join("cortex.token"), Some(home)).is_err());
+    assert!(validate_cortex_token_file_path(&home.join("cortex.token"), None).is_err());
+
+    let paths = parse_paths_json(
+        br#"{"home":"C:/cortex-test/testuser/.cortex","token":"/etc/passwd","pid":"C:/other/cortex.pid","db":"C:/cortex-test/testuser/.cortex/cortex.db","port":7437}"#,
+    )
+    .expect("parse paths json");
+    assert_eq!(paths.token.as_deref(), Some(home.join("cortex.token").as_path()));
+    assert_eq!(paths.pid.as_deref(), Some(home.join("cortex.pid").as_path()));
 }
 
 #[test]

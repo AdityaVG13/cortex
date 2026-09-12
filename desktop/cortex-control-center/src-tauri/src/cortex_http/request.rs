@@ -66,14 +66,36 @@ pub fn should_use_partial_response_on_read_timeout(err: &std::io::Error, respons
     err.raw_os_error() == Some(10060)
 }
 
+fn http_value_contains_illegal_ctl(value: &str) -> bool {
+    value.bytes().any(|byte| byte <= 0x1F || byte == 0x7F)
+}
+
+pub fn validate_cortex_http_method(method: &str) -> Result<(), String> {
+    if matches!(method, "GET" | "POST") {
+        Ok(())
+    } else {
+        Err("Unsupported HTTP method".to_string())
+    }
+}
+
+pub fn validate_cortex_auth_token(token: &str) -> Result<(), String> {
+    if token.is_empty() {
+        return Ok(());
+    }
+    if token.len() as u64 > MAX_AUTH_TOKEN_BYTES || http_value_contains_illegal_ctl(token) {
+        return Err("Invalid auth token".to_string());
+    }
+    Ok(())
+}
+
 pub fn validate_cortex_request_path(path: &str) -> Result<(), String> {
-    if path.contains('\r') || path.contains('\n') {
+    if http_value_contains_illegal_ctl(path) || path.contains(' ') {
         return Err("Invalid request path".to_string());
     }
     if !path.starts_with('/') {
         return Err("Request path must be origin-form".to_string());
     }
-    if path.contains("://") || path.contains(' ') {
+    if path.contains("://") {
         return Err("Invalid request path".to_string());
     }
     Ok(())
@@ -89,7 +111,10 @@ pub fn send_cortex_request_with_port(
 ) -> Result<FetchCortexResponse, String> {
     use std::io::{Read, Write};
 
+    validate_cortex_http_method(method)?;
     validate_cortex_request_path(path)?;
+    let auth_token = auth_token.trim();
+    validate_cortex_auth_token(auth_token)?;
 
     let mut stream = ClosingTcpStream(
         TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), timeouts.connect).map_err(|e| format!("Cannot connect to daemon: {e}"))?,

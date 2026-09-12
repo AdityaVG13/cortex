@@ -1,9 +1,12 @@
+use super::readiness::read_auth_token_from_path;
+use super::request::{validate_cortex_auth_token, validate_cortex_http_method};
 use super::{
     cortex_readiness_state, decode_chunked_bytes, health_state_with_identity_fallback, is_cortex_health_response, readiness_state_with_identity_fallback,
     should_use_partial_response_on_read_timeout, validate_cortex_request_path, FetchCortexResponse,
 };
 use crate::daemon::paths::ResolvedCortexPaths;
 use crate::daemon::shutdown::extract_error_detail;
+use std::fs;
 use std::path::PathBuf;
 
 #[test]
@@ -26,6 +29,65 @@ fn validate_cortex_request_path_rejects_absolute_urls_and_injection() {
     assert!(validate_cortex_request_path("http://127.0.0.1:7437/sessions").is_err());
     assert!(validate_cortex_request_path("/bad path").is_err());
     assert!(validate_cortex_request_path("/bad\r\nInjected: true").is_err());
+    assert!(validate_cortex_request_path("/bad\tHost: evil").is_err());
+}
+
+#[test]
+fn validate_cortex_auth_token_rejects_header_injection() {
+    assert!(validate_cortex_auth_token("").is_ok());
+    assert!(validate_cortex_auth_token("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4").is_ok());
+    assert!(validate_cortex_auth_token("ok\r\nX-Injected: true").is_err());
+    assert!(validate_cortex_auth_token("ok\nX-Injected: true").is_err());
+    assert!(validate_cortex_http_method("GET").is_ok());
+    assert!(validate_cortex_http_method("POST").is_ok());
+    assert!(validate_cortex_http_method("GET / HTTP/1.1\r\nX-Injected: true").is_err());
+    assert!(validate_cortex_http_method("PUT").is_err());
+}
+
+#[test]
+fn read_auth_token_from_path_rejects_injection_symlink_and_oversize() {
+    let mut n = 0u32;
+    let dir = loop {
+        let path = std::env::temp_dir().join(format!(
+            "cortex-cc-token-{}-{}-{n}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                n = n.saturating_add(1);
+                continue;
+            }
+            Err(err) => panic!("create temp dir {}: {err}", path.display()),
+        }
+    };
+    struct Guard(std::path::PathBuf);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _guard = Guard(dir.clone());
+
+    let token_path = dir.join("cortex.token");
+    fs::write(&token_path, "good-token\n").expect("write token");
+    assert_eq!(read_auth_token_from_path(&token_path).expect("read token"), "good-token");
+
+    fs::write(&token_path, "good\r\nX-Injected: 1").expect("write injected token");
+    assert!(read_auth_token_from_path(&token_path).is_err());
+
+    let oversize = dir.join("oversize.token");
+    fs::write(&oversize, "x".repeat((8 * 1024) + 1)).expect("write oversize");
+    assert!(read_auth_token_from_path(&oversize).is_err());
+
+    #[cfg(unix)]
+    {
+        let link = dir.join("link.token");
+        std::os::unix::fs::symlink(&token_path, &link).expect("symlink");
+        let err = read_auth_token_from_path(&link).expect_err("symlink token must fail closed");
+        assert!(err.contains("symlink"), "{err}");
+    }
 }
 
 #[test]
