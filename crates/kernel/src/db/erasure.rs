@@ -149,18 +149,33 @@ fn apply(
             );
         }
     }
+    // persist_receipt stores `{profile, cards: N}`, not the record id. LIKE on
+    // receipt_json therefore leaves production receipts in place and, on the
+    // test shape, also matches unrelated JSON keys / prefix ids.
+    let receipt_ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT receipt_id FROM view_aliases WHERE record_id = ?1")
+            .map_err(|e| e.to_string())?;
+        stmt.query_map(params![record_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
     let aliases = conn
         .execute(
             "DELETE FROM view_aliases WHERE record_id = ?1",
             params![record_id],
         )
         .map_err(|e| e.to_string())?;
-    let views = conn
-        .execute(
-            "DELETE FROM view_receipts WHERE receipt_id NOT IN (SELECT DISTINCT receipt_id FROM view_aliases) AND receipt_json LIKE '%' || ?1 || '%'",
-            params![record_id],
-        )
-        .map_err(|e| e.to_string())?;
+    let mut views = 0usize;
+    for receipt_id in receipt_ids {
+        views += conn
+            .execute(
+                "DELETE FROM view_receipts WHERE receipt_id = ?1 AND NOT EXISTS (SELECT 1 FROM view_aliases WHERE receipt_id = ?1)",
+                params![receipt_id],
+            )
+            .map_err(|e| e.to_string())?;
+    }
     let _ = conn.execute("DELETE FROM compiled_reads WHERE 1 = 1 AND EXISTS (SELECT 1 FROM records WHERE record_id = ?1)", params![record_id]);
     super::compiled::bump_guard(conn, super::records::DEFAULT_SCOPE, "*")
         .map_err(|e| e.to_string())?;
@@ -368,7 +383,7 @@ pub fn fence_check(conn: &Connection, through_sequence: i64) -> Result<(), Value
 
 pub fn is_erased(conn: &Connection, record_id: &str) -> bool {
     conn.query_row(
-        "SELECT COUNT(*) FROM erasures WHERE target_descriptor LIKE '%' || ?1 || '%'",
+        "SELECT COUNT(*) FROM erasures WHERE json_extract(target_descriptor, '$.record_id') = ?1",
         [record_id],
         |r| r.get::<_, i64>(0),
     )

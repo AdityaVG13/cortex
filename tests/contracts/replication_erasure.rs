@@ -219,6 +219,10 @@ fn erasure_reaches_derived_state_revokes_views_and_survives_restore() {
         assert_eq!(report.revisions_tombstoned, 1);
         assert_eq!(report.legacy_rows_erased, 1);
         assert_eq!(report.aliases_revoked, 1);
+        assert_eq!(
+            report.views_revoked, 1,
+            "orphan view receipts must drop even when receipt_json omits the record id"
+        );
         assert!(report.projections_dropped >= 1, "{report:?}");
         assert!(
             !report.not_retractable.is_empty(),
@@ -226,6 +230,12 @@ fn erasure_reaches_derived_state_revokes_views_and_survives_restore() {
         );
         assert_eq!(erasure_floor(&conn), report.erasure.sequence);
         assert!(is_erased(&conn, &record));
+        assert!(
+            !is_erased(&conn, "authority")
+                && !is_erased(&conn, "record_id")
+                && !is_erased(&conn, "decision"),
+            "erasure identity is the record_id field, not a JSON substring"
+        );
         let body = revision_body(&conn, &format!("{record}@1"))
             .unwrap()
             .unwrap();
