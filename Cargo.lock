@@ -529,7 +529,6 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
- "libc",
  "proptest",
  "regex",
  "rusqlite",
@@ -541,7 +540,6 @@ dependencies = [
  "tempfile",
  "toml",
  "uuid",
- "windows-sys",
 ]
 
 [[package]]

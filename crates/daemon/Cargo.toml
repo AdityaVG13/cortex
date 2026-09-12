@@ -33,19 +33,8 @@ sha2 = "0.11.0"
 dirs = "7.0.0"
 sysinfo = "0.39.6"
 
-
-# Platform file-permission support
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
-
-[target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
-
 [dev-dependencies]
 proptest = "1"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2.189"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
