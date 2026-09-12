@@ -79,24 +79,52 @@ fn registration_matchers_require_attach_only_env_contract() {
     assert!(toml_env_match(&toml_ok, codex));
 }
 
+/// Exclusive home that is removed even if the test panics.
+struct TestTempDir(std::path::PathBuf);
+
+impl TestTempDir {
+    fn new(prefix: &str) -> Self {
+        let mut n = 0u32;
+        loop {
+            let path = std::env::temp_dir().join(format!(
+                "{prefix}-{}-{}-{n}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    n = n.saturating_add(1);
+                    continue;
+                }
+                Err(err) => panic!("create temp dir {}: {err}", path.display()),
+            }
+        }
+    }
+}
+
+impl Drop for TestTempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn gemini_prefers_nested_mcp_config_when_present() {
-    let temp_root = std::env::temp_dir().join(format!("cortex_control_center_editor_test_{}", std::process::id()));
-    let gemini_nested = temp_root.join(".gemini").join("settings").join("mcp.json");
-    let gemini_legacy = temp_root.join(".gemini").join("settings.json");
+    let temp_root = TestTempDir::new("cortex_control_center_editor_test");
+    let gemini_nested = temp_root.0.join(".gemini").join("settings").join("mcp.json");
+    let gemini_legacy = temp_root.0.join(".gemini").join("settings.json");
     fs::create_dir_all(gemini_nested.parent().unwrap()).expect("create gemini settings dir");
     fs::write(&gemini_nested, "{}").expect("write nested gemini config");
     fs::write(&gemini_legacy, "{}").expect("write legacy gemini config");
 
-    let targets = editor_targets(&temp_root);
+    let targets = editor_targets(&temp_root.0);
     let gemini = targets.iter().find(|target| target.id == "gemini").unwrap();
 
     assert_eq!(editor_config_path(gemini), gemini_nested);
-
-    let _ = fs::remove_file(gemini_nested);
-    let _ = fs::remove_file(gemini_legacy);
-    let _ = fs::remove_dir_all(temp_root.join(".gemini"));
-    let _ = fs::remove_dir(temp_root);
 }
 
 #[test]

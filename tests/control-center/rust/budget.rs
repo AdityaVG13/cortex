@@ -77,17 +77,47 @@ fn budget_editor_rejects_duplicate_or_invalid_endpoint_drafts() {
     assert!(invalid.contains("limit must be between 1"));
 }
 
+/// Exclusive home that is removed even if the test panics.
+struct TestTempDir(std::path::PathBuf);
+
+impl TestTempDir {
+    fn new(prefix: &str) -> Self {
+        let mut n = 0u32;
+        loop {
+            let path = std::env::temp_dir().join(format!(
+                "{prefix}-{}-{}-{n}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time")
+                    .as_nanos()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    n = n.saturating_add(1);
+                    continue;
+                }
+                Err(err) => panic!("create temp dir {}: {err}", path.display()),
+            }
+        }
+    }
+}
+
+impl Drop for TestTempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn budget_editor_write_replaces_file_atomically() {
-    let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system time").as_nanos();
-    let dir = std::env::temp_dir().join(format!("cortex-budget-editor-{unique}"));
-    fs::create_dir_all(&dir).expect("create temp dir");
-    let path = dir.join("budgets.toml");
+    let dir = TestTempDir::new("cortex-budget-editor");
+    let path = dir.0.join("budgets.toml");
 
     write_budget_config_file(&path, "[defaults]\nenabled = true\n").expect("write initial file");
     write_budget_config_file(&path, "[defaults]\nenabled = false\n").expect("replace existing file");
 
     let contents = fs::read_to_string(&path).expect("read replaced file");
     assert!(contents.contains("enabled = false"));
-    let _ = fs::remove_dir_all(&dir);
 }
