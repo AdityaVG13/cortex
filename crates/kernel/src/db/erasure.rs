@@ -78,11 +78,7 @@ pub fn read_ledger(home: &Path) -> Vec<ErasureRecord> {
 
 fn append_ledger(home: &Path, record: &ErasureRecord) -> Result<(), String> {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(ledger_path(home))
-        .map_err(|e| e.to_string())?;
+    let mut f = crate::auth::open_append_nofollow(&ledger_path(home)).map_err(|e| e.to_string())?;
     writeln!(
         f,
         "{}",

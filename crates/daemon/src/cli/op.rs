@@ -2,7 +2,7 @@
 //! eight operations against the local brain in-process. No daemon, HTTP or
 //! token is required; the process's own identity is the principal.
 
-use super::common::validate_cli_options_or_exit;
+use super::common::{parse_flag_usize, validate_cli_options_or_exit};
 use crate::auth;
 use cortex_kernel::handlers::operations::{Caller, Operation, dispatch};
 use crate::runtime::CortexRuntime;
@@ -52,12 +52,14 @@ pub async fn run_op_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[
 /// maintenance debt in-process and print the debt afterwards.
 pub async fn run_maintain_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[String]) {
     validate_cli_options_or_exit(args, &["--jobs", "--home", "--db"], &["--json"]);
-    let jobs = args
-        .iter()
-        .position(|a| a == "--jobs")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(32);
+    let jobs = match parse_flag_usize(args, "--jobs") {
+        Ok(Some(value)) => value.clamp(1, 4096),
+        Ok(None) => 32,
+        Err(err) => {
+            eprintln!("[cortex] {err}");
+            std::process::exit(2);
+        }
+    };
     let runtime = match CortexRuntime::open(paths) {
         Ok(r) => r,
         Err(err) => {

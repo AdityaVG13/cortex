@@ -93,9 +93,6 @@ pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
     Some(pid)
 }
 pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
-    if !paths.pid.exists() {
-        return None;
-    }
     let pid = read_pid_file(&paths.pid)?.trim().parse::<u32>().ok()?;
     if pid == std::process::id() || process_is_running(pid) {
         return None;
@@ -109,9 +106,6 @@ pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
 /// `stale_pid_candidate`; used by destructive CLI paths (`cortex restore`)
 /// that must refuse while a daemon may be running.
 pub fn pid_file_live_pid(paths: &CortexPaths) -> Option<u32> {
-    if !paths.pid.exists() {
-        return None;
-    }
     let pid = read_pid_file(&paths.pid)?.trim().parse::<u32>().ok()?;
     if pid == std::process::id() || process_is_running(pid) {
         return Some(pid);

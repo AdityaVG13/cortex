@@ -574,6 +574,45 @@ pub fn open_nofollow(path: &Path) -> io::Result<fs::File> {
     }
 }
 
+/// Append to a home-local ledger without following a planted symlink.
+pub fn open_append_nofollow(path: &Path) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to append through a reparse point",
+            ));
+        }
+        Ok(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    }
+}
+
 /// Read a secret without following a planted symlink/reparse and without
 /// slurping an attacker-replaced huge file. Write already uses O_NOFOLLOW.
 pub fn read_secret_file(path: &Path) -> io::Result<Vec<u8>> {

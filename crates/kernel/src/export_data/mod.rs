@@ -247,8 +247,10 @@ fn query_table_json_page(
     limit: usize,
     offset: usize,
 ) -> Result<(Vec<Value>, bool), String> {
-    let fetch_limit = limit.saturating_add(1) as i64;
-    let offset = offset as i64;
+    let fetch_limit = i64::try_from(limit.saturating_add(1))
+        .map_err(|_| "export_page_limit".to_string())?;
+    let offset =
+        i64::try_from(offset).map_err(|_| "export_page_offset".to_string())?;
     let mut rows = query_rows_json(conn, sql, &[&fetch_limit, &offset])?;
     let has_more = rows.len() > limit;
     if has_more {

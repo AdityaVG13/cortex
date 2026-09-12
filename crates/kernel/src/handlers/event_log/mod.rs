@@ -117,7 +117,12 @@ fn extract_i64(value: Option<&Value>) -> i64 {
         .and_then(|v| {
             v.as_i64()
                 .or_else(|| v.as_u64().and_then(|x| i64::try_from(x).ok()))
-                .or_else(|| v.as_f64().map(|x| x.round() as i64))
+                .or_else(|| {
+                    v.as_f64().and_then(|x| {
+                        let rounded = x.round();
+                        rounded.is_finite().then_some(rounded as i64)
+                    })
+                })
         })
         .unwrap_or(0)
 }

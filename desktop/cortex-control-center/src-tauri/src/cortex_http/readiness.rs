@@ -1,8 +1,8 @@
 use crate::constants::*;
 use crate::cortex_http::request::{send_cortex_request_with_port, validate_cortex_auth_token, RequestTimeouts};
 use crate::daemon::paths::{daemon_port, resolved_cortex_paths, token_path, ResolvedCortexPaths};
-use std::fs;
-use std::io::Read;
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::Path;
 use std::time::Duration;
 
@@ -97,10 +97,8 @@ pub fn wait_for_reachability_blocking(port: u16, target: bool, timeout: Duration
     }
 }
 pub fn read_auth_token_from_path(path: &Path) -> Result<String, String> {
-    let meta = fs::symlink_metadata(path).map_err(|err| format!("Failed to read token at {}: {err}", path.display()))?;
-    if meta.file_type().is_symlink() {
-        return Err(format!("Refusing to read auth token through a symlink at {}", path.display()));
-    }
+    let mut file = open_token_nofollow(path)?;
+    let meta = file.metadata().map_err(|err| format!("Failed to read token at {}: {err}", path.display()))?;
     if !meta.is_file() {
         return Err(format!("Auth token path is not a regular file: {}", path.display()));
     }
@@ -108,7 +106,6 @@ pub fn read_auth_token_from_path(path: &Path) -> Result<String, String> {
         return Err(format!("Auth token file exceeds {MAX_AUTH_TOKEN_BYTES} bytes at {}", path.display()));
     }
 
-    let mut file = fs::File::open(path).map_err(|err| format!("Failed to open token at {}: {err}", path.display()))?;
     let mut raw = String::new();
     file.by_ref().take(MAX_AUTH_TOKEN_BYTES + 1).read_to_string(&mut raw).map_err(|err| format!("Failed to read token at {}: {err}", path.display()))?;
     if raw.len() as u64 > MAX_AUTH_TOKEN_BYTES {
@@ -120,6 +117,54 @@ pub fn read_auth_token_from_path(path: &Path) -> Result<String, String> {
     }
     validate_cortex_auth_token(trimmed)?;
     Ok(trimmed.to_string())
+}
+
+fn open_token_nofollow(path: &Path) -> Result<File, String> {
+    match open_nofollow(path) {
+        Ok(file) => Ok(file),
+        Err(err) => {
+            #[cfg(unix)]
+            if err.raw_os_error() == Some(libc::ELOOP) {
+                return Err(format!("Refusing to read auth token through a symlink at {}", path.display()));
+            }
+            if err.kind() == io::ErrorKind::InvalidInput {
+                return Err(format!("Refusing to read auth token through a symlink at {}", path.display()));
+            }
+            Err(format!("Failed to open token at {}: {err}", path.display()))
+        }
+    }
+}
+
+fn open_nofollow(path: &Path) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to follow a reparse point",
+            ));
+        }
+        Ok(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        File::open(path)
+    }
 }
 
 pub fn read_auth_token_once() -> Result<String, String> {

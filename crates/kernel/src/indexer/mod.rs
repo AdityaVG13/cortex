@@ -4,6 +4,7 @@ use rusqlite::Connection;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 /// Each registered file commits independently; earlier receipts remain replayable on error.
@@ -12,6 +13,24 @@ pub fn index_all(conn: &mut Connection, home: &Path, owner_id: Option<i64>) -> R
         + index_memory_files(conn, home, owner_id)?
         + index_custom_sources(conn, home, owner_id)?)
 }
+fn source_unavailable(err: io::Error) -> String {
+    format!("source_unavailable: {err}")
+}
+
+fn index_discovered_file(
+    conn: &mut Connection,
+    path: &Path,
+    owner_id: Option<i64>,
+) -> Result<usize, String> {
+    match crate::auth::open_nofollow(path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err.to_string()),
+        Ok(_) => {}
+    }
+    capture_file(conn, path, owner_id, false)?;
+    Ok(1)
+}
+
 /// Capture a registered UTF-8 file without interpreting or truncating its content.
 /// Key: file:<canonical UTF-8 absolute path>. Owner comes from the trusted host.
 pub fn index_file(
@@ -19,26 +38,37 @@ pub fn index_file(
     path: &Path,
     owner_id: Option<i64>,
 ) -> Result<ObservationReceipt, String> {
-    use std::io::Read;
-    // Operator-chosen source: canonicalize follows, then we open that target.
-    let path = path
-        .canonicalize()
-        .map_err(|err| format!("source_unavailable: {err}"))?;
-    let key = format!("file:{}", path.to_str().ok_or("source_path_not_utf8")?);
-    let principal = owner_id.map_or_else(|| "local".into(), |id| format!("user:{id}"));
-    let limit = observation::source_capture_limit(conn, &principal, &key)?
-        .min(INDEXER_MAX_FILE_BYTES as usize);
-    if !fs::metadata(&path)
-        .map_err(|err| err.to_string())?
-        .is_file()
-    {
-        return Err("source_not_regular_file".into());
-    }
-    let file = fs::File::open(&path).map_err(|err| format!("source_unavailable: {err}"))?;
+    capture_file(conn, path, owner_id, true)
+}
+
+fn capture_file(
+    conn: &mut Connection,
+    path: &Path,
+    owner_id: Option<i64>,
+    follow: bool,
+) -> Result<ObservationReceipt, String> {
+    // Operator-chosen source (`follow`): canonicalize once, then open that
+    // target with O_NOFOLLOW so a later symlink swap cannot redirect the fd.
+    // Auto-discovered files never follow: a planted alias must fail closed.
+    let resolved = if follow {
+        path.canonicalize().map_err(source_unavailable)?
+    } else {
+        path.to_path_buf()
+    };
+    let file = crate::auth::open_nofollow(&resolved).map_err(source_unavailable)?;
     let before = file.metadata().map_err(|err| err.to_string())?;
     if !before.is_file() {
         return Err("source_not_regular_file".into());
     }
+    let key_path = if follow {
+        resolved
+    } else {
+        path.canonicalize().map_err(source_unavailable)?
+    };
+    let key = format!("file:{}", key_path.to_str().ok_or("source_path_not_utf8")?);
+    let principal = owner_id.map_or_else(|| "local".into(), |id| format!("user:{id}"));
+    let limit = observation::source_capture_limit(conn, &principal, &key)?
+        .min(INDEXER_MAX_FILE_BYTES as usize);
     if before.len() > limit as u64 {
         return Err("capture_byte_limit".into());
     }
@@ -51,7 +81,7 @@ pub fn index_file(
     if bytes.len() > limit {
         return Err("capture_byte_limit".into());
     }
-    let after = fs::metadata(&path).map_err(|err| format!("source_changed: {err}"))?;
+    let after = fs::metadata(&key_path).map_err(|err| format!("source_changed: {err}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -107,12 +137,7 @@ fn index_state_file(
     home: &Path,
     owner_id: Option<i64>,
 ) -> Result<usize, String> {
-    let path = home.join(".claude").join("state.md");
-    if !path.try_exists().map_err(|err| err.to_string())? {
-        return Ok(0);
-    }
-    index_file(conn, &path, owner_id)?;
-    Ok(1)
+    index_discovered_file(conn, &home.join(".claude").join("state.md"), owner_id)
 }
 
 fn index_memory_files(
@@ -128,20 +153,19 @@ fn index_memory_files(
         .join("projects")
         .join(slug)
         .join("memory");
-    if !dir.try_exists().map_err(|err| err.to_string())? {
-        return Ok(0);
-    }
-    let mut paths = fs::read_dir(&dir)
-        .map_err(|err| err.to_string())?
-        .map(|entry| entry.map(|e| e.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())?;
+    let mut paths = match fs::read_dir(&dir) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err.to_string()),
+        Ok(entries) => entries
+            .map(|entry| entry.map(|e| e.path()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?,
+    };
     paths.sort();
     let mut count = 0;
     for path in paths {
         if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            index_file(conn, &path, owner_id)?;
-            count += 1;
+            count += index_discovered_file(conn, &path, owner_id)?;
         }
     }
     Ok(count)
@@ -174,9 +198,10 @@ fn expand_tilde(p: &str) -> PathBuf {
 }
 fn load_custom_sources(home: &Path) -> Result<Vec<CustomSource>, String> {
     let path = home.join(".cortex").join("sources.toml");
-    if path.try_exists().map_err(|err| err.to_string())? {
-        use std::io::Read;
-        let file = crate::auth::open_nofollow(&path).map_err(|err| err.to_string())?;
+    match crate::auth::open_nofollow(&path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.to_string()),
+        Ok(file) => {
         let mut content = String::new();
         file.take(INDEXER_MAX_CONFIG_BYTES + 1)
             .read_to_string(&mut content)
@@ -187,6 +212,7 @@ fn load_custom_sources(home: &Path) -> Result<Vec<CustomSource>, String> {
         return toml::from_str::<SourcesConfig>(&content)
             .map(|cfg| cfg.source)
             .map_err(|err| format!("invalid_source_config: {err}"));
+        }
     }
     Ok(std::env::var("CORTEX_EXTRA_SOURCES")
         .unwrap_or_default()
