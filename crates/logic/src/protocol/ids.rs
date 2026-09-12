@@ -88,12 +88,19 @@ mod serde_bytes_hex {
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         let text = String::deserialize(d)?;
-        if text.len() % 2 != 0 {
+        let bytes = text.as_bytes();
+        if bytes.len() % 2 != 0 {
             return Err(serde::de::Error::custom("hex string must have even length"));
         }
-        (0..text.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(serde::de::Error::custom))
+        if !bytes.iter().all(|b| b.is_ascii_hexdigit()) {
+            return Err(serde::de::Error::custom("hex string must be ASCII hex"));
+        }
+        bytes
+            .chunks_exact(2)
+            .map(|chunk| {
+                let pair = std::str::from_utf8(chunk).map_err(serde::de::Error::custom)?;
+                u8::from_str_radix(pair, 16).map_err(serde::de::Error::custom)
+            })
             .collect()
     }
 }

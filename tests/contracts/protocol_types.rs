@@ -3,7 +3,9 @@
 //! extensions but fail explicitly on unknown operations/flags/fields, and a
 //! Receipt is durable only with a local commit frontier.
 
-use cortex_logic::protocol::{Envelope, EnvelopeError, LogicalId, Receipt, ResponseStatus};
+use cortex_logic::protocol::{
+    Envelope, EnvelopeError, Frontier, LogicalId, Receipt, ResponseStatus,
+};
 use std::fs;
 use std::path::PathBuf;
 
@@ -130,5 +132,17 @@ fn legacy_references_become_logical_aliases() {
         LogicalId::from_legacy("decision", 3),
         LogicalId::new("decision", "3")
     );
+}
+
+#[test]
+fn frontier_opaque_hex_rejects_multibyte_utf8_without_panic() {
+    let parsed = std::panic::catch_unwind(|| {
+        serde_json::from_str::<Frontier>(r#"{"provider":"sqlite","restore_epoch":"e","opaque":"😀"}"#)
+    });
+    match parsed {
+        Ok(Ok(_)) => panic!("multibyte opaque must not deserialize as hex"),
+        Ok(Err(_)) => {}
+        Err(_) => panic!("hex deserializer panicked on valid even-length UTF-8"),
+    }
 }
 
