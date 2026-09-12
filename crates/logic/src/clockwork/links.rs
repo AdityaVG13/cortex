@@ -369,6 +369,25 @@ pub fn reject_used_with(
     Ok(())
 }
 
+/// LIKE literal: `_` is a common path character and must not match one byte.
+fn like_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn like_children(path: &str) -> String {
+    let mut out = like_literal(path);
+    out.push('/');
+    out.push('%');
+    out
+}
+
 pub fn lookup_targets_for_anchors(
     conn: &Connection,
     anchors: &[QueryAnchor],
@@ -382,16 +401,21 @@ pub fn lookup_targets_for_anchors(
                  FROM clock_anchor_evidence e
                  JOIN clock_anchors a ON a.id = e.anchor_id
                  WHERE a.kind = 'path'
-                   AND (a.value = ?1 OR a.value LIKE ?1 || '/%' OR ?1 LIKE a.value || '/%')
+                   AND (a.value = ?1
+                        OR a.value LIKE ?2 ESCAPE '\\'
+                        OR ?1 LIKE replace(replace(replace(a.value, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '/%' ESCAPE '\\')
                  ORDER BY a.specificity DESC, e.target_type ASC, e.target_id ASC
-                 LIMIT ?2",
+                 LIMIT ?3",
             )?;
-            let rows = stmt.query_map(params![anchor.value, limit as i64], |row| {
-                Ok(ClockTarget {
-                    target_type: row.get(0)?,
-                    target_id: row.get(1)?,
-                })
-            })?;
+            let rows = stmt.query_map(
+                params![anchor.value, like_children(&anchor.value), limit as i64],
+                |row| {
+                    Ok(ClockTarget {
+                        target_type: row.get(0)?,
+                        target_id: row.get(1)?,
+                    })
+                },
+            )?;
             for target in rows.flatten() {
                 seen.insert(target);
                 if seen.len() >= limit {

@@ -85,20 +85,34 @@ pub fn list_conflicts_payload(
     )
 }
 
+/// Contains-pattern for `LIKE ? ESCAPE '\'`. Keyword `%` `_` `\` must stay
+/// literals or `forget` of `100%` matches every memory whose text contains `100`.
+fn like_contains(keyword: &str) -> String {
+    let mut out = String::from("%");
+    for ch in keyword.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('%');
+    out
+}
+
 pub fn forget_keyword_scoped(
     conn: &mut Connection,
     keyword: &str,
     owner_id: Option<i64>,
 ) -> Result<usize, String> {
-    let pattern = format!("%{}%", keyword.to_lowercase());
+    let pattern = like_contains(&keyword.to_lowercase());
     let updated = if let Some(owner_id) = owner_id {
         conn.execute(
-            "UPDATE memories SET score = score * 0.3 WHERE owner_id = ?2 AND lower(text) LIKE ?1",
+            "UPDATE memories SET score = score * 0.3 WHERE owner_id = ?2 AND lower(text) LIKE ?1 ESCAPE '\\'",
             params![pattern, owner_id],
         )
     } else {
         conn.execute(
-            "UPDATE memories SET score = score * 0.3 WHERE lower(text) LIKE ?1",
+            "UPDATE memories SET score = score * 0.3 WHERE lower(text) LIKE ?1 ESCAPE '\\'",
             params![pattern],
         )
     };
