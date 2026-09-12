@@ -261,4 +261,4 @@ name = "assembly"
 path = "contracts/assembly.rs"
 
 [lints.rust]
-unsafe_code = "deny"
+unsafe_code = "forbid"
