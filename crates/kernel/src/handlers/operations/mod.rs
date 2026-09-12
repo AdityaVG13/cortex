@@ -722,8 +722,7 @@ async fn promote_op(
     let conn = state.db.lock(cx).await.map_err(|e| e.to_string())?;
     records::ensure_authoritative_schema(&conn).map_err(|e| e.to_string())?;
     let ack = crate::runtime::ack_profile_label_pub(&crate::store_spi::sqlite::ack_profile(&conn));
-    conn.execute_batch("SAVEPOINT promote")
-        .map_err(|e| e.to_string())?;
+    let sp = crate::db::SqliteSavepoint::enter(&*conn, "promote").map_err(|e| e.to_string())?;
     let seq =
         records::append_commit(&conn, &caller.principal, None, ack).map_err(|e| e.to_string())?;
     let result = promote(
@@ -742,14 +741,10 @@ async fn promote_op(
     );
     match result {
         Ok((record, body)) => {
-            conn.execute_batch("RELEASE promote")
-                .map_err(|e| e.to_string())?;
+            sp.release().map_err(|e| e.to_string())?;
             Ok(json!({"status": ResponseStatus::Ok.as_str(), "promoted": record, "body": body}))
         }
-        Err(err) => {
-            let _ = conn.execute_batch("ROLLBACK TO promote; RELEASE promote");
-            Ok(json!({"status": ResponseStatus::InvalidRequest.as_str(), "error": err}))
-        }
+        Err(err) => Ok(json!({"status": ResponseStatus::InvalidRequest.as_str(), "error": err})),
     }
 }
 
@@ -1330,105 +1325,108 @@ async fn commit(cx: &asupersync::Cx, state: &RuntimeState, caller: &Caller<'_>, 
     let mut conn = state.db.lock(cx).await.map_err(|e| e.to_string())?;
     state.drain_deferred(&conn);
     // All entries succeed or none: an outer savepoint around per-entry deposits.
-    conn.execute_batch("SAVEPOINT commit_batch")
-        .map_err(|e| e.to_string())?;
-    let mut receipts = Vec::new();
-    let mut captures = Vec::new();
-    let mut assigned = serde_json::Map::new();
-    for (index, entry) in entries.iter().enumerate() {
-        let Some(text) = entry
-            .get("text")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-        else {
-            let _ = conn.execute_batch("ROLLBACK TO commit_batch; RELEASE commit_batch");
-            return Ok(
-                json!({"status": ResponseStatus::InvalidRequest.as_str(), "error": format!("entries[{index}].text is required"), "field": format!("entries[{index}].text")}),
-            );
-        };
-        let local_id = entry
-            .get("local_id")
-            .and_then(Value::as_str)
-            .unwrap_or("entry")
-            .to_string();
-        let key = idempotency_key.as_ref().map(|k| format!("{k}#{local_id}"));
-        let outcome = deposit_decision(
-            &mut conn,
-            DepositInput {
-                request_id: &request_id,
-                idempotency_key: key,
-                principal: caller.principal.clone(),
-                text,
-                context: entry
-                    .get("context")
+    // Panic, SQL error, and client-error returns all roll the batch back.
+    let (receipts, captures, assigned, linked) = match crate::db::with_savepoint_mut(
+        &mut *conn,
+        "commit_batch",
+        |conn| {
+            let mut receipts = Vec::new();
+            let mut captures = Vec::new();
+            let mut assigned = serde_json::Map::new();
+            for (index, entry) in entries.iter().enumerate() {
+                let Some(text) = entry
+                    .get("text")
                     .and_then(Value::as_str)
-                    .map(str::to_string),
-                entry_type: entry
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| Some("decision".into())),
-                source_agent: caller.agent.to_string(),
-                provenance: DecisionProvenance::from_fields(
-                    caller.agent,
-                    arg_str(args, &["source_model"]),
-                    arg_str(args, &["reasoning_depth"]),
-                ),
-                confidence: args.get("confidence").and_then(Value::as_f64),
-                ttl_seconds: None,
-                retention_class: retention,
-                anchors: Vec::new(),
-                paths: commit_paths(args, entry),
-                thread: arg_str(entry, &["thread"])
-                    .or_else(|| arg_str(args, &["thread"]))
-                    .map(str::to_string),
-                fields: entry.get("fields").cloned(),
-                owner_id: caller.owner_id,
-                benchmark: false,
-            },
-        );
-        match outcome {
-            Ok(outcome) => {
-                for (name, id) in &outcome.receipt.entries {
-                    assigned.insert(format!("{local_id}.{name}"), json!(id));
-                }
-                captures.push(json!({"entry": local_id, "capture": outcome.capture}));
-                receipts.push(outcome);
-            }
-            Err(err) => {
-                let _ = conn.execute_batch("ROLLBACK TO commit_batch; RELEASE commit_batch");
-                let status = if err.to_string().starts_with("idempotency_conflict") {
-                    ResponseStatus::InvalidRequest
-                } else {
-                    ResponseStatus::Unavailable
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                else {
+                    return Err(json!({"status": ResponseStatus::InvalidRequest.as_str(), "error": format!("entries[{index}].text is required"), "field": format!("entries[{index}].text")}));
                 };
-                return Ok(
-                    json!({"status": status.as_str(), "error": err.to_string(), "entry": local_id}),
+                let local_id = entry
+                    .get("local_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("entry")
+                    .to_string();
+                let key = idempotency_key.as_ref().map(|k| format!("{k}#{local_id}"));
+                let outcome = deposit_decision(
+                    conn,
+                    DepositInput {
+                        request_id: &request_id,
+                        idempotency_key: key,
+                        principal: caller.principal.clone(),
+                        text,
+                        context: entry
+                            .get("context")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        entry_type: entry
+                            .get("kind")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .or_else(|| Some("decision".into())),
+                        source_agent: caller.agent.to_string(),
+                        provenance: DecisionProvenance::from_fields(
+                            caller.agent,
+                            arg_str(args, &["source_model"]),
+                            arg_str(args, &["reasoning_depth"]),
+                        ),
+                        confidence: args.get("confidence").and_then(Value::as_f64),
+                        ttl_seconds: None,
+                        retention_class: retention,
+                        anchors: Vec::new(),
+                        paths: commit_paths(args, entry),
+                        thread: arg_str(entry, &["thread"])
+                            .or_else(|| arg_str(args, &["thread"]))
+                            .map(str::to_string),
+                        fields: entry.get("fields").cloned(),
+                        owner_id: caller.owner_id,
+                        benchmark: false,
+                    },
                 );
+                match outcome {
+                    Ok(outcome) => {
+                        for (name, id) in &outcome.receipt.entries {
+                            assigned.insert(format!("{local_id}.{name}"), json!(id));
+                        }
+                        captures.push(json!({"entry": local_id, "capture": outcome.capture}));
+                        receipts.push(outcome);
+                    }
+                    Err(err) => {
+                        let status = if err.to_string().starts_with("idempotency_conflict") {
+                            ResponseStatus::InvalidRequest
+                        } else {
+                            ResponseStatus::Unavailable
+                        };
+                        return Err(json!({
+                            "status": status.as_str(),
+                            "error": err.to_string(),
+                            "entry": local_id
+                        }));
+                    }
+                }
             }
-        }
-    }
-    // Cited observations must authorize before the Deposit commits. A failed
-    // cite rolls the batch back: promotion is never half-applied.
-    let decision_ids: Vec<i64> = receipts.iter().filter_map(decision_id_from_outcome).collect();
-    let obs_principal = crate::CortexRuntime::from_state(state.clone())
-        .observation_principal()
-        .unwrap_or_else(|_| caller.principal.clone());
-    let linked = match link_observation_evidence(
-        &conn,
-        &obs_principal,
-        &decision_ids,
-        &evidence_ids,
+            // Cited observations must authorize before the Deposit commits. A failed
+            // cite rolls the batch back: promotion is never half-applied.
+            let decision_ids: Vec<i64> = receipts.iter().filter_map(decision_id_from_outcome).collect();
+            let obs_principal = crate::CortexRuntime::from_state(state.clone())
+                .observation_principal()
+                .unwrap_or_else(|_| caller.principal.clone());
+            let linked = match link_observation_evidence(
+                conn,
+                &obs_principal,
+                &decision_ids,
+                &evidence_ids,
+            ) {
+                Ok(linked) => linked,
+                Err(err) => return Err(err),
+            };
+            Ok((receipts, captures, assigned, linked))
+        },
+        |e| json!({"status": ResponseStatus::Unavailable.as_str(), "error": e.to_string()}),
     ) {
-        Ok(linked) => linked,
-        Err(err) => {
-            let _ = conn.execute_batch("ROLLBACK TO commit_batch; RELEASE commit_batch");
-            return Ok(err);
-        }
+        Ok(batch) => batch,
+        Err(err) => return Ok(err),
     };
-    conn.execute_batch("RELEASE commit_batch")
-        .map_err(|e| e.to_string())?;
     let last = receipts.last().map(|o| o.receipt.clone());
     let mut receipt_json = json!(last);
     receipt_json["entries"] = Value::Object(assigned);
@@ -1493,8 +1491,7 @@ async fn checkpoint(
         );
     }
     let ack = crate::runtime::ack_profile_label_pub(&crate::store_spi::sqlite::ack_profile(&conn));
-    conn.execute_batch("SAVEPOINT checkpoint_op")
-        .map_err(|e| e.to_string())?;
+    let sp = crate::db::SqliteSavepoint::enter(&*conn, "checkpoint_op").map_err(|e| e.to_string())?;
     let result = (|| -> Result<Value, String> {
         let seq = records::append_commit(&conn, &caller.principal, None, ack)
             .map_err(|e| e.to_string())?;
@@ -1643,12 +1640,8 @@ async fn checkpoint(
         }
     })();
     match &result {
-        Ok(v) if v["status"] == "ok" => conn
-            .execute_batch("RELEASE checkpoint_op")
-            .map_err(|e| e.to_string())?,
-        _ => {
-            let _ = conn.execute_batch("ROLLBACK TO checkpoint_op; RELEASE checkpoint_op");
-        }
+        Ok(v) if v["status"] == "ok" => sp.release().map_err(|e| e.to_string())?,
+        _ => {}
     }
     result
 }

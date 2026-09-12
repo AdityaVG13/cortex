@@ -149,21 +149,13 @@ pub fn deposit_decision(
         ));
     }
     // One atomic batch: store + focus + trace/version + entities + clock
-    // projection. A failure anywhere rolls the whole deposit back.
-    conn.execute_batch("SAVEPOINT deposit")
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
-    let result = deposit_inner(conn, &input, &text, context, &canonical_hash);
-    match result {
-        Ok(outcome) => {
-            conn.execute_batch("RELEASE deposit")
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
-            Ok(outcome)
-        }
-        Err(err) => {
-            let _ = conn.execute_batch("ROLLBACK TO deposit; RELEASE deposit");
-            Err(err)
-        }
-    }
+    // projection. A failure or panic rolls the whole deposit back.
+    crate::db::with_savepoint_mut(
+        conn,
+        "deposit",
+        |conn| deposit_inner(conn, &input, &text, context, &canonical_hash),
+        |e| StoreError::Internal(e.to_string()),
+    )
 }
 
 fn canonical_deposit(

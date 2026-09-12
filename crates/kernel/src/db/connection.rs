@@ -152,3 +152,113 @@ pub fn configure_with_profile(
     Ok(())
 }
 pub type MigrationDef = (&'static str, &'static str);
+
+fn savepoint_ident(name: &'static str) {
+    assert!(
+        !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+        "savepoint name must be a SQLite identifier"
+    );
+}
+
+/// `BEGIN IMMEDIATE` that rolls back on drop unless [`ImmediateWrite::commit`]
+/// succeeds. Covers error `return` and unwind; a bare `execute_batch("BEGIN
+/// IMMEDIATE")` without this (or rusqlite `Transaction`) leaves the connection
+/// in a write transaction.
+#[must_use]
+pub struct ImmediateWrite<'a> {
+    conn: &'a Connection,
+    finished: bool,
+}
+
+impl<'a> ImmediateWrite<'a> {
+    pub fn begin(conn: &'a Connection) -> rusqlite::Result<Self> {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(Self {
+            conn,
+            finished: false,
+        })
+    }
+
+    pub fn commit(mut self) -> rusqlite::Result<()> {
+        self.conn.execute_batch("COMMIT")?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for ImmediateWrite<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
+/// Named `SAVEPOINT` that rolls back on drop unless [`SqliteSavepoint::release`]
+/// succeeds. Use when the body only needs `&Connection` so the guard can stay
+/// live across `?` / panic / future cancel.
+#[must_use]
+pub struct SqliteSavepoint<'a> {
+    conn: &'a Connection,
+    name: &'static str,
+    released: bool,
+}
+
+impl<'a> SqliteSavepoint<'a> {
+    pub fn enter(conn: &'a Connection, name: &'static str) -> rusqlite::Result<Self> {
+        savepoint_ident(name);
+        conn.execute_batch(&format!("SAVEPOINT {name}"))?;
+        Ok(Self {
+            conn,
+            name,
+            released: false,
+        })
+    }
+
+    pub fn release(mut self) -> rusqlite::Result<()> {
+        self.conn
+            .execute_batch(&format!("RELEASE {}", self.name))?;
+        self.released = true;
+        Ok(())
+    }
+}
+
+impl Drop for SqliteSavepoint<'_> {
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = self.conn.execute_batch(&format!(
+                "ROLLBACK TO {}; RELEASE {}",
+                self.name, self.name
+            ));
+        }
+    }
+}
+
+/// `SAVEPOINT` around a body that needs `&mut Connection` (so a live
+/// [`SqliteSavepoint`] cannot coexist with the exclusive borrow). Rolls back
+/// on `Err` and on unwind; `RELEASE` only on `Ok`.
+pub fn with_savepoint_mut<T, E>(
+    conn: &mut Connection,
+    name: &'static str,
+    f: impl FnOnce(&mut Connection) -> Result<T, E>,
+    map_sql: impl Fn(rusqlite::Error) -> E,
+) -> Result<T, E> {
+    savepoint_ident(name);
+    conn.execute_batch(&format!("SAVEPOINT {name}"))
+        .map_err(&map_sql)?;
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(conn))) {
+        Ok(Ok(value)) => {
+            conn.execute_batch(&format!("RELEASE {name}"))
+                .map_err(map_sql)?;
+            Ok(value)
+        }
+        Ok(Err(err)) => {
+            let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+            Err(err)
+        }
+        Err(payload) => {
+            let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+            std::panic::resume_unwind(payload);
+        }
+    }
+}

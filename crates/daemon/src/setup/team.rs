@@ -122,10 +122,13 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     }
     db::migrate_focus_table(&conn);
     crate::crystallize::migrate_crystal_tables(&conn);
-    if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
-        eprintln!("  [FAIL] Cannot begin transaction: {e}");
-        return;
-    }
+    let tx = match db::ImmediateWrite::begin(&conn) {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("  [FAIL] Cannot begin transaction: {e}");
+            return;
+        }
+    };
     eprintln!("  Migrating to team mode...");
     eprintln!();
     let owner_key = auth::generate_ctx_api_key();
@@ -199,7 +202,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
         eprintln!("  [FAIL] Team migration rolled back because owner token persistence failed: {e}");
         return;
     }
-    if let Err(e) = conn.execute_batch("COMMIT") {
+    if let Err(e) = tx.commit() {
         rollback_team_setup(&conn);
         restore_previous_token(&paths, previous_token);
         eprintln!("  [FAIL] Failed to commit team migration: {e}");

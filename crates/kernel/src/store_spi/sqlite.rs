@@ -533,24 +533,27 @@ impl BrainStore for SqliteStore {
         self.conn
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
-        for (record, expected) in &intent.expected_heads {
-            let actual = SqliteTx::head_of(&self.conn, record)?;
-            if &actual != expected {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                return Err(StoreSpiError::HeadConflict {
-                    record: record.clone(),
-                    expected: expected.clone(),
-                    actual,
-                });
-            }
-        }
-        Ok(SqliteTx {
+        let tx = SqliteTx {
             conn: &mut self.conn,
             intent,
             canonical: Vec::new(),
             entries: BTreeMap::new(),
             finished: false,
-        })
+        };
+        {
+            let SqliteTx { conn, intent, .. } = &tx;
+            for (record, expected) in &intent.expected_heads {
+                let actual = SqliteTx::head_of(conn, record)?;
+                if &actual != expected {
+                    return Err(StoreSpiError::HeadConflict {
+                        record: record.clone(),
+                        expected: expected.clone(),
+                        actual,
+                    });
+                }
+            }
+        }
+        Ok(tx)
     }
 
     fn read_changes(

@@ -192,8 +192,7 @@ pub fn erase(
         return Err(format!("unknown record {record_id}"));
     }
     let ack = crate::runtime::ack_profile_label_pub(&crate::store_spi::sqlite::ack_profile(conn));
-    conn.execute_batch("SAVEPOINT erase")
-        .map_err(|e| e.to_string())?;
+    let sp = crate::db::SqliteSavepoint::enter(conn, "erase").map_err(|e| e.to_string())?;
     let result = (|| {
         let sequence =
             super::records::append_commit(conn, authority, None, ack).map_err(|e| e.to_string())?;
@@ -248,14 +247,10 @@ pub fn erase(
     })();
     match result {
         Ok(report) => {
-            conn.execute_batch("RELEASE erase")
-                .map_err(|e| e.to_string())?;
+            sp.release().map_err(|e| e.to_string())?;
             Ok(report)
         }
-        Err(err) => {
-            let _ = conn.execute_batch("ROLLBACK TO erase; RELEASE erase");
-            Err(err)
-        }
+        Err(err) => Err(err),
     }
 }
 
