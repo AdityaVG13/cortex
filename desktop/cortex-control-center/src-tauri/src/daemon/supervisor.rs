@@ -3,8 +3,76 @@ use crate::cortex_http::readiness::probe_cortex_reachability_with_port;
 use crate::daemon::paths::{daemon_port, log_startup_path, service_ensure_fallback_enabled};
 use crate::daemon::spawn::{try_local_app_managed_ensure, try_service_ensure};
 use crate::daemon::state::DaemonState;
-use std::sync::atomic::{AtomicU32, Ordering};
-use tauri::Manager;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
+use std::thread::JoinHandle;
+use std::time::Duration;
+use tauri::{Manager, Runtime};
+
+pub struct SupervisorControl {
+    stop: AtomicBool,
+    handle: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl SupervisorControl {
+    pub fn new() -> Self {
+        Self { stop: AtomicBool::new(false), handle: Mutex::new(None) }
+    }
+
+    fn stop_flag(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    fn request_stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+
+    pub fn attach(&self, handle: JoinHandle<()>) {
+        *self.handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    }
+
+    fn join(&self) {
+        if let Some(handle) = self.handle.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+pub fn request_supervisor_stop<R: Runtime>(app: &tauri::AppHandle<R>) {
+    app.state::<SupervisorControl>().request_stop();
+}
+
+pub fn join_supervisor<R: Runtime>(app: &tauri::AppHandle<R>) {
+    app.state::<SupervisorControl>().join();
+}
+
+fn supervisor_should_stop(app_handle: &tauri::AppHandle) -> bool {
+    app_handle.state::<SupervisorControl>().stop_flag()
+}
+
+/// Sleep until the next tick, returning true when the app asked the thread to exit.
+fn wait_for_supervisor_tick_or_stop(app_handle: &tauri::AppHandle) -> bool {
+    const SLICE_MS: u64 = 200;
+    let mut slept = 0;
+    while slept < SUPERVISOR_TICK_MS {
+        if supervisor_should_stop(app_handle) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(SLICE_MS));
+        slept += SLICE_MS;
+    }
+    supervisor_should_stop(app_handle)
+}
+
+pub fn run_supervisor_loop(app_handle: &tauri::AppHandle) {
+    let consecutive_failures = AtomicU32::new(0);
+    loop {
+        if wait_for_supervisor_tick_or_stop(app_handle) {
+            return;
+        }
+        supervisor_tick(app_handle, &consecutive_failures);
+    }
+}
 
 /// Respawns an unreachable, unmanaged daemon unless the user stopped it.
 /// Called on a fixed cadence from the startup watchdog.

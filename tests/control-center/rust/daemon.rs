@@ -27,6 +27,21 @@ fn cortex_binary_file_name() -> &'static str {
     }
 }
 
+fn process_is_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().map(|status| status.success()).unwrap_or(false)
+    }
+}
+
 fn spawn_test_sleep_process() -> Child {
     #[cfg(windows)]
     {
@@ -165,4 +180,35 @@ fn interpret_shutdown_response_surfaces_auth_rejection() {
     let err = interpret_shutdown_response(Ok(FetchCortexResponse { status: 401, body: "{\"error\":\"Unauthorized\"}".to_string() })).unwrap_err();
 
     assert!(err.contains("Refresh the token"));
+}
+
+#[test]
+fn daemon_state_drop_reaps_managed_child() {
+    let child = spawn_test_sleep_process();
+    let pid = child.id();
+    assert!(process_is_alive(pid), "sleep surrogate must be running before drop");
+    {
+        let _state = DaemonState { exe_path: None, child: Mutex::new(Some(child)), intentional_stop: AtomicBool::new(false) };
+    }
+    assert!(!process_is_alive(pid), "Drop must kill and wait the managed child");
+}
+
+#[test]
+fn ensure_local_daemon_honors_supervisor_pause() {
+    let state = DaemonState::new(None);
+    state.stop().expect("pause supervisor");
+    assert!(state.supervisor_paused());
+    assert_eq!(state.ensure_local_daemon().expect("paused ensure"), None);
+    assert!(state.supervisor_paused(), "ensure must not resume a paused supervisor");
+}
+
+#[test]
+fn paused_ensure_keeps_existing_live_child() {
+    let child = spawn_test_sleep_process();
+    let pid = child.id();
+    let state = DaemonState { exe_path: None, child: Mutex::new(Some(child)), intentional_stop: AtomicBool::new(true) };
+    assert_eq!(state.ensure_local_daemon().expect("paused live child"), Some(pid));
+    assert!(state.supervisor_paused());
+    state.stop().expect("reap after pause check");
+    assert!(!process_is_alive(pid));
 }

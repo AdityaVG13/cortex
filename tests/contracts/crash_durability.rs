@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 const SENTINELS: [&str; 8] = [
@@ -25,11 +26,15 @@ struct McpChild {
     child: Child,
     input: ChildStdin,
     output: Receiver<String>,
+    reader: Option<JoinHandle<()>>,
 }
 impl Drop for McpChild {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 impl McpChild {
@@ -46,7 +51,7 @@ impl McpChild {
         let input = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let (send, output) = mpsc::channel();
-        std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 match line {
                     Ok(line) => {
@@ -62,6 +67,7 @@ impl McpChild {
             child,
             input,
             output,
+            reader: Some(reader),
         }
     }
     fn call(&mut self, id: usize, tool: &str, args: Value) -> Value {

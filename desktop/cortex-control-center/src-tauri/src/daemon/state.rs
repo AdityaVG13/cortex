@@ -30,6 +30,23 @@ impl DaemonState {
         self.child.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn reap_managed_child(child: &mut Option<Child>) {
+        let Some(mut managed) = child.take() else {
+            return;
+        };
+        match managed.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => {
+                let _ = managed.kill();
+                let _ = managed.wait();
+            }
+        }
+    }
+
+    pub fn resume_supervisor(&self) {
+        self.intentional_stop.store(false, Ordering::SeqCst);
+    }
+
     pub fn status(&self) -> Result<(bool, Option<u32>), String> {
         let mut child = self.child_lock();
         let Some(managed_child) = child.as_mut() else {
@@ -38,13 +55,13 @@ impl DaemonState {
 
         match managed_child.try_wait() {
             Ok(Some(_)) => {
-                *child = None;
+                let _ = child.take();
                 Ok((false, None))
             }
             Ok(None) => Ok((true, Some(managed_child.id()))),
             Err(err) => {
-                eprintln!("[cortex-control-center] failed to poll managed daemon process; clearing stale handle: {err}");
-                *child = None;
+                eprintln!("[cortex-control-center] failed to poll managed daemon process; reaping stale handle: {err}");
+                Self::reap_managed_child(&mut child);
                 Ok((false, None))
             }
         }
@@ -55,16 +72,20 @@ impl DaemonState {
         if let Some(existing) = child.as_mut() {
             match existing.try_wait() {
                 Ok(Some(_)) => {
-                    *child = None;
+                    let _ = child.take();
                 }
                 Ok(None) => {
                     return Ok(Some(existing.id()));
                 }
                 Err(err) => {
-                    eprintln!("[cortex-control-center] failed to poll existing managed daemon before spawn; clearing stale handle: {err}");
-                    *child = None;
+                    eprintln!("[cortex-control-center] failed to poll existing managed daemon before spawn; reaping stale handle: {err}");
+                    Self::reap_managed_child(&mut child);
                 }
             }
+        }
+
+        if self.supervisor_paused() {
+            return Ok(None);
         }
 
         let exe_path = self.exe_path.clone().ok_or_else(|| "Could not resolve Cortex daemon binary for app-managed local mode.".to_string())?;
@@ -96,7 +117,6 @@ impl DaemonState {
         let spawned = command.spawn().map_err(|err| format!("Failed to spawn app-managed daemon from {}: {err}", exe_path.display()))?;
         let pid = spawned.id();
         *child = Some(spawned);
-        self.intentional_stop.store(false, Ordering::SeqCst);
         Ok(Some(pid))
     }
 
@@ -106,23 +126,30 @@ impl DaemonState {
         if let Some(managed_child) = child.as_mut() {
             match managed_child.try_wait() {
                 Ok(Some(_)) => {
-                    *child = None;
+                    let _ = child.take();
                 }
                 Ok(None) => {
                     if let Err(err) = managed_child.kill() {
-                        *child = None;
+                        Self::reap_managed_child(&mut child);
                         return Err(format!("Failed to stop managed daemon process: {err}"));
                     }
                     let _ = managed_child.wait();
-                    *child = None;
+                    let _ = child.take();
                 }
                 Err(err) => {
-                    eprintln!("[cortex-control-center] failed to poll managed daemon process during stop; clearing stale handle: {err}");
-                    *child = None;
+                    eprintln!("[cortex-control-center] failed to poll managed daemon process during stop; reaping stale handle: {err}");
+                    Self::reap_managed_child(&mut child);
                 }
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for DaemonState {
+    fn drop(&mut self) {
+        let mut child = self.child_lock();
+        Self::reap_managed_child(&mut child);
     }
 }
 

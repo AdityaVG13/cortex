@@ -14,12 +14,9 @@ use commands::{
     daemon_status, detect_editors, fetch_cortex, hide_to_tray, post_cortex, quit_app, read_auth_token, read_budget_config, save_budget_config, setup_editors,
     start_daemon, stop_daemon, write_dev_verification_report,
 };
-use constants::SUPERVISOR_TICK_MS;
 use daemon::paths::find_cortex_binary;
-use daemon::supervisor::{bootstrap_daemon_on_startup, supervisor_tick};
-use daemon::{shutdown_daemon, AppInstanceGuard, DaemonState, LifecycleState};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use daemon::supervisor::{bootstrap_daemon_on_startup, run_supervisor_loop};
+use daemon::{join_supervisor, request_supervisor_stop, shutdown_daemon, AppInstanceGuard, DaemonState, LifecycleState, SupervisorControl};
 use tauri::Manager;
 use tray::{hide_main_window, hide_to_tray_on_close, setup_tray};
 
@@ -41,6 +38,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DaemonState::new(exe_path))
         .manage(LifecycleState::default())
+        .manage(SupervisorControl::new())
         .setup(|app| {
             if hide_to_tray_on_close() {
                 setup_tray(app)?;
@@ -54,16 +52,13 @@ fn main() {
                 .await;
             });
 
-            std::thread::Builder::new()
+            let thread = std::thread::Builder::new()
                 .name("cortex-daemon-supervisor".to_string())
                 .spawn(move || {
-                    let consecutive_failures = AtomicU32::new(0);
-                    loop {
-                        std::thread::sleep(Duration::from_millis(SUPERVISOR_TICK_MS));
-                        supervisor_tick(&supervisor_handle, &consecutive_failures);
-                    }
+                    run_supervisor_loop(&supervisor_handle);
                 })
                 .map_err(|err| std::io::Error::new(err.kind(), format!("failed to spawn cortex daemon supervisor thread: {err}")))?;
+            app.state::<SupervisorControl>().attach(thread);
 
             Ok(())
         })
@@ -108,11 +103,15 @@ fn main() {
                 api.prevent_exit();
                 hide_main_window(app_handle);
             } else {
+                request_supervisor_stop(app_handle);
                 shutdown_daemon(app_handle);
+                join_supervisor(app_handle);
             }
         }
         tauri::RunEvent::Exit => {
+            request_supervisor_stop(app_handle);
             shutdown_daemon(app_handle);
+            join_supervisor(app_handle);
         }
         _ => {}
     });

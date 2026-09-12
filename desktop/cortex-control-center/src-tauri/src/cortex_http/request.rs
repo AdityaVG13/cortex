@@ -1,9 +1,31 @@
 use crate::constants::*;
 use crate::daemon::paths::daemon_port;
 use serde::Serialize;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::ops::{Deref, DerefMut};
 use std::time::Duration;
+
+struct ClosingTcpStream(TcpStream);
+
+impl Deref for ClosingTcpStream {
+    type Target = TcpStream;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ClosingTcpStream {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ClosingTcpStream {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(Shutdown::Both);
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct RequestTimeouts {
@@ -69,8 +91,9 @@ pub fn send_cortex_request_with_port(
 
     validate_cortex_request_path(path)?;
 
-    let mut stream =
-        TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), timeouts.connect).map_err(|e| format!("Cannot connect to daemon: {e}"))?;
+    let mut stream = ClosingTcpStream(
+        TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), timeouts.connect).map_err(|e| format!("Cannot connect to daemon: {e}"))?,
+    );
     stream.set_read_timeout(Some(timeouts.read)).map_err(|e| format!("Cannot set read timeout: {e}"))?;
     stream.set_write_timeout(Some(timeouts.write)).map_err(|e| format!("Cannot set write timeout: {e}"))?;
 

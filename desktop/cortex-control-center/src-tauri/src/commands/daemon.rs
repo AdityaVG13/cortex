@@ -33,6 +33,7 @@ pub async fn daemon_status(state: State<'_, DaemonState>) -> Result<DaemonComman
 
 #[tauri::command]
 pub async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
+    state.resume_supervisor();
     let port = daemon_port();
     let (managed, pid) = state.status()?;
     let probe = probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
