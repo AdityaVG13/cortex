@@ -33,9 +33,9 @@ use cortex_kernel::db::{initialize_schema, run_pending_migrations_quiet};
 use rusqlite::Connection;
 
 fn open_fresh_db() -> Connection {
-    let conn = Connection::open_in_memory().expect("open in-memory db");
+    let mut conn = Connection::open_in_memory().expect("open in-memory db");
     initialize_schema(&conn).expect("initialize base schema");
-    run_pending_migrations_quiet(&conn);
+    run_pending_migrations_quiet(&mut conn);
     conn
 }
 

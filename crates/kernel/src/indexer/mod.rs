@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Each registered file commits independently; earlier receipts remain replayable on error.
-pub fn index_all(conn: &Connection, home: &Path, owner_id: Option<i64>) -> Result<usize, String> {
+pub fn index_all(conn: &mut Connection, home: &Path, owner_id: Option<i64>) -> Result<usize, String> {
     Ok(index_state_file(conn, home, owner_id)?
         + index_memory_files(conn, home, owner_id)?
         + index_custom_sources(conn, home, owner_id)?)
@@ -15,7 +15,7 @@ pub fn index_all(conn: &Connection, home: &Path, owner_id: Option<i64>) -> Resul
 /// Capture a registered UTF-8 file without interpreting or truncating its content.
 /// Key: file:<canonical UTF-8 absolute path>. Owner comes from the trusted host.
 pub fn index_file(
-    conn: &Connection,
+    conn: &mut Connection,
     path: &Path,
     owner_id: Option<i64>,
 ) -> Result<ObservationReceipt, String> {
@@ -102,7 +102,7 @@ pub fn index_file(
     )
 }
 fn index_state_file(
-    conn: &Connection,
+    conn: &mut Connection,
     home: &Path,
     owner_id: Option<i64>,
 ) -> Result<usize, String> {
@@ -115,7 +115,7 @@ fn index_state_file(
 }
 
 fn index_memory_files(
-    conn: &Connection,
+    conn: &mut Connection,
     home: &Path,
     owner_id: Option<i64>,
 ) -> Result<usize, String> {
@@ -191,7 +191,7 @@ fn load_custom_sources(home: &Path) -> Result<Vec<CustomSource>, String> {
         .collect())
 }
 fn index_custom_sources(
-    conn: &Connection,
+    conn: &mut Connection,
     home: &Path,
     owner_id: Option<i64>,
 ) -> Result<usize, String> {
@@ -215,7 +215,7 @@ fn index_custom_sources(
     Ok(total)
 }
 fn index_directory(
-    conn: &Connection,
+    conn: &mut Connection,
     dir: &Path,
     root: &Path,
     src: &CustomSource,

@@ -23,18 +23,18 @@ where
 }
 
 pub fn test_conn() -> Connection {
-    let conn = Connection::open_in_memory().expect("open in-memory db");
+    let mut conn = Connection::open_in_memory().expect("open in-memory db");
     db::configure(&conn).expect("configure db");
     db::initialize_schema(&conn).expect("initialize schema");
-    db::run_pending_migrations(&conn);
+    db::run_pending_migrations(&mut conn);
     conn
 }
 
 pub fn open_file_db(path: &Path) -> Connection {
-    let conn = Connection::open(path).expect("open sqlite");
+    let mut conn = Connection::open(path).expect("open sqlite");
     db::configure(&conn).expect("configure db");
     db::initialize_schema(&conn).expect("initialize schema");
-    db::run_pending_migrations(&conn);
+    db::run_pending_migrations(&mut conn);
     conn
 }
 

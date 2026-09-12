@@ -265,13 +265,13 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
     // row ("no column named ...") while exports still counted as recovered.
     let tmp_path = db_path.with_extension("repair_tmp");
     let _ = std::fs::remove_file(&tmp_path);
-    let fresh = Connection::open(&tmp_path).map_err(RepairError::OpenFresh)?;
+    let mut fresh = Connection::open(&tmp_path).map_err(RepairError::OpenFresh)?;
     configure(&fresh).map_err(RepairError::Import)?;
     initialize_schema(&fresh).map_err(RepairError::Import)?;
     // Boot-time schema the salvage loop intersects columns against.
     cortex_logic::traces::migrate_history_tables(&fresh).map_err(RepairError::Import)?;
     crate::graph::migrate_entity_tables(&fresh).map_err(RepairError::Import)?;
-    super::run_pending_migrations_quiet(&fresh);
+    super::run_pending_migrations_quiet(&mut fresh);
     super::records::ensure_authoritative_schema(&fresh).map_err(RepairError::Import)?;
     if corrupt_team_mode {
         create_team_mode_tables(&fresh).map_err(RepairError::Import)?;

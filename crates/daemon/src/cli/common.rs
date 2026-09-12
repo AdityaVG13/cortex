@@ -74,10 +74,10 @@ pub fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, St
     Ok(Some(value))
 }
 pub(crate) fn open_cli_connection(db_path: &Path) -> Result<rusqlite::Connection, String> {
-    let conn = db::open(db_path).map_err(|e| format!("Failed to open database at {}: {e}", db_path.display()))?;
+    let mut conn = db::open(db_path).map_err(|e| format!("Failed to open database at {}: {e}", db_path.display()))?;
     db::configure(&conn).map_err(|e| format!("Failed to configure database: {e}"))?;
     db::initialize_schema(&conn).map_err(|e| format!("Failed to initialize schema: {e}"))?;
-    db::run_pending_migrations_quiet(&conn);
+    db::run_pending_migrations_quiet(&mut conn);
     crystallize::migrate_crystal_tables(&conn);
     Ok(conn)
 }

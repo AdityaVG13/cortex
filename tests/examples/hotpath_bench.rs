@@ -94,10 +94,10 @@ fn repo_root() -> PathBuf {
 }
 
 fn open_file_db(path: &Path) -> Connection {
-    let conn = Connection::open(path).expect("open sqlite");
+    let mut conn = Connection::open(path).expect("open sqlite");
     db::configure(&conn).expect("configure");
     db::initialize_schema(&conn).expect("schema");
-    db::run_pending_migrations(&conn);
+    db::run_pending_migrations(&mut conn);
     conn
 }
 

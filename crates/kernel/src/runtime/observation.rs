@@ -324,7 +324,7 @@ pub(super) fn ensure_source(
 }
 
 pub(crate) fn capture_registered(
-    conn: &Connection,
+    conn: &mut Connection,
     principal: &str,
     source: &str,
     generation: &str,
@@ -333,7 +333,8 @@ pub(crate) fn capture_registered(
     check_label(source)?;
     check_label(generation)?;
     ensure(conn)?;
-    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| err.to_string())?;
     let grant = granted(&tx, principal, source, true)?;
     let receipt = capture(&tx, principal, source, generation, &grant, event)?;
@@ -515,13 +516,13 @@ impl CortexRuntime {
         } else {
             None
         };
-        let conn = self
+        let mut conn = self
             .state()
             .db
             .lock(cx)
             .await
             .map_err(|err| err.to_string())?;
-        crate::indexer::index_file(&conn, path, owner)
+        crate::indexer::index_file(&mut conn, path, owner)
     }
     pub async fn observe(
         &self,
@@ -531,13 +532,13 @@ impl CortexRuntime {
         event: ObservationEvent,
     ) -> Result<ObservationReceipt, String> {
         let principal = self.observation_principal()?;
-        let conn = self
+        let mut conn = self
             .state()
             .db
             .lock(cx)
             .await
             .map_err(|err| err.to_string())?;
-        capture_registered(&conn, &principal, source, generation, event)
+        capture_registered(&mut conn, &principal, source, generation, event)
     }
 
     pub async fn source_offset(

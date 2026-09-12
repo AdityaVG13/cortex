@@ -111,9 +111,9 @@ fn full_run_records_each_migration_once_and_reinitialize_applies_zero() {
     let declared = declared_versions();
     let dir = support::unique_temp_dir("migration-property-full");
     std::fs::create_dir_all(&dir).expect("create temp dir");
-    let conn = seeded_file_conn(&dir);
+    let mut conn = seeded_file_conn(&dir);
 
-    let first = db::run_pending_migrations(&conn);
+    let first = db::run_pending_migrations(&mut conn);
     assert_eq!(
         first,
         defs.len(),
@@ -138,7 +138,7 @@ fn full_run_records_each_migration_once_and_reinitialize_applies_zero() {
 
     // Idempotence: second boot init + migration sweep is a no-op.
     db::initialize_schema(&conn).expect("second initialize_schema");
-    let second = db::run_pending_migrations(&conn);
+    let second = db::run_pending_migrations(&mut conn);
     assert_eq!(
         second, 0,
         "second initialize + run must apply zero migrations"
@@ -158,7 +158,7 @@ fn mid_version_db_applies_only_versions_above_k_in_declared_order() {
     let k = defs.len() / 2;
     let dir = support::unique_temp_dir("migration-property-mid");
     std::fs::create_dir_all(&dir).expect("create temp dir");
-    let conn = seeded_file_conn(&dir);
+    let mut conn = seeded_file_conn(&dir);
 
     for (version, name) in &defs[..k] {
         conn.execute(
@@ -174,7 +174,7 @@ fn mid_version_db_applies_only_versions_above_k_in_declared_order() {
         "pending must be exactly the declared suffix above K"
     );
 
-    let applied = db::run_pending_migrations(&conn);
+    let applied = db::run_pending_migrations(&mut conn);
     assert_eq!(applied, defs.len() - k, "only versions above K may apply");
 
     let recorded = db::applied_migration_versions(&conn).expect("read applied after run");
@@ -231,7 +231,7 @@ fn pending_migrations_depends_only_on_applied_set_not_insertion_order() {
             .collect();
         let applied: HashSet<&str> = indices.iter().map(|&i| defs[i as usize].0).collect();
 
-        let conn = Connection::open_in_memory().expect("open in-memory db");
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
         db::configure(&conn).expect("configure db");
         db::initialize_schema(&conn).expect("initialize schema");
         for &i in &indices {
@@ -264,14 +264,14 @@ fn pending_migrations_depends_only_on_applied_set_not_insertion_order() {
             );
         }
 
-        let catch_up = db::run_pending_migrations(&conn);
+        let catch_up = db::run_pending_migrations(&mut conn);
         prop_assert_eq!(
             catch_up,
             expected_len,
             "catch-up must apply exactly the pending set"
         );
         prop_assert_eq!(
-            db::run_pending_migrations(&conn),
+            db::run_pending_migrations(&mut conn),
             0,
             "replay must apply zero"
         );

@@ -314,15 +314,11 @@ impl CortexRuntime {
             return Err("invalid_feedback_identity".into());
         }
         let principal = self.observation_principal()?;
-        let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
+        let mut conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
         ensure(&conn)?;
         ensure_feedback(&conn)?;
-        // Classification (C) REFACTORABLE -- `new_unchecked` is a safe rusqlite
-        // API that drops the `&mut Connection` exclusive-borrow `Transaction::new`
-        // / `transaction_with_behavior` already provide. Same crate already uses
-        // the mut form. Later pass: new_unchecked swap (`let mut conn` +
-        // `transaction_with_behavior`).
-        let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         if !evidence(&tx, &principal, scope)?
             .iter()
@@ -362,10 +358,10 @@ impl CortexRuntime {
     /// Operator opt-in/re-enable and atomically replace only this scoped projection.
     pub async fn rebuild_associations(&self, cx: &Cx, scope: &str) -> Result<usize, String> {
         let principal = self.observation_principal()?;
-        let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
+        let mut conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
         ensure(&conn)?;
-        // (C) same new_unchecked swap as `record_association_feedback`.
-        let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO observation_association_state VALUES(?1,?2,1) ON CONFLICT(principal,scope_label) DO UPDATE SET enabled=1", params![principal,scope]).map_err(|e| e.to_string())?;
         let count = refresh(&tx, &principal, scope)?;
@@ -375,10 +371,10 @@ impl CortexRuntime {
     /// Delete derived incidence only, and prevent automatic refresh until rebuild.
     pub async fn reset_associations(&self, cx: &Cx, scope: &str) -> Result<(), String> {
         let principal = self.observation_principal()?;
-        let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
+        let mut conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
         ensure(&conn)?;
-        // (C) same new_unchecked swap as `record_association_feedback`.
-        let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO observation_association_state VALUES(?1,?2,0) ON CONFLICT(principal,scope_label) DO UPDATE SET enabled=0", params![principal,scope]).map_err(|e| e.to_string())?;
         tx.execute(
@@ -396,9 +392,9 @@ impl CortexRuntime {
         limit: usize,
     ) -> Result<Vec<AssociationExplanation>, String> {
         let principal = self.observation_principal()?;
-        let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
-        // (C) same new_unchecked swap as `record_association_feedback`.
-        let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Deferred)
+        let mut conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(|e| e.to_string())?;
         let result = explain(&tx, &principal, scope, cues, limit)?;
         tx.commit().map_err(|e| e.to_string())?;

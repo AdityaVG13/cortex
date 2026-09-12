@@ -76,14 +76,14 @@ pub fn initialize(
     initialize_with_conn(conn, paths, allow_token_rotation)
 }
 fn initialize_with_conn(
-    conn: Connection,
+    mut conn: Connection,
     paths: &CortexPaths,
     allow_token_rotation: bool,
 ) -> Result<(RuntimeState, oneshot::Receiver<()>), String> {
     // A brain opened through the library is fully migrated: the daemon's
     // serve path used to be the only place migrations ran, which left
     // `cortex op` / embedded callers on a partial schema.
-    let applied = crate::db::run_pending_migrations_quiet(&conn);
+    let applied = crate::db::run_pending_migrations_quiet(&mut conn);
     if applied > 0 {
         eprintln!("[cortex] Applied {applied} schema migrations");
     }

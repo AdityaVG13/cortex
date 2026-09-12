@@ -167,9 +167,9 @@ pub fn restore_from(
             .map_err(|e| format!("restore run: {e}"))?;
     }
     drop(target);
-    let conn = open_configured(db_path)?;
+    let mut conn = open_configured(db_path)?;
     super::initialize_schema(&conn).map_err(|e| e.to_string())?;
-    super::run_pending_migrations_quiet(&conn);
+    super::run_pending_migrations_quiet(&mut conn);
     super::records::ensure_authoritative_schema(&conn).map_err(|e| e.to_string())?;
     // New restore epoch: every cursor/alias minted before is now foreign.
     let backup_epoch = super::records::brain_epochs(&conn).1;

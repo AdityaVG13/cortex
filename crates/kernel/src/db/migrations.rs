@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 use std::collections::HashSet;
 pub const SCHEMA_MIGRATIONS: [MigrationDef; 24] = [
     ("001_initial_schema", "initial_schema"),
@@ -688,13 +688,13 @@ pub fn pending_migration_versions(conn: &Connection) -> rusqlite::Result<Vec<Str
     }
     Ok(pending)
 }
-pub fn run_pending_migrations(conn: &Connection) -> usize {
+pub fn run_pending_migrations(conn: &mut Connection) -> usize {
     run_pending_migrations_with_logging(conn, true)
 }
-pub fn run_pending_migrations_quiet(conn: &Connection) -> usize {
+pub fn run_pending_migrations_quiet(conn: &mut Connection) -> usize {
     run_pending_migrations_with_logging(conn, false)
 }
-pub fn run_pending_migrations_with_logging(conn: &Connection, log_success: bool) -> usize {
+pub fn run_pending_migrations_with_logging(conn: &mut Connection, log_success: bool) -> usize {
     if let Err(e) = ensure_schema_migrations_table(conn) {
         eprintln!("[db] schema migration setup failed: {e}");
         return 0;
@@ -711,7 +711,7 @@ pub fn run_pending_migrations_with_logging(conn: &Connection, log_success: bool)
         if applied_set.contains(*version) {
             continue;
         }
-        let tx = match conn.unchecked_transaction() {
+        let tx = match conn.transaction_with_behavior(TransactionBehavior::Deferred) {
             Ok(tx) => tx,
             Err(e) => {
                 eprintln!("[db] failed to start migration transaction for {version} ({name}): {e}");
