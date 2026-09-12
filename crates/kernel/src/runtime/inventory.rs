@@ -99,8 +99,19 @@ fn io_error(error: std::io::Error) -> String {
     }
 }
 
+fn file_source_path(key: &str) -> Result<&str, String> {
+    key.strip_prefix("file:").ok_or_else(|| "source_not_file".into())
+}
+
+fn inventory_cursor_in_range(inventory: &SourceInventory) -> Result<(), String> {
+    if inventory.next_index > inventory.entries.len() {
+        return Err("inventory_cursor_invalid".into());
+    }
+    Ok(())
+}
+
 fn snapshot(key: &str) -> Result<(u64, String), String> {
-    let path = Path::new(key.strip_prefix("file:").ok_or("source_not_file")?);
+    let path = Path::new(file_source_path(key)?);
     // Relative names and aliases cannot widen an explicit canonical registration.
     if !path.is_absolute() {
         return Err("source_not_authorized".into());
@@ -164,7 +175,7 @@ impl CortexRuntime {
         }
         let mut entries = Vec::with_capacity(keys.len());
         for key in keys {
-            let format = Path::new(&key[5..])
+            let format = Path::new(file_source_path(&key)?)
                 .extension()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_ascii_lowercase())
@@ -285,6 +296,7 @@ impl CortexRuntime {
         }
         let principal = principal(self)?;
         let mut inventory = self.read_inventory(cx, revision).await?;
+        inventory_cursor_in_range(&inventory)?;
         let mut budget = max_bytes;
         for _ in 0..max_sources {
             if inventory.next_index == inventory.entries.len() {
@@ -313,7 +325,7 @@ impl CortexRuntime {
                 Ok(bytes) => {
                     budget -= bytes;
                     match self
-                        .observe_file(cx, Path::new(&entry.source_key[5..]))
+                        .observe_file(cx, Path::new(file_source_path(&entry.source_key)?))
                         .await
                     {
                         Err(error) => mark(entry, classify(&error), error),
@@ -370,6 +382,7 @@ impl CortexRuntime {
     ) -> Result<SourceInventory, String> {
         let principal = principal(self)?;
         let mut inventory = self.read_inventory(cx, revision).await?;
+        inventory_cursor_in_range(&inventory)?;
         let previous = serde_json::to_string(&inventory).map_err(|e| e.to_string())?;
         let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
         ensure(&conn)?;
