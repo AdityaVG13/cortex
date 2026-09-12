@@ -198,7 +198,7 @@ impl LocalMemory {
     fn is_null(&self) -> bool {
         self.0.is_null()
     }
-    fn as_acl(&self) -> *mut windows_sys::Win32::Security::ACL {
+    fn as_acl(&self) -> *const windows_sys::Win32::Security::ACL {
         self.0.cast()
     }
 }
@@ -408,9 +408,11 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
             "Windows token user SID extends past the token buffer",
         ));
     }
+    // Unique owner: NonNull::new takes *mut. as_ptr().cast_mut() would be a
+    // *const-to-*mut cast (bucket 14). Later FFI only reads this SID.
     let sid = NonNull::new(
         token_info
-            .as_ptr()
+            .as_mut_ptr()
             .cast::<u8>()
             .wrapping_add(sid_offset)
             .cast(),
