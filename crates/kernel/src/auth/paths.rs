@@ -107,6 +107,35 @@ pub fn restrict_file_to_owner(path: &Path) -> std::io::Result<()> {
 // Safe facade: `restrict_file_to_owner` is the only crate-visible entry and
 // holds no raw HANDLE / ACL. OwnedHandle / LocalMemory Drop are the only
 // CloseHandle / LocalFree sites. Inner K1-K9 calls stay (A).
+//
+// FFI boundary contract (60-FFI-PATTERNS):
+// C/Win32 promises: OpenProcessToken, GetTokenInformation, IsValidSid, and
+// CloseHandle are BOOL APIs (0 = failure). BOOL failures convey GetLastError,
+// which is per-thread and valid only until the next Win32 call on this thread.
+// Exception: IsValidSid documents no extended error -- FALSE is InvalidData,
+// not last_os_error. SetEntriesInAclW and SetNamedSecurityInfoW return a DWORD
+// Win32 code (ERROR_SUCCESS or a WinError.h value); do not call GetLastError
+// for those. None of these APIs callback into Rust, longjmp, or unwind through
+// Rust frames. GetCurrentProcess is a non-owning pseudo-handle and must never
+// be CloseHandle'd. SetNamedSecurityInfoW copies DACL data; it does not take
+// ownership of the ACL pointer. TOKEN_USER / EXPLICIT_ACCESS_W / TRUSTEE_W /
+// ACL are windows_sys #[repr(C)] layouts; SID bytes in the token buffer are
+// little-endian (Win32).
+// Rust promises: `restrict_file_to_owner` is the thin safe wrapper (F-1).
+// Paths become UTF-16 with a trailing NUL and no interior NUL. This crate
+// calls Win32; Win32 never calls back, so catch_unwind at an extern-"C" entry
+// (F-3) does not apply. Between a BOOL FFI call and last_os_error() there is
+// no other FFI and no panic. DWORD APIs map via win32_error(result).
+// Handle / heap ownership: OpenProcessToken's HANDLE is owned by OwnedHandle
+// (take on success; adopt on failure so a closeable write cannot leak).
+// SetEntriesInAclW's ACL is LocalAlloc memory owned by LocalMemory, adopt()'d
+// before the error branch so LocalFree runs on success, error, and unwind.
+// Panic-in-Drop: OwnedHandle / LocalMemory Drop null the field first, then
+// CloseHandle / LocalFree, discard the return, and never call last_os_error
+// (Drop cannot surface an error; a second FFI in Drop would clobber a pending
+// GetLastError). Drop is non-panicking.
+// Thread safety: these calls are safe on distinct objects; GetLastError is
+// per-thread; the facade holds no shared state.
 #[cfg(windows)]
 fn handle_is_closeable(handle: windows_sys::Win32::Foundation::HANDLE) -> bool {
     !handle.is_null() && handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
@@ -143,6 +172,10 @@ impl Drop for OwnedHandle {
         // INVALID_HANDLE_VALUE were rejected. CloseHandle is the documented
         // destructor; Drop cannot surface the BOOL, so the result is discarded.
         // The field is nulled first so a second Drop cannot CloseHandle twice.
+        // Win32 CloseHandle: BOOL, no callback, no longjmp, no unwind. Drop is
+        // non-panicking and does not call last_os_error (panic-in-Drop
+        // forbidden; a GetLastError read here would also clobber a pending
+        // error from the thread that is dropping us).
         // Unavoidable BECAUSE HANDLE close is Win32 FFI (Nomicon § FFI).
         // Alternatives FAIL: (1) leak -- handle exhaustion, not equivalent;
         // (2) std OwnedHandle::from_raw_handle -- still unsafe, same
@@ -177,6 +210,10 @@ impl Drop for LocalMemory {
         // returned. Win32 allocates that ACL with LocalAlloc and requires
         // LocalFree. Non-null was checked; we own the pointer. The field
         // is nulled first so a second Drop cannot LocalFree twice.
+        // Win32 LocalFree: matching deallocator for that LocalAlloc, no
+        // callback, no longjmp, no unwind. Drop is non-panicking: the return
+        // is discarded and last_os_error is not called (panic-in-Drop;
+        // would also clobber a pending GetLastError).
         // Unavoidable BECAUSE LocalAlloc heap identity is not the Rust
         // allocator (Nomicon § FFI).
         // Alternatives FAIL: (1) leak -- LocalAlloc leak, not equivalent;
@@ -228,8 +265,14 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     let mut token: HANDLE = null_mut();
     // SAFETY (K3, A): GetCurrentProcess returns a pseudo-handle valid for
-    // this process for the duration of the call. `token` is a writable
-    // out-param on our stack. TOKEN_QUERY is a documented access mask.
+    // this process for the duration of the call -- it is never owned and
+    // must never be CloseHandle'd. `token` is a writable out-param on our
+    // stack. TOKEN_QUERY is a documented access mask.
+    // Win32 OpenProcessToken: BOOL; on success writes an owned token HANDLE
+    // the caller must CloseHandle; on failure returns 0 and GetLastError
+    // is set. last_os_error is captured BEFORE adopt/Drop so CloseHandle
+    // cannot clobber it. Success then take() owns the HANDLE; failure still
+    // adopt()'s whatever was written so a closeable handle cannot leak.
     // Unavoidable BECAUSE process-token open is Win32 FFI with no std API
     // (Nomicon § FFI; Reference § External blocks).
     // Alternatives FAIL: (1) std::process -- no token/SID API; (2) whoami /
@@ -243,9 +286,12 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     }
     let token = OwnedHandle::take(token)?;
     let mut required_len = 0u32;
-    // SAFETY (K4, A): `token.as_raw()` is an open token we own. A null
-    // buffer with length 0 is the documented size query; Windows writes
-    // `required_len` and returns a length error we ignore.
+    // SAFETY (K4, A): `token.as_raw()` is an open token we own (borrowed, not
+    // consumed). A null buffer with length 0 is the documented size query;
+    // Win32 does not write through that null pointer. It writes `required_len`
+    // and returns a length error we ignore.
+    // GetLastError is read immediately only if `required_len` stays 0; no
+    // other FFI sits between the call and last_os_error.
     // Unavoidable BECAUSE token-info size query is Win32 FFI (Nomicon § FFI).
     // Alternatives FAIL: (1) guess TOKEN_USER size -- SID payload is
     // variable-length, under-alloc is a write overflow; (2) skip query and
@@ -263,7 +309,10 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     let mut returned_len = 0u32;
     // SAFETY (K5, A): `token_info` is a heap Vec whose byte length is at
     // least `required_len`. The exclusive pointer is valid for that many
-    // bytes; Win32 writes the buffer before we read it.
+    // bytes; Win32 writes at most TokenInformationLength bytes before we read.
+    // The token HANDLE is borrowed, not consumed. BOOL 0 => last_os_error
+    // immediately (the Error is built before OwnedHandle Drop runs, so
+    // CloseHandle cannot clobber it).
     // Unavoidable BECAUSE filling TOKEN_USER is Win32 FFI into caller
     // memory (Nomicon § FFI; Reference § Behavior considered undefined
     // https://doc.rust-lang.org/reference/behavior-considered-undefined.html).
@@ -293,6 +342,10 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     // stays owned by `token_info` for the rest of this function, so the
     // SID pointer derived from this copy remains in-bounds after the
     // post-read range check below.
+    // ABI: #[repr(C)] TOKEN_USER copy. `User.Sid` is a pointer Win32 planted
+    // in this same buffer -- not a separately owned allocation (no LocalFree
+    // of the SID; CurrentUserSid keeps `_token_info` alive). No GetLastError
+    // at this site. No FFI resource to Drop here.
     // Unavoidable BECAUSE interpreting a C-written TOKEN_USER is a raw
     // pointer read of a #[repr(C)] FFI struct (Reference § Pointer types
     // https://doc.rust-lang.org/reference/types/pointer.html).
@@ -348,6 +401,8 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     // SAFETY (K7, A): `token_user.User.Sid` was checked non-null, in the
     // initialized prefix, and the SID byte length implied by
     // SubAuthorityCount fits in that prefix. IsValidSid only reads.
+    // Win32 IsValidSid documents no GetLastError; FALSE is InvalidData, not
+    // last_os_error. No ownership transfer. No callback / longjmp.
     // Unavoidable BECAUSE SID validation is Win32 FFI (Nomicon § FFI).
     // Alternatives FAIL: (1) skip IsValidSid -- would feed a garbage SID
     // to SetEntriesInAclW; (2) hand-rolled SID parser -- reimplements
@@ -399,6 +454,11 @@ impl CurrentUserSid {
         // this call. `acl` is a writable out-param. The old ACL is null
         // (no merge). Adopt wraps whatever pointer Windows wrote so LocalFree
         // runs on success, error, and unwind.
+        // Win32 SetEntriesInAclW returns a DWORD error code (not GetLastError);
+        // map via win32_error(result). On success *NewAcl is LocalAlloc memory
+        // we must LocalFree. No panic between the FFI call and adopt. No
+        // callback / longjmp. TRUSTEE_IS_SID: ptstrName is a SID pointer, not
+        // a string (no NUL-termination obligation on that field).
         // Unavoidable BECAUSE ACL construction is Win32 FFI that returns a
         // LocalAlloc pointer (Nomicon § FFI).
         // Alternatives FAIL: (1) std fs permissions -- no DACL builder;
@@ -437,6 +497,12 @@ fn apply_protected_file_dacl(path: &Path, acl: &LocalMemory) -> io::Result<()> {
     // interior NUL. `acl` is the ACL we created and still own via
     // LocalMemory. Owner/group/SACL pointers are null, which Win32 allows
     // when those security-info bits are unset.
+    // Win32 SetNamedSecurityInfoW returns a DWORD (not GetLastError); map
+    // via win32_error(result). It copies DACL data and does not take ownership
+    // of the ACL (LocalMemory still owns it; Drop still LocalFree's). LPCWSTR
+    // ObjectName is our `wide_path` (trailing NUL, interior NUL rejected in
+    // windows_path_to_wide). No callback / longjmp. No panic between the FFI
+    // call and the DWORD check.
     // Unavoidable BECAUSE applying a DACL is Win32 FFI (Nomicon § FFI).
     // Alternatives FAIL: (1) std::fs::set_permissions -- cannot express a
     // PROTECTED owner-only DACL; (2) icacls via Command -- locale/PATH
