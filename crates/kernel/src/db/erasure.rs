@@ -48,7 +48,7 @@ pub fn ledger_path(home: &Path) -> PathBuf {
 
 fn ledger_bytes(home: &Path) -> Result<Option<String>, String> {
     use std::io::Read;
-    let file = match std::fs::File::open(ledger_path(home)) {
+    let file = match crate::auth::open_nofollow(&ledger_path(home)) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err.to_string()),

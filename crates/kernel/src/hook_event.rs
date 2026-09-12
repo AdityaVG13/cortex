@@ -458,7 +458,7 @@ pub fn load_capture_sidecar(paths: &crate::auth::CortexPaths) -> Option<String> 
 
 fn read_capture_sidecar_file(path: &std::path::Path) -> Option<String> {
     use std::io::Read;
-    let file = std::fs::File::open(path).ok()?;
+    let file = crate::auth::open_nofollow(path).ok()?;
     let mut raw = String::new();
     file.take(MAX_CAPTURE_SIDECAR_BYTES + 1)
         .read_to_string(&mut raw)

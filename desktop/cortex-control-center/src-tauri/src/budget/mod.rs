@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -202,8 +202,40 @@ pub fn budget_snapshot_from_contents(_path: &Path, contents: &str) -> BudgetConf
     BudgetConfigSnapshot { config_loaded: true, enabled, source: budget_source_label(), error: None, endpoints, recent_denials: 0 }
 }
 
+fn open_nofollow(path: &Path) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to follow a reparse point",
+            ));
+        }
+        Ok(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        File::open(path)
+    }
+}
+
 pub fn read_budget_config_snapshot(path: &Path) -> Result<BudgetConfigSnapshot, String> {
-    let file = match fs::File::open(path) {
+    let file = match open_nofollow(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(empty_budget_snapshot(path)),
         Err(err) => {

@@ -6,6 +6,7 @@ use std::io::Read;
 
 const MAX_EVAL_BASELINE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Operator `--baseline-file` is a chosen path; following a symlink is intentional.
 fn read_eval_baseline(path: &str) -> String {
     let file = std::fs::File::open(path).unwrap_or_else(|err| {
         eprintln!("Failed to read baseline snapshot file '{path}': {err}");

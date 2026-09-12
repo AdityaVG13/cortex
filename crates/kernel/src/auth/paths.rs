@@ -538,17 +538,17 @@ pub fn restrict_file_to_owner(path: &Path) -> io::Result<()> {
 pub fn restrict_file_to_owner(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
-/// Read a secret without following a planted symlink/reparse and without
-/// slurping an attacker-replaced huge file. Write already uses O_NOFOLLOW.
-pub fn read_secret_file(path: &Path) -> io::Result<Vec<u8>> {
+/// Open a home-local automatic file without following a planted symlink
+/// (Unix `O_NOFOLLOW`) or Windows reparse point. Operator `--file` paths
+/// may still follow; this is for files Cortex opens on its own.
+pub fn open_nofollow(path: &Path) -> io::Result<fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
-        read_secret_file_bounded(&mut file)
+            .open(path)
     }
     #[cfg(windows)]
     {
@@ -556,23 +556,29 @@ pub fn read_secret_file(path: &Path) -> io::Result<Vec<u8>> {
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
         };
-        let mut file = fs::OpenOptions::new()
+        let file = fs::OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?;
         if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "refusing to read secret through a reparse point",
+                "refusing to follow a reparse point",
             ));
         }
-        read_secret_file_bounded(&mut file)
+        Ok(file)
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let mut file = fs::File::open(path)?;
-        read_secret_file_bounded(&mut file)
+        fs::File::open(path)
     }
+}
+
+/// Read a secret without following a planted symlink/reparse and without
+/// slurping an attacker-replaced huge file. Write already uses O_NOFOLLOW.
+pub fn read_secret_file(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = open_nofollow(path)?;
+    read_secret_file_bounded(&mut file)
 }
 
 fn read_secret_file_bounded(file: &mut fs::File) -> io::Result<Vec<u8>> {

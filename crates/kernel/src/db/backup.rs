@@ -249,7 +249,7 @@ pub fn restore_from(
 
 pub fn last_verified_restore(home: &Path) -> Option<Value> {
     use std::io::Read;
-    let file = std::fs::File::open(home.join(LAST_VERIFIED_RESTORE)).ok()?;
+    let file = crate::auth::open_nofollow(&home.join(LAST_VERIFIED_RESTORE)).ok()?;
     let mut raw = String::new();
     file.take(MAX_RESTORE_REPORT_BYTES + 1)
         .read_to_string(&mut raw)

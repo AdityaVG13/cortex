@@ -1,7 +1,8 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
-use std::io::Read;
+use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 const BUDGETS_FILE_NAME: &str = "budgets.toml";
 pub const BUDGET_SOURCE: &str = "budgets.toml";
@@ -161,8 +162,40 @@ impl BudgetConfigError {
 "field":self.field})
     }
 }
+fn open_nofollow(path: &Path) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to follow a reparse point",
+            ));
+        }
+        Ok(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        fs::File::open(path)
+    }
+}
+
 fn read_budget_file(path: &Path) -> Result<Option<String>, BudgetConfigError> {
-    let file = match std::fs::File::open(path) {
+    let file = match open_nofollow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {

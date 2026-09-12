@@ -207,7 +207,7 @@ pub fn publish(snapshot: &ReflexSnapshot, path: &Path) -> Result<(), String> {
 
 pub fn load(path: &Path) -> Option<ReflexSnapshot> {
     use std::io::Read;
-    let file = std::fs::File::open(path).ok()?;
+    let file = crate::auth::open_nofollow(path).ok()?;
     let mut bytes = Vec::new();
     file.take(MAX_REFLEX_SNAPSHOT_BYTES + 1)
         .read_to_end(&mut bytes)

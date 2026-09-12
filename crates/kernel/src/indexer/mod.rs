@@ -20,6 +20,7 @@ pub fn index_file(
     owner_id: Option<i64>,
 ) -> Result<ObservationReceipt, String> {
     use std::io::Read;
+    // Operator-chosen source: canonicalize follows, then we open that target.
     let path = path
         .canonicalize()
         .map_err(|err| format!("source_unavailable: {err}"))?;
@@ -175,7 +176,7 @@ fn load_custom_sources(home: &Path) -> Result<Vec<CustomSource>, String> {
     let path = home.join(".cortex").join("sources.toml");
     if path.try_exists().map_err(|err| err.to_string())? {
         use std::io::Read;
-        let file = fs::File::open(&path).map_err(|err| err.to_string())?;
+        let file = crate::auth::open_nofollow(&path).map_err(|err| err.to_string())?;
         let mut content = String::new();
         file.take(INDEXER_MAX_CONFIG_BYTES + 1)
             .read_to_string(&mut content)
