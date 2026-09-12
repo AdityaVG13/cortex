@@ -28,14 +28,18 @@ pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
         })
         .ok();
     if let Some((id, raw_json)) = result {
-        let mut entries: Vec<String> = serde_json::from_str(&raw_json).unwrap_or_default();
+        let Ok(mut entries) = serde_json::from_str::<Vec<String>>(&raw_json) else {
+            return false;
+        };
         entries.push(entry.to_string());
-        let updated = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
-        let _ = conn.execute(
+        let Ok(updated) = serde_json::to_string(&entries) else {
+            return false;
+        };
+        conn.execute(
             "UPDATE focus_sessions SET raw_entries = ?1 WHERE id = ?2",
             params![updated, id],
-        );
-        true
+        )
+        .is_ok()
     } else {
         false
     }
@@ -53,7 +57,9 @@ pub fn focus_end(
         .ok();
     let (id, raw_json) =
         session.ok_or_else(|| format!("No open focus session with label '{label}'"))?;
-    let entries: Vec<String> = serde_json::from_str(&raw_json).unwrap_or_default();
+    let entries: Vec<String> = serde_json::from_str(&raw_json).map_err(|e| {
+        format!("focus session '{label}' raw_entries is not valid JSON: {e}")
+    })?;
     if entries.is_empty() {
         conn.execute(
             "UPDATE focus_sessions SET status = 'closed', ended_at = datetime('now') WHERE id = ?1",
@@ -111,7 +117,13 @@ pub fn focus_current(conn: &Connection, agent: &str) -> Option<Value> {
         params![agent],
         |row| {
             let raw: String = row.get(2)?;
-            let entries: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+            let entries: Vec<String> = serde_json::from_str(&raw).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
             Ok(json!({
 "id":row.get::<_,i64>(0)?,"label":row.get::<_,String>(1)?,"entries":entries.len(),"startedAt":row.get::<_,String>(3)?,}))
         },

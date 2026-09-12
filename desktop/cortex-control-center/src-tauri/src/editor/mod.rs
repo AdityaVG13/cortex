@@ -183,7 +183,8 @@ fn json_registration_for(target: &EditorTarget, cortex_exe: &str) -> serde_json:
 fn read_json_config(config_path: &Path) -> Result<serde_json::Value, String> {
     if config_path.exists() {
         let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
-        Ok(serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({})))
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Invalid JSON in {}: {e}", config_path.display()))
     } else {
         Ok(serde_json::json!({}))
     }
@@ -192,7 +193,8 @@ fn read_json_config(config_path: &Path) -> Result<serde_json::Value, String> {
 fn read_toml_config(config_path: &Path) -> Result<toml::Value, String> {
     if config_path.exists() {
         let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
-        Ok(toml::from_str(&content).unwrap_or_else(|_| toml::Value::Table(Default::default())))
+        toml::from_str(&content)
+            .map_err(|e| format!("Invalid TOML in {}: {e}", config_path.display()))
     } else {
         Ok(toml::Value::Table(Default::default()))
     }

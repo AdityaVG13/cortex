@@ -114,7 +114,8 @@ pub fn deposit_decision(
             Some((stored_hash, receipt_json, entry_json)) if stored_hash == canonical_hash => {
                 let receipt: Receipt = serde_json::from_str(&receipt_json)
                     .map_err(|e| StoreError::Internal(e.to_string()))?;
-                let entry: Value = serde_json::from_str(&entry_json).unwrap_or(Value::Null);
+                let entry: Value = serde_json::from_str(&entry_json)
+                    .map_err(|e| StoreError::Internal(e.to_string()))?;
                 let target_id = receipt
                     .entries
                     .get("decision")

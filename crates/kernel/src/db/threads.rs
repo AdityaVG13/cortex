@@ -181,7 +181,9 @@ pub fn verify_obligation(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|_| format!("unknown obligation {record_id}"))?;
-    let registered: Value = serde_json::from_str(&registered).unwrap_or(json!({}));
+    let registered: Value = serde_json::from_str(&registered).map_err(|e| {
+        format!("obligation {record_id} predicate_json is not valid JSON: {e}")
+    })?;
     let expected = registered["predicate"].as_str().unwrap_or("");
     if !expected.is_empty() && expected != predicate {
         return Err(format!(
