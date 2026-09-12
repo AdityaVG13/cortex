@@ -11,6 +11,9 @@
 //! rt.deposit(cx, "req-1", "PAY-12 ledger writes are idempotent", "outfit", None).await?;
 //! let view = rt.lens(cx, LensInput { query: "PAY-12".into(), agent: "outfit".into(), ..Default::default() }).await?;
 //! ```
+//!
+//! Remaining `unsafe` is `cfg(windows)` / `cfg(unix)` FFI in `auth` (owner-only
+//! file ACL and process-liveness probes). This crate does not `forbid(unsafe_code)`.
 
 pub mod aging;
 pub mod auth;
