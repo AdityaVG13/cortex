@@ -698,7 +698,7 @@ fn qualified_acl(alias: &str, bind: &str) -> String {
 }
 
 fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source_prefix: Option<&str>, ctx: &RecallContext) -> Result<Vec<LoadedRow>, String> {
-    let source_like = source_prefix.map(|p| format!("{p}%"));
+    let source_like = source_prefix.map(like_prefix);
     let caller = caller_acl_param(ctx);
     let is_decision = kind == "decision";
     let alias = if is_decision { "d" } else { "m" };
@@ -710,7 +710,7 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
                     d.created_at, d.status, d.valid_from, d.valid_until
              FROM decisions_fts fts JOIN decisions d ON d.id = fts.rowid
              WHERE decisions_fts MATCH ?1 AND {gates}
-               AND (?3 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?3)
+               AND (?3 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?3 ESCAPE '\\')
                {acl}
              ORDER BY bm25(decisions_fts, 6.6, 1.0) LIMIT ?2"
         )
@@ -720,7 +720,7 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
                     m.created_at, m.status, m.valid_from, m.valid_until
              FROM memories_fts fts JOIN memories m ON m.id = fts.rowid
              WHERE memories_fts MATCH ?1 AND {gates}
-               AND (?3 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?3)
+               AND (?3 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?3 ESCAPE '\\')
                {acl}
              ORDER BY bm25(memories_fts, 4.6, 1.7, 2.2) LIMIT ?2"
         )
@@ -746,6 +746,9 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
     let mut out = Vec::new();
     for row in rows.flatten() {
         if !is_visible(row.owner_id, row.visibility.as_deref(), ctx) {
+            continue;
+        }
+        if !source_matches_prefix(&row.source, source_prefix) {
             continue;
         }
         out.push(row);

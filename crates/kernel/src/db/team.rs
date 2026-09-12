@@ -326,8 +326,14 @@ pub fn table_exists(conn: &Connection, table: &str) -> bool {
     )
     .is_ok()
 }
+fn sqlite_ident_ok(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    matches!(bytes.first(), Some(b) if b.is_ascii_alphabetic() || *b == b'_')
+        && bytes.len() <= 64
+        && bytes.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+}
 pub fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
-    if !table_exists(conn, table) {
+    if !sqlite_ident_ok(table) || !table_exists(conn, table) {
         return false;
     }
     let mut stmt = match conn.prepare(&format!("PRAGMA table_info({table})")) {

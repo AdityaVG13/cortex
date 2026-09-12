@@ -376,7 +376,7 @@ pub fn store_decision_legacy(
             conn,
             "decision_rejected_duplicate",
             json!({
-"decision":&decision[..decision.len().min(100)],"surprise":surprise,"source_agent":source_agent,"quality":quality,}),
+"decision":truncate_chars(decision, 100),"surprise":surprise,"source_agent":source_agent,"quality":quality,}),
             "rust-daemon",
         );
         checkpoint_wal_best_effort(conn);

@@ -303,6 +303,20 @@ pub fn source_matches_prefix(source: &str, source_prefix: Option<&str>) -> bool 
         None => true,
     }
 }
+/// Prefix pattern for `LIKE ? ESCAPE '\'`. MCP `source_prefix` is attacker-
+/// controlled; `%` `_` `\` must be literals or the FTS `LIMIT` fills from
+/// every source.
+fn like_prefix(prefix: &str) -> String {
+    let mut out = String::with_capacity(prefix.len() + 1);
+    for ch in prefix.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('%');
+    out
+}
 pub fn crystal_source(crystal_id: i64, label: &str) -> String {
     format!("crystal::{crystal_id}::{label}")
 }
@@ -1593,10 +1607,10 @@ enum SearchTableKind {
     Memories,
     Decisions,
 }
-const MEMORIES_FTS_SQL: &str = "SELECT m.id, m.text, m.source, m.tags, m.score, m.trust_score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility FROM memories_fts fts JOIN memories m ON m.id = fts.rowid WHERE memories_fts MATCH ?1 AND m.status = 'active' AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR julianday(m.valid_from) <= julianday('now')) AND (m.valid_until IS NULL OR julianday(m.valid_until) > julianday('now')) AND (?6 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?6) ORDER BY bm25(memories_fts, ?3, ?4, ?5) LIMIT ?2";
-const DECISIONS_FTS_SQL: &str = "SELECT d.id, d.decision, d.context, d.score, d.trust_score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility FROM decisions_fts fts JOIN decisions d ON d.id = fts.rowid WHERE decisions_fts MATCH ?1 AND d.status = 'active' AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR julianday(d.valid_from) <= julianday('now')) AND (d.valid_until IS NULL OR julianday(d.valid_until) > julianday('now')) AND (?5 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?5) ORDER BY bm25(decisions_fts, ?3, ?4) LIMIT ?2";
-const MEMORIES_RECENCY_SQL: &str = "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier, owner_id, visibility FROM memories WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
-const DECISIONS_RECENCY_SQL: &str = "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at, owner_id, visibility FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
+const MEMORIES_FTS_SQL: &str = "SELECT m.id, m.text, m.source, m.tags, m.score, m.trust_score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility FROM memories_fts fts JOIN memories m ON m.id = fts.rowid WHERE memories_fts MATCH ?1 AND m.status = 'active' AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR julianday(m.valid_from) <= julianday('now')) AND (m.valid_until IS NULL OR julianday(m.valid_until) > julianday('now')) AND (?6 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?6 ESCAPE '\\') ORDER BY bm25(memories_fts, ?3, ?4, ?5) LIMIT ?2";
+const DECISIONS_FTS_SQL: &str = "SELECT d.id, d.decision, d.context, d.score, d.trust_score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility FROM decisions_fts fts JOIN decisions d ON d.id = fts.rowid WHERE decisions_fts MATCH ?1 AND d.status = 'active' AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR julianday(d.valid_from) <= julianday('now')) AND (d.valid_until IS NULL OR julianday(d.valid_until) > julianday('now')) AND (?5 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?5 ESCAPE '\\') ORDER BY bm25(decisions_fts, ?3, ?4) LIMIT ?2";
+const MEMORIES_RECENCY_SQL: &str = "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier, owner_id, visibility FROM memories WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2 ESCAPE '\\') ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
+const DECISIONS_RECENCY_SQL: &str = "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at, owner_id, visibility FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2 ESCAPE '\\') ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
 // Same format rule as UNFOLD_ACTIVE (engine_execution.rs): valid_from /
 // valid_until are RFC3339 'T'-format and must be compared via julianday(),
 // never string-compared against space-format datetime('now') output.
@@ -1901,9 +1915,9 @@ fn search_table_scan_fallback(
     excerpt_focus_terms: &[String],
     alignment_profile: &QueryAlignmentProfile,
 ) -> Result<Vec<SearchCandidate>, String> {
-    let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
+    let source_like = source_prefix.map(like_prefix);
     let mut ranked = Vec::new();
-    let sql=match kind{SearchTableKind::Memories=>format!("SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at FROM memories WHERE {ACTIVE_TEMPORAL} AND (?1 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?1)"),SearchTableKind::Decisions=>format!("SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at FROM decisions WHERE {ACTIVE_TEMPORAL} AND (?1 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?1)"),};
+    let sql=match kind{SearchTableKind::Memories=>format!("SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at FROM memories WHERE {ACTIVE_TEMPORAL} AND (?1 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?1 ESCAPE '\\')"),SearchTableKind::Decisions=>format!("SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at FROM decisions WHERE {ACTIVE_TEMPORAL} AND (?1 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?1 ESCAPE '\\')"),};
     let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![source_like.as_deref()], |row| {
@@ -2014,7 +2028,7 @@ fn search_table(
 ) -> Result<Vec<SearchCandidate>, String> {
     let term_groups = build_search_term_groups(query_text);
     let excerpt_focus_terms = query_focus_terms_for_excerpt(query_text);
-    let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
+    let source_like = source_prefix.map(like_prefix);
     if term_groups.is_empty() {
         return search_table_recency(
             conn,

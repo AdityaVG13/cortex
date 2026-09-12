@@ -11,6 +11,18 @@ fn ensure(conn: &Connection) -> rusqlite::Result<()> {
         .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))
 }
 
+fn like_prefix(prefix: &str) -> String {
+    let mut out = String::with_capacity(prefix.len() + 1);
+    for ch in prefix.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('%');
+    out
+}
+
 /// Bind a locator under `(scheme, namespace)` to a record. Returns how many
 /// addresses the record now carries in that namespace.
 pub fn assign(
@@ -81,10 +93,10 @@ pub fn resolve_short(
         return Ok(ShortAddress::Unknown);
     }
     let mut stmt = conn.prepare_cached(
-        "SELECT DISTINCT record_id FROM addresses WHERE scheme = ?1 AND namespace = ?2 AND address LIKE ?3 || '%' ORDER BY record_id LIMIT 16",
+        "SELECT DISTINCT record_id FROM addresses WHERE scheme = ?1 AND namespace = ?2 AND address LIKE ?3 ESCAPE '\\' ORDER BY record_id LIMIT 16",
     )?;
     let ids: Vec<String> = stmt
-        .query_map(params![scheme, namespace, prefix], |r| r.get(0))?
+        .query_map(params![scheme, namespace, like_prefix(prefix)], |r| r.get(0))?
         .flatten()
         .collect();
     Ok(match ids.len() {
