@@ -112,6 +112,24 @@ fn file_import_preserves_exact_registered_source_and_reports_sql_failure() {
 }
 
 #[test]
+fn custom_sources_config_refuses_oversize_toml() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".cortex");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("sources.toml"),
+            "#".repeat(cortex_kernel::indexer::INDEXER_MAX_CONFIG_BYTES as usize + 1),
+        )
+        .unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        let mut conn = runtime.state().db.lock(&cx).await.unwrap();
+        let err = cortex_kernel::indexer::index_all(&mut conn, home.path(), None).unwrap_err();
+        assert_eq!(err, "source_config_byte_limit");
+    });
+}
+
+#[test]
 fn exact_capture_preserves_tail_and_distinguishes_occurrences_from_retries() {
     run_with_cx(|cx| async move {
         let home = tempfile::tempdir().unwrap();

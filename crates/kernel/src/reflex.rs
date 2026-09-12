@@ -18,6 +18,8 @@ use std::time::Instant;
 
 pub const REFLEX_FORMAT_VERSION: u32 = 1;
 pub const DEFAULT_MAX_RECORDS: usize = 4096;
+/// Discardable snapshot. A replaced huge file must not OOM Level-0 load.
+pub const MAX_REFLEX_SNAPSHOT_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReflexHeader {
@@ -204,7 +206,15 @@ pub fn publish(snapshot: &ReflexSnapshot, path: &Path) -> Result<(), String> {
 }
 
 pub fn load(path: &Path) -> Option<ReflexSnapshot> {
-    let bytes = std::fs::read(path).ok()?;
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_REFLEX_SNAPSHOT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_REFLEX_SNAPSHOT_BYTES {
+        return None;
+    }
     let snapshot: ReflexSnapshot = serde_json::from_slice(&bytes).ok()?;
     (snapshot.header.format_version == REFLEX_FORMAT_VERSION).then_some(snapshot)
 }

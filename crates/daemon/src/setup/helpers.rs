@@ -29,8 +29,13 @@ fn current_exe_path() -> String {
     std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "cortex".to_string())
 }
 pub(crate) fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
-    let needs_copy = match fs::read(dest) {
-        Ok(existing) => existing != fs::read(src).map_err(|e| format!("Cannot read {}: {e}", src.display()))?,
+    let src_meta = fs::metadata(src).map_err(|e| format!("Cannot read {}: {e}", src.display()))?;
+    let needs_copy = match fs::metadata(dest) {
+        Ok(dest_meta) if dest_meta.len() == src_meta.len() => {
+            fs::read(dest).map_err(|e| format!("Cannot read {}: {e}", dest.display()))?
+                != fs::read(src).map_err(|e| format!("Cannot read {}: {e}", src.display()))?
+        }
+        Ok(_) => true,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
         Err(err) => return Err(format!("Cannot read {}: {err}", dest.display())),
     };

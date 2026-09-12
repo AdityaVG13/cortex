@@ -174,7 +174,15 @@ fn expand_tilde(p: &str) -> PathBuf {
 fn load_custom_sources(home: &Path) -> Result<Vec<CustomSource>, String> {
     let path = home.join(".cortex").join("sources.toml");
     if path.try_exists().map_err(|err| err.to_string())? {
-        let content = fs::read_to_string(&path).map_err(|err| err.to_string())?;
+        use std::io::Read;
+        let file = fs::File::open(&path).map_err(|err| err.to_string())?;
+        let mut content = String::new();
+        file.take(INDEXER_MAX_CONFIG_BYTES + 1)
+            .read_to_string(&mut content)
+            .map_err(|err| err.to_string())?;
+        if content.len() as u64 > INDEXER_MAX_CONFIG_BYTES {
+            return Err("source_config_byte_limit".into());
+        }
         return toml::from_str::<SourcesConfig>(&content)
             .map(|cfg| cfg.source)
             .map_err(|err| format!("invalid_source_config: {err}"));
@@ -250,6 +258,8 @@ fn index_directory(
 }
 /// Hard ceiling for exact file capture; larger files fail without a partial receipt.
 pub const INDEXER_MAX_FILE_BYTES: u64 = 1024 * 1024;
+/// `sources.toml` is a small operator config loaded automatically on index.
+pub const INDEXER_MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 fn matches_glob(path: &Path, pattern: &str) -> bool {
     if pattern == "*" {

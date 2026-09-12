@@ -7,7 +7,9 @@
 #[path = "../support/mod.rs"]
 mod support;
 
-use cortex_kernel::db::backup::{backup_to, last_verified_restore, restore_from};
+use cortex_kernel::db::backup::{
+    backup_to, last_verified_restore, restore_from, LAST_VERIFIED_RESTORE, MAX_RESTORE_REPORT_BYTES,
+};
 use cortex_kernel::db::records::{brain_epochs, heads};
 use cortex_kernel::runtime::CortexRuntime;
 use cortex_kernel::store_spi::sqlite::{current_frontier, SqliteStore};
@@ -190,5 +192,19 @@ fn auto_repair_salvages_history_and_authoritative_tables() {
         .query_row("SELECT COUNT(*) FROM records", [], |r| r.get(0))
         .unwrap();
     assert_eq!(records, 1, "authoritative records salvaged");
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn last_verified_restore_ignores_oversize_report() {
+    let home = unique_temp_dir("restore-report-limit");
+    fs::create_dir_all(&home).unwrap();
+    let json = format!(
+        "{{\"verified\":true,\"pad\":\"{}\"}}",
+        "x".repeat(MAX_RESTORE_REPORT_BYTES as usize)
+    );
+    assert!(json.len() as u64 > MAX_RESTORE_REPORT_BYTES);
+    fs::write(home.join(LAST_VERIFIED_RESTORE), json).unwrap();
+    assert!(last_verified_restore(&home).is_none());
     let _ = fs::remove_dir_all(&home);
 }

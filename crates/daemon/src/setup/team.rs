@@ -196,7 +196,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
             return;
         }
     };
-    let previous_token = fs::read(&paths.token).ok();
+    let previous_token = auth::read_secret_file(&paths.token).ok();
     if let Err(e) = persist_team_owner_token(&paths, &owner_key) {
         rollback_team_setup(&conn);
         eprintln!("  [FAIL] Team migration rolled back because owner token persistence failed: {e}");

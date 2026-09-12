@@ -2,6 +2,26 @@ use super::common::{open_cli_connection, parse_flag_usize, parse_flag_value, val
 use crate::auth;
 use crate::eval;
 use serde_json::{json, Value};
+use std::io::Read;
+
+const MAX_EVAL_BASELINE_BYTES: u64 = 2 * 1024 * 1024;
+
+fn read_eval_baseline(path: &str) -> String {
+    let file = std::fs::File::open(path).unwrap_or_else(|err| {
+        eprintln!("Failed to read baseline snapshot file '{path}': {err}");
+        std::process::exit(1);
+    });
+    let mut raw = String::new();
+    if let Err(err) = file.take(MAX_EVAL_BASELINE_BYTES + 1).read_to_string(&mut raw) {
+        eprintln!("Failed to read baseline snapshot file '{path}': {err}");
+        std::process::exit(1);
+    }
+    if raw.len() as u64 > MAX_EVAL_BASELINE_BYTES {
+        eprintln!("Baseline snapshot file '{path}' exceeds {MAX_EVAL_BASELINE_BYTES} bytes");
+        std::process::exit(1);
+    }
+    raw
+}
 pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
     validate_cli_options_or_exit(args, &["--baseline-file", "--max-regression", "--window-days"], &["--json", "--fail-on-regression"]);
     let json_output = args.iter().any(|arg| arg == "--json");
@@ -38,10 +58,7 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
     };
     let mut snapshot = eval::build_eval_snapshot(&conn, window_days);
     let regression_gate = baseline_file.as_deref().map(|path| {
-        let baseline_raw = std::fs::read_to_string(path).unwrap_or_else(|err| {
-            eprintln!("Failed to read baseline snapshot file '{path}': {err}");
-            std::process::exit(1);
-        });
+        let baseline_raw = read_eval_baseline(path);
         let baseline_json: Value = serde_json::from_str(&baseline_raw).unwrap_or_else(|err| {
             eprintln!("Invalid baseline snapshot JSON in '{path}': {err}");
             std::process::exit(1);

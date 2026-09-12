@@ -1,9 +1,11 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 const BUDGETS_FILE_NAME: &str = "budgets.toml";
 pub const BUDGET_SOURCE: &str = "budgets.toml";
+pub const MAX_BUDGET_FILE_BYTES: u64 = 64 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum BudgetEndpoint {
     Store,
@@ -159,6 +161,41 @@ impl BudgetConfigError {
 "field":self.field})
     }
 }
+fn read_budget_file(path: &Path) -> Result<Option<String>, BudgetConfigError> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(BudgetConfigError::new(
+                "io_error",
+                format!("failed to read budgets.toml: {error}"),
+                None,
+                None,
+            ))
+        }
+    };
+    let mut contents = String::new();
+    file.take(MAX_BUDGET_FILE_BYTES + 1)
+        .read_to_string(&mut contents)
+        .map_err(|error| {
+            BudgetConfigError::new(
+                "io_error",
+                format!("failed to read budgets.toml: {error}"),
+                None,
+                None,
+            )
+        })?;
+    if contents.len() as u64 > MAX_BUDGET_FILE_BYTES {
+        return Err(BudgetConfigError::new(
+            "too_large",
+            format!("budgets.toml exceeds {MAX_BUDGET_FILE_BYTES} bytes"),
+            None,
+            None,
+        ));
+    }
+    Ok(Some(contents))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BudgetConfigStatus {
     pub config_loaded: bool,
@@ -172,24 +209,19 @@ impl BudgetConfigStatus {
     }
     pub fn load_from_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => Self::from_contents(path, &contents),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self {
+        match read_budget_file(&path) {
+            Ok(None) => Self {
                 config_loaded: false,
                 source: path,
                 config: None,
                 error: None,
             },
+            Ok(Some(contents)) => Self::from_contents(path, &contents),
             Err(error) => Self {
                 config_loaded: true,
                 source: path,
                 config: None,
-                error: Some(BudgetConfigError::new(
-                    "io_error",
-                    format!("failed to read budgets.toml: {error}"),
-                    None,
-                    None,
-                )),
+                error: Some(error),
             },
         }
     }

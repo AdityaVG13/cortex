@@ -26,6 +26,7 @@ pub(crate) const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
 pub(crate) const PATH_BINARY_FALLBACK_ENV: &str = "CORTEX_ALLOW_PATH_BINARY_FALLBACK";
 pub(crate) const SERVICE_ENSURE_FALLBACK_ENV: &str = "CORTEX_ALLOW_SERVICE_ENSURE_FALLBACK";
 pub(crate) const BUDGETS_FILE_NAME: &str = "budgets.toml";
+pub(crate) const MAX_BUDGET_FILE_BYTES: u64 = 64 * 1024;
 pub(crate) const BUDGET_ENDPOINT_NAMES: [&str; 4] = ["store", "recall", "boot", "mcp"];
 pub(crate) const MAX_BUDGET_INTEGER: u64 = i64::MAX as u64;
 pub(crate) const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;

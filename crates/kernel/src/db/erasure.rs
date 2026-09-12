@@ -11,6 +11,9 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 pub const LEDGER_FILE: &str = "erasures.ledger.jsonl";
+/// Home-local jsonl. Restore must ingest it, but a planted giant file
+/// must not OOM the reconciliation path; fail closed instead of skipping.
+pub const MAX_ERASURE_LEDGER_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErasureRecord {
@@ -43,14 +46,34 @@ pub fn ledger_path(home: &Path) -> PathBuf {
     home.join(LEDGER_FILE)
 }
 
+fn ledger_bytes(home: &Path) -> Result<Option<String>, String> {
+    use std::io::Read;
+    let file = match std::fs::File::open(ledger_path(home)) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.to_string()),
+    };
+    let mut raw = String::new();
+    file.take(MAX_ERASURE_LEDGER_BYTES + 1)
+        .read_to_string(&mut raw)
+        .map_err(|e| e.to_string())?;
+    if raw.len() as u64 > MAX_ERASURE_LEDGER_BYTES {
+        return Err("erasure_ledger_byte_limit".into());
+    }
+    Ok(Some(raw))
+}
+
+fn parse_ledger(raw: &str) -> Vec<ErasureRecord> {
+    raw.lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
 pub fn read_ledger(home: &Path) -> Vec<ErasureRecord> {
-    std::fs::read_to_string(ledger_path(home))
-        .map(|s| {
-            s.lines()
-                .filter_map(|l| serde_json::from_str(l).ok())
-                .collect()
-        })
-        .unwrap_or_default()
+    match ledger_bytes(home) {
+        Ok(Some(raw)) => parse_ledger(&raw),
+        Ok(None) | Err(_) => Vec::new(),
+    }
 }
 
 fn append_ledger(home: &Path, record: &ErasureRecord) -> Result<(), String> {
@@ -289,7 +312,11 @@ pub struct Reconciliation {
 /// resurrect an erased record.
 pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconciliation, String> {
     super::records::ensure_authoritative_schema(conn).map_err(|e| e.to_string())?;
-    let ledger = read_ledger(home);
+    let ledger = match ledger_bytes(home) {
+        Ok(Some(raw)) => parse_ledger(&raw),
+        Ok(None) => Vec::new(),
+        Err(err) => return Err(err),
+    };
     let floor_before = erasure_floor(conn);
     let db_has_ledger: i64 = conn
         .query_row("SELECT COUNT(*) FROM erasures", [], |r| r.get(0))

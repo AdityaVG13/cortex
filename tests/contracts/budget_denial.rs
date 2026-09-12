@@ -1,7 +1,7 @@
 //! Budget admission is exercised directly with explicit, per-test configuration.
 //! Retired: HTTP 429, Retry-After/Cache-Control headers, and the removed router's
 //! JSON-RPC -32029 mapping. The MCP dispatcher does not enforce that router budget.
-use cortex_logic::budgets::{BudgetConfigStatus, BudgetEndpoint};
+use cortex_logic::budgets::{BudgetConfigStatus, BudgetEndpoint, MAX_BUDGET_FILE_BYTES};
 use cortex_logic::rate_limit::RateLimiter;
 use cortex_tests::support::run_with_cx;
 
@@ -65,4 +65,22 @@ fn missing_configuration_does_not_invent_a_budget() {
         }
         assert_eq!(limiter.total_budget_denials(), 0);
     });
+}
+
+#[test]
+fn oversize_budgets_toml_is_too_large_not_enabled() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("budgets.toml"),
+        format!(
+            "# {}\n[defaults]\nenabled = true\n",
+            "a".repeat(MAX_BUDGET_FILE_BYTES as usize)
+        ),
+    )
+    .unwrap();
+    let status = BudgetConfigStatus::load_from_home(home.path());
+    assert!(status.config_loaded);
+    let error = status.error.expect("oversize must fail");
+    assert_eq!(error.code, "too_large");
+    assert!(!status.enabled());
 }

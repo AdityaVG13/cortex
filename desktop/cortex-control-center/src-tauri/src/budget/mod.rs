@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -203,18 +203,42 @@ pub fn budget_snapshot_from_contents(_path: &Path, contents: &str) -> BudgetConf
 }
 
 pub fn read_budget_config_snapshot(path: &Path) -> Result<BudgetConfigSnapshot, String> {
-    match fs::read_to_string(path) {
-        Ok(contents) => Ok(budget_snapshot_from_contents(path, &contents)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(empty_budget_snapshot(path)),
-        Err(err) => Ok(BudgetConfigSnapshot {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(empty_budget_snapshot(path)),
+        Err(err) => {
+            return Ok(BudgetConfigSnapshot {
+                config_loaded: true,
+                enabled: false,
+                source: budget_source_label(),
+                error: Some(budget_error("io_error", format!("failed to read budgets.toml: {err}"), None, None)),
+                endpoints: BTreeMap::new(),
+                recent_denials: 0,
+            })
+        }
+    };
+    let mut contents = String::new();
+    if let Err(err) = file.take(MAX_BUDGET_FILE_BYTES + 1).read_to_string(&mut contents) {
+        return Ok(BudgetConfigSnapshot {
             config_loaded: true,
             enabled: false,
             source: budget_source_label(),
             error: Some(budget_error("io_error", format!("failed to read budgets.toml: {err}"), None, None)),
             endpoints: BTreeMap::new(),
             recent_denials: 0,
-        }),
+        });
     }
+    if contents.len() as u64 > MAX_BUDGET_FILE_BYTES {
+        return Ok(BudgetConfigSnapshot {
+            config_loaded: true,
+            enabled: false,
+            source: budget_source_label(),
+            error: Some(budget_error("too_large", format!("budgets.toml exceeds {MAX_BUDGET_FILE_BYTES} bytes"), None, None)),
+            endpoints: BTreeMap::new(),
+            recent_denials: 0,
+        });
+    }
+    Ok(budget_snapshot_from_contents(path, &contents))
 }
 
 pub fn validate_budget_draft(draft: BudgetConfigDraft) -> Result<BudgetTomlFile, String> {

@@ -1,4 +1,4 @@
-use cortex_kernel::auth::CortexPaths;
+use cortex_kernel::auth::{pid_file_live_pid, CortexPaths, MAX_PID_FILE_BYTES};
 use cortex_tests::in_subprocess;
 use serde_json::Value;
 
@@ -59,4 +59,22 @@ fn cortex_paths_honor_cortex_home() {
     assert_eq!(paths.db, home.join("cortex.db"));
     assert_eq!(paths.token, home.join("cortex.token"));
     assert_eq!(paths.pid, home.join("cortex.pid"));
+}
+
+#[test]
+fn pid_file_reads_refuse_an_oversize_replacement() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path();
+    let db = home.join("cortex.db");
+    let paths = CortexPaths::resolve_with_overrides(
+        Some(&home.to_string_lossy()),
+        Some(&db.to_string_lossy()),
+    );
+    let padded = format!("1\n{}", " ".repeat(MAX_PID_FILE_BYTES as usize));
+    assert!(padded.len() as u64 > MAX_PID_FILE_BYTES);
+    std::fs::write(&paths.pid, padded).expect("write padded pid");
+    assert!(
+        pid_file_live_pid(&paths).is_none(),
+        "oversize pid must not parse as live pid 1"
+    );
 }

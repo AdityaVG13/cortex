@@ -1,7 +1,21 @@
 use super::keys::cortex_dir;
 use super::paths::{CortexPaths, BASE62};
 use std::fs;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+/// PID files hold one decimal u32. A replaced huge file must not OOM restore.
+pub const MAX_PID_FILE_BYTES: u64 = 64;
+
+fn read_pid_file(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut raw = String::new();
+    file.take(MAX_PID_FILE_BYTES + 1)
+        .read_to_string(&mut raw)
+        .ok()?;
+    (raw.len() as u64 <= MAX_PID_FILE_BYTES).then_some(raw)
+}
+
 /// Record this process in `paths.pid` so destructive CLI (`cortex restore`)
 /// can see a live `cortex serve`. The flock on `paths.lock` is the real
 /// exclusion; this file is the documented, inspectable gate.
@@ -13,7 +27,7 @@ pub fn write_pid_file(paths: &CortexPaths) -> Result<(), String> {
 
 /// Remove `paths.pid` only when it still names this process.
 pub fn remove_own_pid_file(paths: &CortexPaths) {
-    let Ok(recorded) = fs::read_to_string(&paths.pid) else {
+    let Some(recorded) = read_pid_file(&paths.pid) else {
         return;
     };
     if recorded.trim().parse::<u32>().ok() == Some(std::process::id()) {
@@ -30,9 +44,7 @@ pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
     if !paths.pid.exists() {
         return None;
     }
-    let pid = fs::read_to_string(&paths.pid)
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())?;
+    let pid = read_pid_file(&paths.pid)?.trim().parse::<u32>().ok()?;
     if pid == std::process::id() || process_is_running(pid) {
         return None;
     }
@@ -48,9 +60,7 @@ pub fn pid_file_live_pid(paths: &CortexPaths) -> Option<u32> {
     if !paths.pid.exists() {
         return None;
     }
-    let pid = fs::read_to_string(&paths.pid)
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())?;
+    let pid = read_pid_file(&paths.pid)?.trim().parse::<u32>().ok()?;
     if pid == std::process::id() || process_is_running(pid) {
         return Some(pid);
     }

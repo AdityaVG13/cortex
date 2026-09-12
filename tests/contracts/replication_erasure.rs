@@ -5,7 +5,10 @@
 //! consensus: replicas converge on evidence and keep contradictory heads.
 
 use cortex_kernel::db::backup::{backup_to, restore_from};
-use cortex_kernel::db::erasure::{erase, erasure_floor, fence_check, is_erased, read_ledger};
+use cortex_kernel::db::erasure::{
+    erase, erasure_floor, fence_check, is_erased, read_ledger, reconcile_after_restore, LEDGER_FILE,
+    MAX_ERASURE_LEDGER_BYTES,
+};
 use cortex_kernel::db::feedback_ledger::{
     adaptive_policy, envelope_check, family_stats, record, OutcomeFeedback, SafeChoice,
 };
@@ -448,4 +451,19 @@ fn feedback_separates_exposure_use_success_and_credit_and_the_bandit_stays_off()
             "denied"
         );
     });
+}
+
+#[test]
+fn restore_reconciliation_refuses_oversize_erasure_ledger() {
+    let home = unique_temp_dir("erasure-ledger-limit");
+    fs::create_dir_all(&home).unwrap();
+    let db = home.join("cortex.db");
+    let conn = open_file_db(&db);
+    fs::write(
+        home.join(LEDGER_FILE),
+        vec![b'x'; MAX_ERASURE_LEDGER_BYTES as usize + 1],
+    )
+    .unwrap();
+    let err = reconcile_after_restore(&conn, &home).unwrap_err();
+    assert_eq!(err, "erasure_ledger_byte_limit");
 }

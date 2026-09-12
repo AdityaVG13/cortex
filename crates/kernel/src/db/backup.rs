@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 
 pub const MANIFEST_SUFFIX: &str = ".manifest.json";
 pub const LAST_VERIFIED_RESTORE: &str = ".last_verified_restore.json";
+/// Health report is a small JSON object. A replaced huge file must not OOM health.
+pub const MAX_RESTORE_REPORT_BYTES: u64 = 64 * 1024;
 
 fn open_configured(path: &Path) -> Result<Connection, String> {
     let conn = super::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
@@ -246,7 +248,14 @@ pub fn restore_from(
 }
 
 pub fn last_verified_restore(home: &Path) -> Option<Value> {
-    std::fs::read_to_string(home.join(LAST_VERIFIED_RESTORE))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+    use std::io::Read;
+    let file = std::fs::File::open(home.join(LAST_VERIFIED_RESTORE)).ok()?;
+    let mut raw = String::new();
+    file.take(MAX_RESTORE_REPORT_BYTES + 1)
+        .read_to_string(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > MAX_RESTORE_REPORT_BYTES {
+        return None;
+    }
+    serde_json::from_str(&raw).ok()
 }

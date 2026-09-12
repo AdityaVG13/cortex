@@ -305,8 +305,13 @@ pub fn installed_plugin_binary_path(home: &Path) -> PathBuf {
 }
 
 pub fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
-    let needs_copy = match fs::read(dest) {
-        Ok(existing) => existing != fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?,
+    let src_meta = fs::metadata(src).map_err(|e| format!("read {}: {e}", src.display()))?;
+    let needs_copy = match fs::metadata(dest) {
+        Ok(dest_meta) if dest_meta.len() == src_meta.len() => {
+            fs::read(dest).map_err(|e| format!("read {}: {e}", dest.display()))?
+                != fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?
+        }
+        Ok(_) => true,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
         Err(err) => return Err(format!("read {}: {err}", dest.display())),
     };
