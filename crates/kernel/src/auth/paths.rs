@@ -558,7 +558,36 @@ pub fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         restrict_file_to_owner(path)?;
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::io::Write as _;
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        // FILE_FLAG_OPEN_REPARSE_POINT is the O_NOFOLLOW analog: a planted
+        // symlink must not redirect the secret. Apply the owner DACL before
+        // truncate so a SetNamedSecurityInfo failure cannot wipe an existing
+        // token (Unix fchmod-before-set_len).
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to write secret through a reparse point",
+            ));
+        }
+        restrict_file_to_owner(path)?;
+        file.set_len(0)?;
+        file.write_all(contents)?;
+        file.flush()?;
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         use std::io::Write as _;
         let mut file = fs::OpenOptions::new()
