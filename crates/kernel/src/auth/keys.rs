@@ -32,8 +32,9 @@ pub fn try_generate_token() -> Result<String, String> {
     try_generate_token_for(&CortexPaths::resolve())
 }
 pub fn read_token_from(paths: &CortexPaths) -> Option<String> {
-    fs::read_to_string(&paths.token)
+    super::paths::read_secret_file(&paths.token)
         .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }

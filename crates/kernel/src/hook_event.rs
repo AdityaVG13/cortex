@@ -440,15 +440,33 @@ fn render_view(view: &Value) -> String {
     lines.join("\n")
 }
 
+const MAX_CAPTURE_SIDECAR_BYTES: u64 = 256 * 1024;
+
 /// Env `CORTEX_CAPTURE` wins. Otherwise the operator sidecar at
 /// [`crate::auth::CortexPaths::capture_sidecar`]. Missing both is silent, not CQR.
 pub fn load_capture_sidecar(paths: &crate::auth::CortexPaths) -> Option<String> {
     match std::env::var("CORTEX_CAPTURE") {
-        Ok(value) if !value.trim().is_empty() => Some(value),
-        _ => std::fs::read_to_string(paths.capture_sidecar())
-            .ok()
-            .filter(|value| !value.trim().is_empty()),
+        Ok(value) if !value.trim().is_empty() => {
+            if value.len() as u64 > MAX_CAPTURE_SIDECAR_BYTES {
+                return None;
+            }
+            Some(value)
+        }
+        _ => read_capture_sidecar_file(&paths.capture_sidecar()),
     }
+}
+
+fn read_capture_sidecar_file(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut raw = String::new();
+    file.take(MAX_CAPTURE_SIDECAR_BYTES + 1)
+        .read_to_string(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > MAX_CAPTURE_SIDECAR_BYTES || raw.trim().is_empty() {
+        return None;
+    }
+    Some(raw)
 }
 
 /// Write the installed sidecar once. Existing operator files are left alone.

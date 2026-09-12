@@ -1,12 +1,14 @@
 use std::fs;
-#[cfg(windows)]
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 pub const CORTEX_DIR_NAME: &str = ".cortex";
 pub const CORTEX_GLOBAL_LOCK_NAME: &str = "cortex.global.lock";
 pub const CORTEX_GLOBAL_LOCK_HOME_ENV: &str = "CORTEX_GLOBAL_LOCK_HOME";
 pub const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+/// Token / secret files are UUID-sized. Match the Control Center cap so a
+/// replaced huge file cannot OOM `read_token_from` at runtime open.
+pub const MAX_SECRET_FILE_BYTES: u64 = 8 * 1024;
 #[derive(Debug, Clone)]
 pub struct CortexPaths {
     pub home: PathBuf,
@@ -536,6 +538,55 @@ pub fn restrict_file_to_owner(path: &Path) -> io::Result<()> {
 pub fn restrict_file_to_owner(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
+/// Read a secret without following a planted symlink/reparse and without
+/// slurping an attacker-replaced huge file. Write already uses O_NOFOLLOW.
+pub fn read_secret_file(path: &Path) -> io::Result<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        read_secret_file_bounded(&mut file)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to read secret through a reparse point",
+            ));
+        }
+        read_secret_file_bounded(&mut file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let mut file = fs::File::open(path)?;
+        read_secret_file_bounded(&mut file)
+    }
+}
+
+fn read_secret_file_bounded(file: &mut fs::File) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    file.take(MAX_SECRET_FILE_BYTES + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_SECRET_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "secret file exceeds maximum size",
+        ));
+    }
+    Ok(buf)
+}
+
 pub fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
