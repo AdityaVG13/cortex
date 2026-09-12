@@ -2,6 +2,8 @@
 //! Brain types live in `cortex-kernel` and `cortex-logic`. Import those crates
 //! directly from hosts and contracts.
 
+#![forbid(unsafe_code)]
+
 pub mod cli;
 pub mod handlers;
 pub mod hook_boot;

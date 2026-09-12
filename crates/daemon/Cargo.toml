@@ -37,6 +37,7 @@ sysinfo = "0.39.6"
 proptest = "1"
 
 [lints.rust]
+unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
 
 [lints.clippy]

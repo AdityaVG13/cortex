@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use asupersync::{Cx, runtime::RuntimeBuilder};
 use cortex_daemon::{cli, hook_boot, prompt_inject, setup};
 use cortex_kernel::auth;
