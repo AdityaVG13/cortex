@@ -274,3 +274,64 @@ fn compare_profile_aligns_typed_fields_without_manufacturing_semantics() {
         assert_eq!(bad["status"], "invalid_request");
     });
 }
+
+#[test]
+fn compare_rejects_quote_bearing_kind_instead_of_interpolating_sql() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let cx = &cx;
+        let state = solo_state();
+        let (evil_ref, sqlite_version, other) = {
+            let conn = state.db.lock(cx).await.unwrap();
+            conn.execute(
+                "INSERT INTO memories (text, source, type, source_agent, status) VALUES ('benign planted compare row', 'pending', NULL, 'decomp', 'active')",
+                [],
+            )
+            .unwrap();
+            let id = conn.last_insert_rowid();
+            let evil_ref = format!("x'||(SELECT sqlite_version())||'::{id}");
+            conn.execute(
+                "UPDATE memories SET source = ?1 WHERE id = ?2",
+                rusqlite::params![evil_ref, id],
+            )
+            .unwrap();
+            let version: String = conn
+                .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+                .unwrap();
+            drop(conn);
+            let stored = dispatch(
+                cx,
+                &state,
+                caller(),
+                Operation::Commit,
+                &json!({"entries": [{"kind": "decision", "text": "CMP-SQL compare partner: keep the ledger retry bound at three attempts"}]}),
+            )
+            .await
+            .unwrap();
+            let other = format!(
+                "decision::{}",
+                stored["receipt"]["entries"]["entry.decision"]["value"]
+                    .as_str()
+                    .unwrap()
+            );
+            (evil_ref, version, other)
+        };
+        let cmp = dispatch(
+            cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({"need": "what changed", "profile": "compare", "compare": [evil_ref, other]}),
+        )
+        .await
+        .unwrap();
+        let rendered = cmp.to_string();
+        assert_eq!(
+            cmp["status"], "invalid_request",
+            "quote-bearing kind must not reach SQL: {cmp}"
+        );
+        assert!(
+            !rendered.contains(&sqlite_version),
+            "sqlite_version leaked through interpolated kind: {cmp}"
+        );
+    });
+}

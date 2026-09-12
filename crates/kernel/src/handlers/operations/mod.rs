@@ -859,26 +859,24 @@ async fn compare(cx: &asupersync::Cx, state: &RuntimeState, caller: &Caller<'_>,
                 json!({"status": ResponseStatus::NoMatch.as_str(), "error": format!("`{reference}` is not readable in your scope")}),
             );
         };
-        let table = if kind == "decision" {
-            "decisions"
-        } else {
-            "memories"
-        };
-        let text_col = if kind == "decision" {
-            "decision"
-        } else {
-            "text"
+        let (table, default_kind) = match kind {
+            "decision" => ("decisions", "decision"),
+            "memory" => ("memories", "memory"),
+            _ => {
+                return Ok(
+                    json!({"status": ResponseStatus::InvalidRequest.as_str(), "error": format!("`{reference}` is not a logical reference"), "field": "compare"}),
+                );
+            }
         };
         let (kind_col, status, retention, created, valid_from, valid_until) = conn
             .query_row(
-                &format!("SELECT COALESCE(type,'{kind}'), status, COALESCE(retention_class,'operational'), created_at, valid_from, valid_until FROM {table} WHERE id = ?1"),
-                rusqlite::params![id_num],
+                &format!("SELECT COALESCE(type, ?2), status, COALESCE(retention_class,'operational'), created_at, valid_from, valid_until FROM {table} WHERE id = ?1"),
+                rusqlite::params![id_num, default_kind],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?)),
             )
             .map_err(|e| e.to_string())?;
-        let _ = text_col;
         let record_id =
-            records::record_for_legacy(&conn, kind, id_num).map_err(|e| e.to_string())?;
+            records::record_for_legacy(&conn, default_kind, id_num).map_err(|e| e.to_string())?;
         let heads = record_id
             .as_ref()
             .map(|r| records::heads(&conn, r))
