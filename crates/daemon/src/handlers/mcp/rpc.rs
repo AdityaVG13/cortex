@@ -233,5 +233,9 @@ pub(crate) fn arg_i64(args: &Value, keys: &[&str]) -> Option<i64> {
     keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_i64()))
 }
 pub(crate) fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
-    keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_u64())).map(|value| value as usize)
+    keys.iter().find_map(|key| {
+        args.get(*key)
+            .and_then(Value::as_i64)
+            .and_then(|value| usize::try_from(value).ok())
+    })
 }

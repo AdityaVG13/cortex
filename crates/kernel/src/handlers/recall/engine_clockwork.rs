@@ -182,7 +182,7 @@ pub fn run_clock_quorum_recall(
         }
     }
     admitted.sort_by(|a, b| a.rank_key().cmp(&b.rank_key()));
-    admitted.truncate(k.max(1) * 3);
+    admitted.truncate(k.max(1).saturating_mul(3));
     trace.admitted = admitted.len();
     trace.leads = total.saturating_sub(admitted.len());
     LAST_ROUTE_TRACE.with(|cell| *cell.borrow_mut() = Some(trace));

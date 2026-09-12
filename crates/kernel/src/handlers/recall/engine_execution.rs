@@ -357,9 +357,9 @@ pub fn run_budget_recall_trace_with_query_vector(
     canary: Option<&SqliteVecCanaryConfig>, sqlite_vec_shadow_enabled: bool,
 ) -> Result<RecallBudgetTrace, String> {
     let retrieval_depth = if token_budget <= 220 {
-        (k.max(10) * 3).min(30)
+        k.max(10).saturating_mul(3).min(30)
     } else if token_budget <= 400 {
-        (k.max(10) * 2).min(28)
+        k.max(10).saturating_mul(2).min(28)
     } else {
         k.max(12)
     };
