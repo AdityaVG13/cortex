@@ -86,9 +86,11 @@ fn arg_str<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
-    keys.iter()
-        .find_map(|k| args.get(k).and_then(Value::as_u64))
-        .map(|v| v as usize)
+    keys.iter().find_map(|k| {
+        args.get(k)
+            .and_then(Value::as_i64)
+            .and_then(|v| usize::try_from(v).ok())
+    })
 }
 fn arg_bool(args: &Value, keys: &[&str]) -> Option<bool> {
     keys.iter()

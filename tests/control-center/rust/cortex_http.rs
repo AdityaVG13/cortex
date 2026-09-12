@@ -1,10 +1,23 @@
 use super::{
-    cortex_readiness_state, health_state_with_identity_fallback, is_cortex_health_response, readiness_state_with_identity_fallback,
+    cortex_readiness_state, decode_chunked_bytes, health_state_with_identity_fallback, is_cortex_health_response, readiness_state_with_identity_fallback,
     should_use_partial_response_on_read_timeout, validate_cortex_request_path, FetchCortexResponse,
 };
 use crate::daemon::paths::ResolvedCortexPaths;
 use crate::daemon::shutdown::extract_error_detail;
 use std::path::PathBuf;
+
+#[test]
+fn decode_chunked_bytes_rejects_overflowing_chunk_size_without_panic() {
+    let huge = b"ffffffffffffffff\r\nxx";
+    let err = decode_chunked_bytes(huge).expect_err("oversized hex chunk size must fail closed");
+    assert!(err.contains("overflow"), "{err}");
+
+    let almost_max = b"fffffffffffffffe\r\nxx";
+    let err = decode_chunked_bytes(almost_max).expect_err("near-max hex chunk size must fail closed");
+    assert!(err.contains("overflow"), "{err}");
+
+    assert_eq!(decode_chunked_bytes(b"5\r\nhello\r\n0\r\n\r\n").expect("valid chunked body"), b"hello");
+}
 
 #[test]
 fn validate_cortex_request_path_rejects_absolute_urls_and_injection() {

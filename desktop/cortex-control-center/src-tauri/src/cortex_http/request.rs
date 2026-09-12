@@ -150,7 +150,7 @@ fn parse_status_code(headers: &str) -> Result<u16, String> {
     code.parse::<u16>().map_err(|e| format!("Invalid HTTP status code '{code}': {e}"))
 }
 
-fn decode_chunked_bytes(body: &[u8]) -> Result<Vec<u8>, String> {
+pub fn decode_chunked_bytes(body: &[u8]) -> Result<Vec<u8>, String> {
     let mut result = Vec::new();
     let mut remaining = body;
 
@@ -170,7 +170,10 @@ fn decode_chunked_bytes(body: &[u8]) -> Result<Vec<u8>, String> {
             break;
         }
 
-        if remaining.len() < size + 2 {
+        let Some(need) = size.checked_add(2) else {
+            return Err("Invalid chunked encoding: chunk size overflow".to_string());
+        };
+        if remaining.len() < need {
             return Err("Invalid chunked encoding: chunk truncated".to_string());
         }
 

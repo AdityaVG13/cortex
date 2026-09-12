@@ -6,7 +6,9 @@ pub use readiness::{
     probe_cortex_reachability_with_port, read_auth_token_with_retry, readiness_state_with_identity_fallback, wait_for_reachability,
     wait_for_reachability_blocking, CortexReachabilityProbe,
 };
-pub use request::{send_cortex_request, should_use_partial_response_on_read_timeout, validate_cortex_request_path, FetchCortexResponse, RequestTimeouts};
+pub use request::{
+    decode_chunked_bytes, send_cortex_request, should_use_partial_response_on_read_timeout, validate_cortex_request_path, FetchCortexResponse, RequestTimeouts,
+};
 
 #[cfg(test)]
 #[path = "../../../../../tests/control-center/rust/cortex_http.rs"]
