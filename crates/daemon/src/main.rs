@@ -5,7 +5,7 @@ use cortex_kernel::auth;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let paths = auth::CortexPaths::resolve_from_args(&args);
-    cli::apply_path_env(&paths);
+    auth::CortexPaths::install_process_paths(&paths);
     let runtime = match RuntimeBuilder::new().build() {
         Ok(runtime) => runtime,
         Err(err) => {

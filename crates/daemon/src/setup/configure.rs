@@ -102,9 +102,10 @@ pub(crate) fn merge_toml_config(config_path: &Path, cortex_exe: &str, agent_name
     Ok(format!("{action} at {}", config_path.display()))
 }
 fn run_mcp_add(program: &str, args: &[&str], cortex_exe: &str, agent_name: &str) -> Result<(), String> {
-    let output = Command::new(program)
-        .args(args)
-        .args([cortex_exe, "mcp", "--agent", agent_name])
+    let mut command = Command::new(program);
+    command.args(args).args([cortex_exe, "mcp", "--agent", agent_name]);
+    crate::auth::CortexPaths::resolve().apply_to_command(&mut command);
+    let output = command
         .output()
         .map_err(|e| format!("Failed to run {program} CLI: {e}"))?;
     if output.status.success() {

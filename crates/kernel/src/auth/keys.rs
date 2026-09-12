@@ -5,6 +5,9 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 pub fn cortex_dir() -> PathBuf {
+    if let Some(paths) = CortexPaths::process_paths() {
+        return paths.home.clone();
+    }
     if let Ok(explicit) = std::env::var("CORTEX_HOME") {
         if !explicit.trim().is_empty() {
             return PathBuf::from(explicit);

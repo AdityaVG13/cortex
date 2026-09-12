@@ -2,6 +2,7 @@ use std::fs;
 #[cfg(windows)]
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 pub const CORTEX_DIR_NAME: &str = ".cortex";
 pub const CORTEX_GLOBAL_LOCK_NAME: &str = "cortex.global.lock";
 pub const CORTEX_GLOBAL_LOCK_HOME_ENV: &str = "CORTEX_GLOBAL_LOCK_HOME";
@@ -16,9 +17,28 @@ pub struct CortexPaths {
     #[allow(dead_code)]
     pub write_buffer: PathBuf,
 }
+static PROCESS_PATHS: OnceLock<CortexPaths> = OnceLock::new();
 impl CortexPaths {
+    /// Pin `--home` / `--db` (or the env resolve) for later `resolve()` callers.
+    /// Does not mutate the process environment.
+    pub fn install_process_paths(paths: &Self) {
+        let _ = PROCESS_PATHS.set(paths.clone());
+    }
+    pub(crate) fn process_paths() -> Option<&'static Self> {
+        PROCESS_PATHS.get()
+    }
+    /// After [`Self::install_process_paths`], returns that cell. Otherwise
+    /// reads operator `CORTEX_HOME` / `CORTEX_DB`.
     pub fn resolve() -> Self {
+        if let Some(paths) = PROCESS_PATHS.get() {
+            return paths.clone();
+        }
         Self::resolve_with_overrides(None, None)
+    }
+    /// Set `CORTEX_HOME` / `CORTEX_DB` on a child only (safe `Command::env`).
+    pub fn apply_to_command(&self, command: &mut std::process::Command) {
+        command.env("CORTEX_HOME", &self.home);
+        command.env("CORTEX_DB", &self.db);
     }
     pub fn resolve_with_overrides(home_override: Option<&str>, db_override: Option<&str>) -> Self {
         let home = home_override
