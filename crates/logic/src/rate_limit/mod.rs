@@ -39,7 +39,10 @@ impl SlidingWindow {
     }
     fn prune(&mut self, now: Instant, window: Duration) {
         while let Some(oldest) = self.timestamps.front().copied() {
-            if now.duration_since(oldest) < window {
+            // cleanup() snapshots Instant once, then locks maps one at a
+            // time. A concurrent check_* can insert a later Instant while
+            // that snapshot is still in use; duration_since panics on that.
+            if now.saturating_duration_since(oldest) < window {
                 break;
             }
             self.timestamps.pop_front();
@@ -50,7 +53,7 @@ impl SlidingWindow {
             return 0;
         }
         let oldest = self.timestamps.front().copied().unwrap_or(now);
-        let elapsed = now.duration_since(oldest);
+        let elapsed = now.saturating_duration_since(oldest);
         window.as_secs().saturating_sub(elapsed.as_secs()).max(1)
     }
     fn try_record(&mut self, now: Instant, limit: usize, window: Duration) -> Result<usize, u64> {

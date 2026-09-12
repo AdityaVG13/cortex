@@ -20,9 +20,9 @@ struct TaskEvalAggregate {
 }
 impl TaskEvalAggregate {
     fn observe(&mut self, outcome: &str, retries: Option<i64>, latency_ms: Option<i64>) {
-        self.total += 1;
+        self.total = self.total.saturating_add(1);
         let retries_value = retries.unwrap_or(0).max(0);
-        self.retries_total += retries_value;
+        self.retries_total = self.retries_total.saturating_add(retries_value);
         if outcome == "success" {
             self.success += 1;
             if retries_value == 0 {
