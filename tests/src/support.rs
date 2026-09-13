@@ -71,6 +71,11 @@ pub fn shared_file_pair() -> (Connection, Connection, PathBuf) {
     let write = open_file_db(&path);
     let read = Connection::open(&path).expect("open read sqlite");
     db::configure(&read).expect("configure read db");
+    // Match production `open_query_only_connection`: a second file connection
+    // without this pragma is a second writer (WAL allows one writer; boot
+    // cache/events on db_read would otherwise commit beside the write mutex).
+    read.execute_batch("PRAGMA query_only = ON;")
+        .expect("read connection is query-only");
     (write, read, dir)
 }
 

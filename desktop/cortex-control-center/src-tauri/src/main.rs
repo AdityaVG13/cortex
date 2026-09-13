@@ -104,14 +104,20 @@ fn main() {
                 hide_main_window(app_handle);
             } else {
                 request_supervisor_stop(app_handle);
-                shutdown_daemon(app_handle);
+                // Pause respawn, then join, then kill. Kill-then-join left a
+                // window where an in-flight tick could spawn a new child after
+                // abort and before the supervisor thread saw the stop flag;
+                // WAL TRUNCATE then raced that writer.
+                app_handle.state::<DaemonState>().pause_supervisor();
                 join_supervisor(app_handle);
+                shutdown_daemon(app_handle);
             }
         }
         tauri::RunEvent::Exit => {
             request_supervisor_stop(app_handle);
-            shutdown_daemon(app_handle);
+            app_handle.state::<DaemonState>().pause_supervisor();
             join_supervisor(app_handle);
+            shutdown_daemon(app_handle);
         }
         _ => {}
     });

@@ -10,6 +10,15 @@ impl Drop for OwnPidFile {
     }
 }
 
+/// Struct fields drop in declaration order: close SQLite, release the flock,
+/// then unlink the pid file. Unlinking first made `pid_file_live_pid`
+/// report "no daemon" while this process still held the DB and lock.
+struct ServeGuards {
+    runtime: CortexRuntime,
+    _lock: std::fs::File,
+    _pid: Option<OwnPidFile>,
+}
+
 /// Optional headless worker. Cross-process writes are observed through SQLite's
 /// data version; idle ticks do not run maintenance passes. Each slice is capped.
 pub async fn run_daemon(cx: &Cx, paths: auth::CortexPaths, shutdown: impl std::future::Future<Output = ()>) -> Result<(), String> {
@@ -23,12 +32,17 @@ pub async fn run_daemon(cx: &Cx, paths: auth::CortexPaths, shutdown: impl std::f
             None
         }
     };
+    let serve = ServeGuards {
+        runtime,
+        _lock,
+        _pid,
+    };
     let mut shutdown = Box::pin(shutdown);
     let mut data_version = None;
     let mut pending = true;
     loop {
         cx.checkpoint().map_err(|err| err.to_string())?;
-        let conn = runtime.state().db.lock(cx).await.map_err(|err| err.to_string())?;
+        let conn = serve.runtime.state().db.lock(cx).await.map_err(|err| err.to_string())?;
         let version: i64 = conn.query_row("PRAGMA data_version", [], |row| row.get(0)).map_err(|err| err.to_string())?;
         if pending || data_version != Some(version) {
             db::outbox::maintain_slice(&conn, "supervisor", 32).map_err(|err| err.to_string())?;
@@ -43,7 +57,7 @@ pub async fn run_daemon(cx: &Cx, paths: auth::CortexPaths, shutdown: impl std::f
             Either::Right(((), remaining_shutdown)) => shutdown = remaining_shutdown,
         }
     }
-    let conn = runtime.state().db.lock(cx).await.map_err(|err| err.to_string())?;
+    let conn = serve.runtime.state().db.lock(cx).await.map_err(|err| err.to_string())?;
     conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);").map_err(|err| err.to_string())?;
     Ok(())
 }

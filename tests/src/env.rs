@@ -22,14 +22,38 @@ pub async fn lock_async(cx: &Cx) -> Result<MutexGuard<'static, ()>, LockError> {
 }
 
 /// Kill and reap a child if the caller panics or times out before taking it.
-struct KillChildOnDrop(Option<std::process::Child>);
+/// Drain-pipe threads are joined only after the child is reaped: joining first
+/// deadlocks when the child is hung (pipe still open).
+struct KillChildOnDrop {
+    child: Option<std::process::Child>,
+    stdout: Option<thread::JoinHandle<Vec<u8>>>,
+    stderr: Option<thread::JoinHandle<Vec<u8>>>,
+}
+
+impl KillChildOnDrop {
+    fn take_pipes(&mut self) -> (Vec<u8>, Vec<u8>) {
+        let stdout = self
+            .stdout
+            .take()
+            .map(|handle| handle.join().unwrap_or_else(|_| Vec::new()))
+            .unwrap_or_default();
+        let stderr = self
+            .stderr
+            .take()
+            .map(|handle| handle.join().unwrap_or_else(|_| Vec::new()))
+            .unwrap_or_default();
+        (stdout, stderr)
+    }
+}
 
 impl Drop for KillChildOnDrop {
     fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
+        if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
+        let _ = self.stdout.take().map(|handle| handle.join());
+        let _ = self.stderr.take().map(|handle| handle.join());
     }
 }
 
@@ -64,36 +88,37 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
             }
         }
     }
-    let mut child = KillChildOnDrop(Some(cmd.spawn().expect("run isolated contract")));
-    let stdout_thread;
-    let stderr_thread;
+    let mut child = KillChildOnDrop {
+        child: Some(cmd.spawn().expect("run isolated contract")),
+        stdout: None,
+        stderr: None,
+    };
     {
-        let proc = child.0.as_mut().expect("isolated contract child");
+        let proc = child.child.as_mut().expect("isolated contract child");
         let mut stdout_pipe = proc.stdout.take().expect("stdout pipe");
         let mut stderr_pipe = proc.stderr.take().expect("stderr pipe");
-        stdout_thread = thread::spawn(move || {
+        child.stdout = Some(thread::spawn(move || {
             let mut buf = Vec::new();
             let _ = stdout_pipe.read_to_end(&mut buf);
             buf
-        });
-        stderr_thread = thread::spawn(move || {
+        }));
+        child.stderr = Some(thread::spawn(move || {
             let mut buf = Vec::new();
             let _ = stderr_pipe.read_to_end(&mut buf);
             buf
-        });
+        }));
     }
     let deadline = Instant::now() + WAIT;
     loop {
-        let proc = child.0.as_mut().expect("isolated contract child");
+        let proc = child.child.as_mut().expect("isolated contract child");
         match proc.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let mut proc = child.0.take().expect("isolated contract child");
+                    let mut proc = child.child.take().expect("isolated contract child");
                     let _ = proc.kill();
                     let status = proc.wait().expect("reap isolated contract");
-                    let stdout_bytes = stdout_thread.join().unwrap_or_else(|_| Vec::new());
-                    let stderr_bytes = stderr_thread.join().unwrap_or_else(|_| Vec::new());
+                    let (stdout_bytes, stderr_bytes) = child.take_pipes();
                     let stdout = String::from_utf8_lossy(&stdout_bytes);
                     let stderr = String::from_utf8_lossy(&stderr_bytes);
                     panic!(
@@ -106,13 +131,12 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
         }
     }
     let status = child
-        .0
+        .child
         .take()
         .expect("isolated contract child")
         .wait()
         .expect("collect isolated contract");
-    let stdout_bytes = stdout_thread.join().unwrap_or_else(|_| Vec::new());
-    let stderr_bytes = stderr_thread.join().unwrap_or_else(|_| Vec::new());
+    let (stdout_bytes, stderr_bytes) = child.take_pipes();
     let stdout = String::from_utf8_lossy(&stdout_bytes);
     let stderr = String::from_utf8_lossy(&stderr_bytes);
     assert!(

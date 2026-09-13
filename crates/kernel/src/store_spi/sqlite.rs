@@ -661,7 +661,10 @@ impl WriteTransaction for SqliteTx<'_> {
 
     fn abort(mut self) {
         let _ = self.conn.execute_batch("ROLLBACK");
-        self.finished = true;
+        // Only mark finished when the connection is actually autocommit.
+        // A failed ROLLBACK with a live statement would otherwise skip Drop's
+        // retry and leave the next lock holder inside the write transaction.
+        self.finished = self.conn.is_autocommit();
     }
 }
 

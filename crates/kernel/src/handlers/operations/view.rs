@@ -489,11 +489,12 @@ impl View {
         let seq = crate::store_spi::sqlite::frontier_sequence(&frontier);
         let random: String =
             conn.query_row("SELECT lower(hex(randomblob(4)))", [], |r| r.get(0))?;
-        self.receipt_id = format!("view-{seq}-{random}");
+        let receipt_id = format!("view-{seq}-{random}");
         self.frontier = Some(json!(frontier));
+        let sp = crate::db::SqliteSavepoint::enter(conn, "view_receipt")?;
         conn.execute(
             "INSERT INTO view_receipts (receipt_id, principal_id, brain_epoch, through_sequence, receipt_json) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![self.receipt_id, principal, restore_epoch, seq, json!({"profile": self.profile, "cards": self.cards.len()}).to_string()],
+            params![receipt_id, principal, restore_epoch, seq, json!({"profile": self.profile, "cards": self.cards.len()}).to_string()],
         )?;
         for card in &self.cards {
             let Some(record_id) = legacy_record(conn, &card.reference)? else {
@@ -505,9 +506,11 @@ impl View {
             };
             conn.execute(
                 "INSERT OR REPLACE INTO view_aliases (receipt_id, alias, record_id, revision_id, representation_version) VALUES (?1, ?2, ?3, ?4, 'brief/1')",
-                params![self.receipt_id, card.alias, record_id, revision],
+                params![receipt_id, card.alias, record_id, revision],
             )?;
         }
+        sp.release()?;
+        self.receipt_id = receipt_id;
         Ok(())
     }
 

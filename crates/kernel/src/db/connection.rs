@@ -190,6 +190,12 @@ impl Drop for ImmediateWrite<'_> {
     fn drop(&mut self) {
         if !self.finished {
             let _ = self.conn.execute_batch("ROLLBACK");
+            // Same as SqliteTx::abort: a failed ROLLBACK with a live
+            // statement must not skip retry, or the write mutex is returned
+            // still inside the transaction.
+            if !self.conn.is_autocommit() {
+                let _ = self.conn.execute_batch("ROLLBACK");
+            }
         }
     }
 }
@@ -248,8 +254,14 @@ pub fn with_savepoint_mut<T, E>(
         .map_err(&map_sql)?;
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(conn))) {
         Ok(Ok(value)) => {
-            conn.execute_batch(&format!("RELEASE {name}"))
-                .map_err(map_sql)?;
+            if let Err(err) = conn.execute_batch(&format!("RELEASE {name}")) {
+                // RELEASE failed with the body already applied. Roll the
+                // named savepoint back so this connection is not returned to
+                // the write mutex still inside a transaction (the next
+                // BEGIN/SAVEPOINT would fail or join leftover writes).
+                let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+                return Err(map_sql(err));
+            }
             Ok(value)
         }
         Ok(Err(err)) => {

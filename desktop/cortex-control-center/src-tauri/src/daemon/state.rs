@@ -43,6 +43,10 @@ impl DaemonState {
         }
     }
 
+    pub fn pause_supervisor(&self) {
+        self.intentional_stop.store(true, Ordering::SeqCst);
+    }
+
     pub fn resume_supervisor(&self) {
         self.intentional_stop.store(false, Ordering::SeqCst);
     }
@@ -144,7 +148,7 @@ impl DaemonState {
     }
 
     pub fn stop(&self) -> Result<(), String> {
-        self.intentional_stop.store(true, Ordering::SeqCst);
+        self.pause_supervisor();
         self.abort_managed_child()
     }
 }
