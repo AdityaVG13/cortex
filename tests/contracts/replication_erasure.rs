@@ -184,8 +184,32 @@ fn leases_are_advisory_and_exclusive_effects_need_a_live_fence_token() {
         [],
     )
     .unwrap();
+    let expired_stage = conn
+        .query_row(
+            "SELECT token FROM fences WHERE resource = 'deploy:stage'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        check_fence(&conn, "deploy:stage", expired_stage).unwrap_err()["error"],
+        "expired fencing token"
+    );
     let taken = acquire_fence(&conn, "deploy:stage", "agent-b", 60).unwrap();
     assert_eq!(taken.holder, "agent-b");
+    // Unparseable expiry is not a live lease.
+    let garbage = acquire_fence(&conn, "deploy:bad-ts", "agent-a", 60).unwrap();
+    conn.execute(
+        "UPDATE fences SET expires_at = 'not-a-timestamp' WHERE resource = 'deploy:bad-ts'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        check_fence(&conn, "deploy:bad-ts", garbage.token).unwrap_err()["error"],
+        "expired fencing token"
+    );
+    let taken_garbage = acquire_fence(&conn, "deploy:bad-ts", "agent-b", 60).unwrap();
+    assert_eq!(taken_garbage.holder, "agent-b");
     let _ = fs::remove_dir_all(&home);
 }
 

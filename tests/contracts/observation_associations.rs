@@ -59,6 +59,17 @@ fn learned_routes_are_scoped_explainable_reversible_and_permission_gated() {
                 .unwrap()
                 .is_empty()
         );
+        let premature = runtime
+            .query_observations(&cx, "repo-a", "zephyr", 32, 65536, true)
+            .await
+            .unwrap();
+        assert!(
+            premature
+                .evidence
+                .iter()
+                .all(|e| e.route != "learned_local_association"),
+            "learned=true must not refresh associations before rebuild_associations"
+        );
         assert_eq!(
             runtime.rebuild_associations(&cx, "repo-a").await.unwrap(),
             3

@@ -267,11 +267,7 @@ pub fn acquire_fence(
         .optional()
         .map_err(|e| e.to_string())?;
     if let Some((h, token, expires)) = &current {
-        let live = expires
-            .as_deref()
-            .and_then(|e| chrono::DateTime::parse_from_rfc3339(e).ok())
-            .map(|e| e > now)
-            .unwrap_or(true);
+        let live = fence_unexpired(expires.as_deref(), now);
         if live && h != holder {
             return Err(format!("resource {resource} fenced by {h} (token {token})"));
         }
@@ -290,23 +286,48 @@ pub fn acquire_fence(
     })
 }
 
+/// NULL expiry is a permanent lease. An unparseable timestamp is not live:
+/// a garbage `expires_at` must not lock the resource forever or authorize
+/// exclusive effects.
+fn fence_unexpired(expires_at: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> bool {
+    match expires_at {
+        None => true,
+        Some(raw) => chrono::DateTime::parse_from_rfc3339(raw)
+            .map(|expires| expires > now)
+            .unwrap_or(false),
+    }
+}
+
 /// The resource owner's check before an exclusive effect. A stale token
-/// (a newer fence was issued) or an unknown resource is refused; memory
-/// never self-authorizes execution.
+/// (a newer fence was issued), an expired lease, or an unknown resource is
+/// refused; memory never self-authorizes execution.
 pub fn check_fence(conn: &Connection, resource: &str, token: i64) -> Result<(), Value> {
-    ensure(conn).ok();
-    let current: Option<i64> = conn
+    if let Err(err) = ensure(conn) {
+        return Err(
+            json!({"status": "denied", "error": format!("fence table unavailable: {err}"), "resource": resource}),
+        );
+    }
+    let current: Option<(i64, Option<String>)> = conn
         .query_row(
-            "SELECT token FROM fences WHERE resource = ?1",
+            "SELECT token, expires_at FROM fences WHERE resource = ?1",
             [resource],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
-        .ok()
-        .flatten();
+        .map_err(|err| {
+            json!({"status": "denied", "error": format!("fence lookup failed: {err}"), "resource": resource})
+        })?;
     match current {
-        Some(t) if t == token => Ok(()),
-        Some(t) => Err(
+        Some((t, expires)) if t == token => {
+            if fence_unexpired(expires.as_deref(), chrono::Utc::now()) {
+                Ok(())
+            } else {
+                Err(
+                    json!({"status": "denied", "error": "expired fencing token", "resource": resource, "presented": token}),
+                )
+            }
+        }
+        Some((t, _)) => Err(
             json!({"status": "denied", "error": "stale fencing token", "resource": resource, "current_token": t, "presented": token}),
         ),
         None => Err(

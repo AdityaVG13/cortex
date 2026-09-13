@@ -43,7 +43,10 @@ fn exists(conn: &Connection, table: &str) -> Result<bool, String> {
     .map_err(|e| e.to_string())
 }
 fn enabled(conn: &Connection, principal: &str, scope: &str) -> Result<bool, String> {
-    Ok(conn.query_row("SELECT enabled FROM observation_association_state WHERE principal=?1 AND scope_label=?2", params![principal, scope], |r| r.get::<_, bool>(0)).optional().map_err(|e| e.to_string())?.unwrap_or(true))
+    // Missing state is not opted in. `rebuild_associations` writes enabled=1;
+    // `reset_associations` writes 0. Default-true would let `learned: true`
+    // refresh incidence without that rebuild, which the contract forbids.
+    Ok(conn.query_row("SELECT enabled FROM observation_association_state WHERE principal=?1 AND scope_label=?2", params![principal, scope], |r| r.get::<_, bool>(0)).optional().map_err(|e| e.to_string())?.unwrap_or(false))
 }
 fn tokens(text: &str) -> BTreeSet<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_')

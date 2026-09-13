@@ -28,15 +28,10 @@ CREATE TABLE IF NOT EXISTS operation_ledger (
 "#;
 
 pub fn restore_epoch(conn: &Connection) -> String {
-    conn.query_row(
-        "SELECT restore_epoch FROM brain_meta WHERE singleton = 1",
-        [],
-        |r| r.get::<_, String>(0),
-    )
-    .optional()
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| "0".to_string())
+    // Same sentinels as `records::brain_epochs`: missing schema is `"0"`,
+    // a locked/corrupt read is `"unreadable"`. Treating SQL failure as `"0"`
+    // would let a pre-restore cursor pass equality against a restored brain.
+    crate::db::records::brain_epochs(conn).1
 }
 
 pub fn current_frontier(conn: &Connection) -> Frontier {
