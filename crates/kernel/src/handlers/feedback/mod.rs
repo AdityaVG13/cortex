@@ -151,7 +151,18 @@ fn value_f64(args: &Value, keys: &[&str]) -> Option<f64> {
 }
 
 fn value_i64(args: &Value, keys: &[&str]) -> Option<i64> {
-    keys.iter().find_map(|key| args.get(*key)?.as_i64())
+    keys.iter().find_map(|key| {
+        let v = args.get(*key)?;
+        v.as_i64()
+            .or_else(|| v.as_u64().and_then(|n| i64::try_from(n).ok()))
+            .or_else(|| {
+                v.as_f64().and_then(|x| {
+                    let rounded = x.round();
+                    rounded.is_finite().then_some(rounded as i64)
+                })
+            })
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+    })
 }
 
 fn value_string_array(args: &Value, keys: &[&str]) -> Vec<String> {

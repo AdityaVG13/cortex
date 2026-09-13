@@ -207,16 +207,8 @@ pub fn shadow_compare<P: BrainStore, S: BrainStore>(
         )?;
         report.primary_rows_examined += p.coverage.rows_examined;
         report.shadow_rows_examined += s.coverage.rows_examined;
-        let pt: Vec<String> = p
-            .rows
-            .iter()
-            .map(|r| r.body["text"].as_str().unwrap_or("").to_string())
-            .collect();
-        let st: Vec<String> = s
-            .rows
-            .iter()
-            .map(|r| r.body["text"].as_str().unwrap_or("").to_string())
-            .collect();
+        let pt: Vec<String> = p.rows.iter().map(|r| r.id.canonical()).collect();
+        let st: Vec<String> = s.rows.iter().map(|r| r.id.canonical()).collect();
         let mut same = true;
         for t in &pt {
             if !st.contains(t) {

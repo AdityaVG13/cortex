@@ -192,17 +192,38 @@ pub fn rollback_to(conn: &Connection, to: i64) -> Result<(usize, i64), String> {
     if exists.is_none() {
         return Err(format!("Unknown version id: {to}"));
     }
-    let orphaned = conn
-        .execute(
+    let started = conn.is_autocommit();
+    if started {
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+    }
+    let result = (|| {
+        let orphaned = conn.execute(
             "UPDATE versions SET status = 'orphaned' WHERE id > ?1 AND status = 'active'",
             params![to],
-        )
-        .map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO head_state (scope, head_id) VALUES ('default', ?1) \
-         ON CONFLICT(scope) DO UPDATE SET head_id = excluded.head_id",
-        params![to],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok((orphaned, to))
+        )?;
+        conn.execute(
+            "INSERT INTO head_state (scope, head_id) VALUES ('default', ?1) \
+             ON CONFLICT(scope) DO UPDATE SET head_id = excluded.head_id",
+            params![to],
+        )?;
+        Ok::<_, rusqlite::Error>((orphaned, to))
+    })();
+    match result {
+        Ok(value) => {
+            if started {
+                if let Err(e) = conn.execute_batch("COMMIT") {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(e.to_string());
+                }
+            }
+            Ok(value)
+        }
+        Err(err) => {
+            if started {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
+            Err(err.to_string())
+        }
+    }
 }

@@ -119,15 +119,31 @@ pub fn close_revision(
         .map_err(|e| e.to_string())?;
     for (kind, to_revision) in rows {
         let Some(role) = DependencyRole::parse(&kind) else {
-            continue;
+            return Err(format!(
+                "unknown dependency role `{kind}` on {revision_id}; a claim is not served without its exceptions"
+            ));
         };
         if !role.is_required() && role != DependencyRole::Support {
             continue;
         }
-        let text = crate::db::records::revision_body(conn, &to_revision)
-            .map_err(|e| e.to_string())?
-            .and_then(|b| b["text"].as_str().map(str::to_string))
-            .unwrap_or_default();
+        let body = crate::db::records::revision_body(conn, &to_revision)
+            .map_err(|e| e.to_string())?;
+        let Some(body) = body else {
+            if role.is_required() {
+                return Err(format!(
+                    "required {role} target `{to_revision}` has no body",
+                    role = role.as_str()
+                ));
+            }
+            continue;
+        };
+        let text = body["text"].as_str().map(str::to_string).unwrap_or_default();
+        if text.is_empty() && role.is_required() {
+            return Err(format!(
+                "required {role} target `{to_revision}` has no text",
+                role = role.as_str()
+            ));
+        }
         items.push(ClosureItem {
             role,
             revision: to_revision,

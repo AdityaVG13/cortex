@@ -267,7 +267,7 @@ pub async fn process(
         return Ok(result);
     }
     let caller = || Caller {
-        owner_id: None,
+        owner_id: runtime.state().default_owner_id,
         agent,
         principal: "solo".into(),
     };
