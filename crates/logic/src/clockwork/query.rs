@@ -211,11 +211,14 @@ fn infer_temporal(raw: &str, explicit: Option<&str>) -> (TemporalMode, Option<St
     // a dated folder). Substring dates are not a temporal cue, matching the
     // "before"/"after" rule below: only an explicit as-of phrase (or the
     // caller-supplied timestamp) switches Current recall into as-of.
-    if lower.contains("as of") || lower.contains("as-of") {
+    // `contains("as of")` is a prefix of "as official"; require a phrase
+    // boundary and take the date after that phrase, not the first date in
+    // the whole string ("the 2023-12-01 outage as of 2024-01-15").
+    if let Some(pos) = as_of_phrase_at(&lower) {
         // Phrase without a YYYY-MM-DD still must stay Current: ExplicitAsOf
         // with a missing timestamp opens archived/superseded and the history
         // arm the same way a real as-of query does.
-        if let Some(date) = extract_iso_date(&lower) {
+        if let Some(date) = extract_iso_date(&lower[pos..]) {
             return (TemporalMode::ExplicitAsOf, Some(date));
         }
     }
@@ -239,6 +242,23 @@ fn infer_temporal(raw: &str, explicit: Option<&str>) -> (TemporalMode, Option<St
     (TemporalMode::Current, None)
 }
 
+fn as_of_phrase_at(lower: &str) -> Option<usize> {
+    for pat in ["as of", "as-of"] {
+        let mut start = 0;
+        while let Some(rel) = lower[start..].find(pat) {
+            let i = start + rel;
+            let before_ok = i == 0 || !lower.as_bytes()[i - 1].is_ascii_alphanumeric();
+            let after = i + pat.len();
+            let after_ok = after >= lower.len() || !lower.as_bytes()[after].is_ascii_alphanumeric();
+            if before_ok && after_ok {
+                return Some(i);
+            }
+            start = i + 1;
+        }
+    }
+    None
+}
+
 fn extract_iso_date(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     for i in 0..bytes.len().saturating_sub(9) {
@@ -253,7 +273,11 @@ fn extract_iso_date(text: &str) -> Option<String> {
             && bytes[i + 8].is_ascii_digit()
             && bytes[i + 9].is_ascii_digit()
         {
-            return Some(text[i..i + 10].to_string());
+            let month = (bytes[i + 5] - b'0') * 10 + (bytes[i + 6] - b'0');
+            let day = (bytes[i + 8] - b'0') * 10 + (bytes[i + 9] - b'0');
+            if (1..=12).contains(&month) && (1..=31).contains(&day) {
+                return Some(text[i..i + 10].to_string());
+            }
         }
     }
     None

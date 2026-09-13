@@ -496,7 +496,9 @@ pub fn evaluate(
                 let mut by_key: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
                 let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
                 for f in &rows {
-                    let k = f.fields.get(key).map(|v| v.to_string()).unwrap_or_default();
+                    let Some(k) = f.fields.get(key).map(|v| v.to_string()) else {
+                        continue;
+                    };
                     let v = f
                         .fields
                         .get(value_field)

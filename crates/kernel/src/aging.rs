@@ -18,7 +18,7 @@ fn skip_immune(
     op: &str,
     source: Option<&str>,
 ) -> bool {
-    let Some(src) = source else {
+    let Some(src) = source.map(str::trim).filter(|value| !value.is_empty()) else {
         return false;
     };
     match feedback::has_retrieval_immunity(conn, src) {
@@ -32,6 +32,34 @@ fn skip_immune(
             true
         }
     }
+}
+
+/// Recall stores `memory::{id}` / `decision::{id}`, and also the display
+/// source (`memories.source` / `decisions.context`) when that column is set.
+/// Checking only the column misses the ident the feedback row actually uses.
+fn skip_immune_keys(
+    conn: &Connection,
+    failures: &mut Vec<MaintenanceFailure>,
+    op: &str,
+    ident: &str,
+    alias: Option<&str>,
+) -> bool {
+    if skip_immune(conn, failures, op, Some(ident)) {
+        return true;
+    }
+    skip_immune(conn, failures, op, alias)
+}
+
+fn not_immune_sql(table: &str, ident_prefix: &str, alias_col: &str, window_idx: u8, thresh_idx: u8) -> String {
+    format!(
+        "(SELECT COUNT(*) FROM recall_feedback \
+            WHERE signal > 0 AND julianday('now') - julianday(created_at) <= ?{window_idx} \
+              AND result_source = '{ident_prefix}' || {table}.id) < ?{thresh_idx} \
+         AND (NULLIF(TRIM({table}.{alias_col}), '') IS NULL \
+              OR (SELECT COUNT(*) FROM recall_feedback \
+                    WHERE signal > 0 AND julianday('now') - julianday(created_at) <= ?{window_idx} \
+                      AND result_source = {table}.{alias_col}) < ?{thresh_idx})"
+    )
 }
 
 /// Outcome of one aging pass: only mutations that actually committed count as
@@ -141,10 +169,11 @@ fn age_memories_to_recent(conn: &Connection, failures: &mut Vec<MaintenanceFailu
     );
     let mut count = 0;
     for (id, text, source) in rows {
-        if skip_immune(
+        if skip_immune_keys(
             conn,
             failures,
             "age_memories_to_recent retrieval immunity",
+            &format!("memory::{id}"),
             source.as_deref(),
         ) {
             continue;
@@ -180,10 +209,11 @@ fn age_memories_to_old(conn: &Connection, failures: &mut Vec<MaintenanceFailure>
     );
     let mut count = 0;
     for (id, text, source) in rows {
-        if skip_immune(
+        if skip_immune_keys(
             conn,
             failures,
             "age_memories_to_old retrieval immunity",
+            &format!("memory::{id}"),
             source.as_deref(),
         ) {
             continue;
@@ -200,15 +230,24 @@ fn age_memories_to_old(conn: &Connection, failures: &mut Vec<MaintenanceFailure>
     count
 }
 fn archive_ancient_memories(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
+    let sql = format!(
+        "UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
+         WHERE status = 'active' AND pinned = 0 \
+         AND age_tier = 'old' \
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1 \
+         AND {}",
+        not_immune_sql("memories", "memory::", "source", 2, 3)
+    );
     exec_counted(
         conn,
         failures,
         "archive_ancient_memories UPDATE memories",
-        "UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
-         WHERE status = 'active' AND pinned = 0 \
-         AND age_tier = 'old' \
-         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
-        params![OLD_DAYS],
+        &sql,
+        params![
+            OLD_DAYS,
+            feedback::IMMUNITY_WINDOW_DAYS,
+            feedback::IMMUNITY_THRESHOLD
+        ],
     )
 }
 fn age_decisions_to_recent(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
@@ -231,6 +270,15 @@ fn age_decisions_to_recent(conn: &Connection, failures: &mut Vec<MaintenanceFail
     );
     let mut count = 0;
     for (id, decision, context) in rows {
+        if skip_immune_keys(
+            conn,
+            failures,
+            "age_decisions_to_recent retrieval immunity",
+            &format!("decision::{id}"),
+            context.as_deref(),
+        ) {
+            continue;
+        }
         let full = match context {
             Some(ref ctx) => format!("{decision} — {ctx}"),
             None => decision,
@@ -266,6 +314,15 @@ fn age_decisions_to_old(conn: &Connection, failures: &mut Vec<MaintenanceFailure
     );
     let mut count = 0;
     for (id, decision, context) in rows {
+        if skip_immune_keys(
+            conn,
+            failures,
+            "age_decisions_to_old retrieval immunity",
+            &format!("decision::{id}"),
+            context.as_deref(),
+        ) {
+            continue;
+        }
         let full = match context {
             Some(ref ctx) => format!("{decision} — {ctx}"),
             None => decision,
@@ -282,15 +339,24 @@ fn age_decisions_to_old(conn: &Connection, failures: &mut Vec<MaintenanceFailure
     count
 }
 fn archive_ancient_decisions(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
+    let sql = format!(
+        "UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
+         WHERE status = 'active' AND pinned = 0 \
+         AND age_tier = 'old' \
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1 \
+         AND {}",
+        not_immune_sql("decisions", "decision::", "context", 2, 3)
+    );
     exec_counted(
         conn,
         failures,
         "archive_ancient_decisions UPDATE decisions",
-        "UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
-         WHERE status = 'active' AND pinned = 0 \
-         AND age_tier = 'old' \
-         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
-        params![OLD_DAYS],
+        &sql,
+        params![
+            OLD_DAYS,
+            feedback::IMMUNITY_WINDOW_DAYS,
+            feedback::IMMUNITY_THRESHOLD
+        ],
     )
 }
 fn compress_to_key_points(text: &str) -> String {
@@ -348,27 +414,47 @@ fn compress_to_one_liner(text: &str) -> String {
 /// rows to the archive placement, never a durable-retention row.
 fn gc_low_score(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
     let mut count = 0usize;
-    count += exec_counted(
-        conn,
-        failures,
-        "gc_low_score UPDATE memories",
+    let mem_sql = format!(
         "UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
          AND COALESCE(retention_class, 'operational') != 'durable' \
          AND score < ?1 \
-         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), ''))) > ?2",
-        params![GC_SCORE_THRESHOLD, GC_MIN_DAYS],
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), ''))) > ?2 \
+         AND {}",
+        not_immune_sql("memories", "memory::", "source", 3, 4)
+    );
+    count += exec_counted(
+        conn,
+        failures,
+        "gc_low_score UPDATE memories",
+        &mem_sql,
+        params![
+            GC_SCORE_THRESHOLD,
+            GC_MIN_DAYS,
+            feedback::IMMUNITY_WINDOW_DAYS,
+            feedback::IMMUNITY_THRESHOLD
+        ],
+    );
+    let dec_sql = format!(
+        "UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
+         WHERE status = 'active' AND pinned = 0 \
+         AND COALESCE(retention_class, 'operational') != 'durable' \
+         AND score < ?1 \
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), ''))) > ?2 \
+         AND {}",
+        not_immune_sql("decisions", "decision::", "context", 3, 4)
     );
     count += exec_counted(
         conn,
         failures,
         "gc_low_score UPDATE decisions",
-        "UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
-         WHERE status = 'active' AND pinned = 0 \
-         AND COALESCE(retention_class, 'operational') != 'durable' \
-         AND score < ?1 \
-         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), ''))) > ?2",
-        params![GC_SCORE_THRESHOLD, GC_MIN_DAYS],
+        &dec_sql,
+        params![
+            GC_SCORE_THRESHOLD,
+            GC_MIN_DAYS,
+            feedback::IMMUNITY_WINDOW_DAYS,
+            feedback::IMMUNITY_THRESHOLD
+        ],
     );
     if count > 0 {
         eprintln!("[aging] GC archived {count} low-score entries (score < {GC_SCORE_THRESHOLD})");

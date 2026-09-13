@@ -1066,6 +1066,53 @@ fn bare_iso_date_is_not_as_of() {
     assert_eq!(as_of.temporal_mode, TemporalMode::ExplicitAsOf);
     assert_eq!(as_of.as_of.as_deref(), Some("2024-01-15"));
 
+    let hyphen = parse_query_frame(
+        "payments gateway as-of 2024-01-15",
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    );
+    assert_eq!(hyphen.temporal_mode, TemporalMode::ExplicitAsOf);
+    assert_eq!(hyphen.as_of.as_deref(), Some("2024-01-15"));
+
+    let official = parse_query_frame(
+        "treat as official 2024-01-15 guidance in src/pay",
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    );
+    assert_eq!(
+        official.temporal_mode,
+        TemporalMode::Current,
+        "as official is not an as-of phrase"
+    );
+    assert!(official.as_of.is_none(), "got {:?}", official.as_of);
+
+    let later_date = parse_query_frame(
+        "the 2023-12-01 outage as of 2024-01-15",
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    );
+    assert_eq!(later_date.temporal_mode, TemporalMode::ExplicitAsOf);
+    assert_eq!(
+        later_date.as_of.as_deref(),
+        Some("2024-01-15"),
+        "as-of must use the date after the phrase, not the first date in the query"
+    );
+
     let phrase_only = parse_query_frame(
         "payments gateway as of last Tuesday",
         None,

@@ -186,7 +186,7 @@ pub fn verify_obligation(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("obligation {record_id} has no registered predicate"))?;
-    if expected != predicate {
+    if expected != predicate.trim() {
         return Err(format!(
             "checker predicate `{predicate}` does not match the registered predicate `{expected}`"
         ));

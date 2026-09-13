@@ -1152,7 +1152,7 @@ fn upsert(out: &mut HashMap<(String, i64), ScoredCandidate>, incoming: ScoredCan
                     existing.witnesses.push(witness.clone());
                 }
             }
-            if existing.excerpt.len() < incoming.excerpt.len() && existing.excerpt.is_empty() {
+            if incoming.excerpt.len() > existing.excerpt.len() {
                 existing.excerpt = incoming.excerpt.clone();
             }
             for anchor in &incoming.anchors {

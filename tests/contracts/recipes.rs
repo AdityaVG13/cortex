@@ -284,6 +284,8 @@ fn temporal_slice_conflict_join_and_compare_are_typed() {
             json!({"key": "deploy", "value": "green", "text": "green"}),
         )
     });
+    snap.put(fact("d3", "decision", json!({"text": "orphan-a"})));
+    snap.put(fact("d4", "decision", json!({"text": "orphan-b"})));
     let steps = vec![
         Step::Select {
             id: "d".into(),
@@ -337,6 +339,12 @@ fn temporal_slice_conflict_join_and_compare_are_typed() {
     assert_eq!(
         r.values["known_then"], 1,
         "as-known at seq 6 excludes the later fact"
+    );
+    assert_eq!(
+        r.values["x"].as_array().map(Vec::len),
+        Some(1),
+        "facts missing the key field are not a second conflict group: {}",
+        r.values["x"]
     );
     assert_eq!(
         r.values["x"][0]["key"], "\"deploy\"",
