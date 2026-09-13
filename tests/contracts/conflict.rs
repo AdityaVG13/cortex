@@ -100,6 +100,18 @@ fn detect_conflict_classifies_agree_contradict_unrelated() {
         contradicts.classification,
         ConflictClassification::Contradicts
     );
+    let contracted = conflict::detect_conflict(
+        &conn,
+        "Don't persist sqlite wal checkpoints in cortex-daemon/src/db/maintenance.rs after store_decision",
+        "other-agent",
+        None,
+    )
+    .expect("detect contracted contradiction");
+    assert_eq!(
+        contracted.classification,
+        ConflictClassification::Contradicts,
+        "contracted negation must contradict like 'never'"
+    );
     assert!(contradicts.is_conflict, "CONTRADICTS must set is_conflict");
     assert_eq!(contradicts.classification.as_str(), "CONTRADICTS");
 

@@ -61,9 +61,33 @@ pub async fn run_recrystallize_cli(cx: &asupersync::Cx, paths: &auth::CortexPath
         // `cluster_members` has no FK to `memory_clusters`. Deleting only
         // clusters leaves member rows that still exclude those targets from
         // `scan_candidates`, so recrystallize would no-op on already-clustered
-        // rows. Clear members first; crystals have no cascade.
-        let removed_members = conn.execute("DELETE FROM cluster_members", []).unwrap_or(0);
-        let removed_crystals = conn.execute("DELETE FROM memory_clusters", []).unwrap_or(0);
+        // rows. Clear members first; crystals have no cascade. A failed DELETE
+        // must not continue into a pass that reports `recrystallized: true`.
+        let tx = match conn.unchecked_transaction() {
+            Ok(tx) => tx,
+            Err(err) => {
+                eprintln!("Error: failed to begin recrystallize transaction: {err}");
+                std::process::exit(1);
+            }
+        };
+        let removed_members = match tx.execute("DELETE FROM cluster_members", []) {
+            Ok(n) => n,
+            Err(err) => {
+                eprintln!("Error: failed to clear cluster_members: {err}");
+                std::process::exit(1);
+            }
+        };
+        let removed_crystals = match tx.execute("DELETE FROM memory_clusters", []) {
+            Ok(n) => n,
+            Err(err) => {
+                eprintln!("Error: failed to clear memory_clusters: {err}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(err) = tx.commit() {
+            eprintln!("Error: failed to commit recrystallize clear: {err}");
+            std::process::exit(1);
+        }
         let brain_sender = Some(state.brain_firing.clone());
         let pass = match crystallize::run_crystallize_pass_with_brain(cx, &conn, state.default_owner_id, &brain_sender) {
             Ok(pass) => pass,

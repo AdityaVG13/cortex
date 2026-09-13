@@ -474,7 +474,14 @@ fn contradiction_signal(a: &str, b: &str, similarity_jaccard: f64) -> bool {
 }
 fn semantic_tokens(text: &str) -> FxHashSet<String> {
     let mut tokens = FxHashSet::with_capacity_and_hasher(16, FxBuildHasher);
-    for token in text
+    // Apostrophes are not token breaks: splitting on non-alnum turned
+    // "don't"/"can't" into "don"/"can" + "t", so contracted negations never
+    // matched the negation lexicon and "Always X" vs "Don't X" missed CONTRADICTS.
+    let normalized: String = text
+        .chars()
+        .filter(|ch| *ch != '\'' && *ch != '\u{2019}')
+        .collect();
+    for token in normalized
         .split(|ch: char| !ch.is_ascii_alphanumeric())
         .filter(|token| token.len() > 1)
     {
@@ -494,7 +501,8 @@ fn has_negation(tokens: &FxHashSet<String>) -> bool {
         "without",
         "avoid",
         "dont",
-        "can't",
+        "cant",
+        "wont",
         "cannot",
         "disable",
         "disabled",
@@ -512,7 +520,8 @@ fn strip_negation_tokens(tokens: &FxHashSet<String>) -> FxHashSet<String> {
         "without",
         "avoid",
         "dont",
-        "can't",
+        "cant",
+        "wont",
         "cannot",
         "disable",
         "disabled",

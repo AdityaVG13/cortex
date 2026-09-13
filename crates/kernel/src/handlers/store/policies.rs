@@ -286,8 +286,12 @@ pub fn handle_refinement_policy(
         .matched_id
         .ok_or_else(|| StoreError::Internal("Missing refinement target id".to_string()))?;
     let target_trust = relation.matched_trust_score.unwrap_or(0.8);
+    // Same agent may refine in place. A different agent supersedes only with
+    // strictly higher trust -- equal default 0.8 must not silently replace
+    // another writer's related (not agreeing) decision. Contradiction
+    // policy uses the same `>` rule.
     let should_supersede =
-        relation.matched_agent.as_deref() == Some(source_agent) || trust_score >= target_trust;
+        relation.matched_agent.as_deref() == Some(source_agent) || trust_score > target_trust;
     let tx = conn
         .savepoint()
         .map_err(|e| StoreError::Internal(e.to_string()))?;

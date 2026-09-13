@@ -1,5 +1,7 @@
 use super::paths::CortexPaths;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 pub fn legacy_db_path() -> PathBuf {
     let home = std::env::var("USERPROFILE")
@@ -14,7 +16,21 @@ pub fn migrate_legacy_db(paths: &CortexPaths) -> Result<bool, String> {
     }
     fs::create_dir_all(paths.db.parent().unwrap_or(&paths.home))
         .map_err(|e| format!("create dir: {e}"))?;
-    fs::copy(&legacy, &paths.db).map_err(|e| format!("copy db: {e}"))?;
+    // `fs::copy` overwrites. If another process created the dest between the
+    // exists check and the copy, that new brain must not be replaced.
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&paths.db)
+    {
+        Ok(_) => {}
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => return Ok(false),
+        Err(err) => return Err(format!("create dest db: {err}")),
+    }
+    if let Err(err) = fs::copy(&legacy, &paths.db) {
+        let _ = fs::remove_file(&paths.db);
+        return Err(format!("copy db: {err}"));
+    }
     for ext in ["db-wal", "db-shm"] {
         let src = legacy.with_extension(ext);
         if src.exists() {

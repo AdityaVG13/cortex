@@ -146,18 +146,26 @@ pub fn rebase(
     locate: impl Fn(&str, &str) -> String,
 ) -> rusqlite::Result<usize> {
     ensure(conn)?;
-    let mut stmt = conn.prepare("SELECT record_id, address FROM addresses WHERE scheme = ?1 AND namespace = ?2 ORDER BY record_id, address")?;
+    // The trailing DELETE is by old_scheme. Rebasing onto the same scheme
+    // would assign new locators then delete those same rows.
+    if old_scheme == new_scheme {
+        return Ok(0);
+    }
+    let tx = conn.unchecked_transaction()?;
+    let mut stmt = tx.prepare("SELECT record_id, address FROM addresses WHERE scheme = ?1 AND namespace = ?2 ORDER BY record_id, address")?;
     let rows: Vec<(String, String)> = stmt
         .query_map(params![old_scheme, namespace], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?
         .collect::<Result<_, _>>()?;
+    drop(stmt);
     for (id, old) in &rows {
-        assign(conn, id, namespace, new_scheme, &locate(id, old))?;
+        assign(&tx, id, namespace, new_scheme, &locate(id, old))?;
     }
-    conn.execute(
+    tx.execute(
         "DELETE FROM addresses WHERE scheme = ?1 AND namespace = ?2",
         params![old_scheme, namespace],
     )?;
+    tx.commit()?;
     Ok(rows.len())
 }

@@ -64,6 +64,7 @@ pub fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
         .or_else(|| {
             NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
                 .ok()
+                .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").ok())
                 .map(|dt| Utc.from_utc_datetime(&dt))
         })
 }
