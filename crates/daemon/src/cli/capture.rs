@@ -32,6 +32,7 @@ fn input() -> Result<Vec<u8>, String> {
 }
 
 pub async fn run_capture_cli(cx: &Cx, paths: &CortexPaths, args: &[String]) -> Result<(), String> {
+    let args = super::common::without_global_value_flags(args);
     let command = args.first().map(String::as_str).ok_or(USAGE)?;
     let flags = &args[1..];
     let values: &[&str] = match command {

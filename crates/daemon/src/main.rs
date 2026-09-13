@@ -70,10 +70,17 @@ async fn run(cx: &Cx, paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
             cli::validate_cli_options_or_exit(rest, &[], &[]);
             cli::run_daemon(cx, paths.clone(), shutdown_signal()).await?;
         }
-        "hook-boot" => hook_boot::run_boot(cx, cli::parse_flag_value(rest, "--agent").as_deref().unwrap_or("claude-code")).await,
-        "hook-status" => hook_boot::run_status(cx).await,
+        "hook-boot" => {
+            cli::validate_cli_options_or_exit(rest, &["--agent"], &[]);
+            hook_boot::run_boot(cx, cli::parse_flag_value(rest, "--agent").as_deref().unwrap_or("claude-code")).await
+        }
+        "hook-status" => {
+            cli::validate_cli_options_or_exit(rest, &[], &[]);
+            hook_boot::run_status(cx).await
+        }
         "hook" => {
-            let kind = rest.first().map(String::as_str).unwrap_or("session_start");
+            cli::validate_cli_options_allowing_one_positional_or_exit(rest, &["--agent"], &[]);
+            let kind = cli::first_positional(rest, &["--agent"]).unwrap_or("session_start");
             cortex_kernel::hook_event::run(cx, kind, cli::parse_flag_value(rest, "--agent").as_deref().unwrap_or("claude-code")).await?;
         }
         "prompt-inject" => prompt_inject::run(cx, rest).await,

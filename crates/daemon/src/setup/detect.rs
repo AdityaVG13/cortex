@@ -64,6 +64,10 @@ fn find_claude_desktop_config() -> Option<PathBuf> {
 }
 fn find_claude_code_config() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
+    let user_json = home.join(".claude.json");
+    if user_json.is_file() {
+        return Some(user_json);
+    }
     find_existing_config(home.join(".claude").join("settings.json"))
 }
 fn find_codex_config() -> Option<PathBuf> {
@@ -100,7 +104,10 @@ fn find_cursor_config() -> Option<PathBuf> {
 }
 fn find_windsurf_config() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    find_existing_config(home.join(".windsurf").join("mcp.json"))
+    find_first_config_path(vec![
+        home.join(".codeium").join("windsurf").join("mcp_config.json"),
+        home.join(".windsurf").join("mcp.json"),
+    ])
 }
 fn find_first_config_path(paths: Vec<PathBuf>) -> Option<PathBuf> {
     paths.into_iter().find_map(find_existing_config)

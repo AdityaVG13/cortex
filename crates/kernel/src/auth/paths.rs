@@ -65,11 +65,24 @@ impl CortexPaths {
         let db = Self::find_flag(args, "--db");
         Self::resolve_with_overrides(home.as_deref(), db.as_deref())
     }
+    /// `--home --db /tmp/x` must not treat `--db` as the home path.
     fn find_flag(args: &[String], flag: &str) -> Option<String> {
-        args.iter()
-            .position(|a| a == flag)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
+        let mut i = 0usize;
+        while i < args.len() {
+            if args[i] == flag {
+                match args.get(i + 1) {
+                    Some(value) if !is_flag_token(value) && !value.trim().is_empty() => {
+                        return Some(value.clone());
+                    }
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+        None
     }
     pub fn to_json(&self) -> String {
         serde_json::json!({
@@ -85,6 +98,10 @@ impl CortexPaths {
         self.home.join("capture.json")
     }
 }
+fn is_flag_token(value: &str) -> bool {
+    value.starts_with("--")
+}
+
 pub fn default_home_root() -> PathBuf {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))

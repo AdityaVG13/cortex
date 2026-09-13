@@ -53,7 +53,7 @@ pub(crate) async fn mcp_dispatch(
             let query = require_arg(args, &["query", "q"], "query")?;
             let k = arg_usize(args, &["k", "limit"]).unwrap_or(10);
             let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let agent = arg_str(args, &["agent", "source_agent"]).unwrap_or("mcp");
+            let agent = arg_str(args, &["agent", "source_agent"]).unwrap_or_else(|| source.map(|identity| identity.agent.as_str()).unwrap_or("mcp"));
             let ctx = RecallContext::from_caller(caller_id, state);
             execute_semantic_recall(cx, state, query, budget, k, agent, &ctx, arg_str(args, &["source_prefix", "sourcePrefix"])).await
         }

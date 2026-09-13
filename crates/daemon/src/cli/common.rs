@@ -3,7 +3,20 @@ use crate::db;
 use std::path::Path;
 
 pub fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|idx| args.get(idx + 1)).cloned()
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i] == flag {
+            if let Some(value) = args.get(i + 1) {
+                if !is_cli_option_token(value) && !value.trim().is_empty() {
+                    return Some(value.clone());
+                }
+            }
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+    None
 }
 
 pub fn parse_flag_values(args: &[String], flag: &str) -> Vec<String> {
@@ -26,6 +39,77 @@ pub fn parse_flag_values(args: &[String], flag: &str) -> Vec<String> {
 const GLOBAL_VALUE_FLAGS: &[&str] = &["--home", "--db"];
 pub(crate) fn is_cli_option_token(value: &str) -> bool {
     value.starts_with("--")
+}
+
+/// Drop `--home` / `--db` pairs so a nested subcommand is not eaten as a flag value.
+pub(crate) fn without_global_value_flags(args: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0usize;
+    while i < args.len() {
+        if GLOBAL_VALUE_FLAGS.contains(&args[i].as_str()) {
+            i += 1;
+            if i < args.len() && !is_cli_option_token(&args[i]) {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out
+}
+
+/// First non-flag token, skipping known value-flag pairs (so `hook --agent x Kind` still finds Kind).
+pub fn first_positional<'a>(args: &'a [String], value_flags: &[&str]) -> Option<&'a str> {
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if value_flags.contains(&arg) || GLOBAL_VALUE_FLAGS.contains(&arg) {
+            i += 1;
+            if i < args.len() && !args[i].starts_with('-') {
+                i += 1;
+            }
+            continue;
+        }
+        if arg.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        return Some(arg);
+    }
+    None
+}
+
+pub fn validate_cli_options_allowing_one_positional_or_exit(args: &[String], value_flags: &[&str], boolean_flags: &[&str]) {
+    let mut flags = Vec::new();
+    let mut i = 0usize;
+    let mut skipped_positional = false;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if value_flags.contains(&arg) || GLOBAL_VALUE_FLAGS.contains(&arg) {
+            flags.push(args[i].clone());
+            if let Some(value) = args.get(i + 1) {
+                flags.push(value.clone());
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if boolean_flags.contains(&arg) || arg.starts_with('-') {
+            flags.push(args[i].clone());
+            i += 1;
+            continue;
+        }
+        if !skipped_positional {
+            skipped_positional = true;
+            i += 1;
+            continue;
+        }
+        flags.push(args[i].clone());
+        i += 1;
+    }
+    validate_cli_options_or_exit(&flags, value_flags, boolean_flags);
 }
 pub(crate) fn validate_cli_options(args: &[String], value_flags: &[&str], boolean_flags: &[&str]) -> Result<(), String> {
     let mut i = 0usize;

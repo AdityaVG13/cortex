@@ -3,6 +3,7 @@ use crate::auth;
 use crate::state;
 use serde_json::json;
 pub async fn run_embeddings_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[String]) {
+    let args = super::common::without_global_value_flags(args);
     let subcmd = args.first().map(|s| s.as_str()).unwrap_or("");
     match subcmd {
         "status" => {

@@ -116,6 +116,12 @@ fn surviving_commands_validate_arguments_before_side_effects() {
         (&["backup", "--bogus"], "Unknown option: --bogus\n"),
         (&["capabilities", "--bogus"], "Unknown option: --bogus\n"),
         (&["mcp", "--agent", "--json"], "Missing value for --agent\n"),
+        (&["hook-boot", "--home", "--agent", "cursor"], "Missing value for --home\n"),
+        (&["hook-status", "--bogus"], "Unknown option: --bogus\n"),
+        (
+            &["hook", "PostToolUse", "--agent", "--json"],
+            "Missing value for --agent\n",
+        ),
         (
             &["mcp", "--url", "http://127.0.0.1:1"],
             "Unknown option: --url\n",

@@ -63,12 +63,7 @@ pub(crate) fn stable_mcp_binary_path() -> String {
     installed.to_string_lossy().to_string()
 }
 pub(crate) fn arg_value(args: &[String], key: &str) -> Option<String> {
-    for (idx, arg) in args.iter().enumerate() {
-        if arg == key {
-            return args.get(idx + 1).cloned();
-        }
-    }
-    None
+    crate::cli::parse_flag_value(args, key)
 }
 #[allow(dead_code)]
 pub(crate) fn collect_reembed_backlog_counts(_db_path: &Path, _model_key: &str) -> Option<(i64, i64)> {

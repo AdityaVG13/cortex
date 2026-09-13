@@ -113,7 +113,7 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
                 continue;
             }
         }
-        if row_kind != "event" && !can_view_last_call(owner_id, visibility.as_deref(), ctx) {
+        if !can_view_last_call(owner_id, visibility.as_deref(), ctx) {
             continue;
         }
         return Ok(json!({"found":true,"kind":row_kind

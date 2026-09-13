@@ -8,17 +8,18 @@ use cortex_kernel::handlers::operations::{Caller, Operation, dispatch};
 use crate::runtime::CortexRuntime;
 
 pub async fn run_op_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[String]) {
+    let args = super::common::without_global_value_flags(args);
     let Some(operation) = args.first().filter(|a| !a.starts_with("--")) else {
         eprintln!("Usage: cortex op <capabilities|orient|query|expand|commit|checkpoint|resolve|feedback> [--args '<json>'] [--agent <name>]");
         std::process::exit(2);
     };
-    validate_cli_options_or_exit(&args[1..], &["--args", "--agent", "--home", "--db"], &[]);
+    validate_cli_options_or_exit(&args[1..], &["--args", "--agent"], &[]);
     let Some(op) = Operation::from_tool_name(operation) else {
         eprintln!("[cortex] unknown operation `{operation}`");
         std::process::exit(2);
     };
-    let raw_args = args.iter().position(|a| a == "--args").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "{}".into());
-    let agent = args.iter().position(|a| a == "--agent").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "cli".into());
+    let raw_args = super::common::parse_flag_value(&args, "--args").unwrap_or_else(|| "{}".into());
+    let agent = super::common::parse_flag_value(&args, "--agent").unwrap_or_else(|| "cli".into());
     let parsed: serde_json::Value = match serde_json::from_str(&raw_args) {
         Ok(v) => v,
         Err(err) => {
