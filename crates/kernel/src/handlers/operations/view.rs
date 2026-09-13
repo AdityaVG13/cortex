@@ -23,6 +23,10 @@ pub struct Card {
     /// Required bundles (protected constraints, contested claims) can never
     /// be dropped for budget; optional ones can, and are listed as omissions.
     pub required: bool,
+    /// Alias is bound to this View's receipt and can be expanded. Persist
+    /// skips cards without a live revision (FK on view_aliases); those must
+    /// not advertise an expand handle.
+    pub expandable: bool,
     pub exact_text: Option<String>,
     pub reference: String,
     pub statement: String,
@@ -139,6 +143,7 @@ impl View {
                 kind: "decision".into(),
                 retention: "operational".into(),
                 required: false,
+                expandable: false,
                 exact_text: None,
                 reference: item["source"].as_str().unwrap_or("").to_string(),
                 bytes: statement.len(),
@@ -219,17 +224,15 @@ impl View {
         use super::closure::{close_revision, DependencyRole};
         for card in &mut self.cards {
             let Some(record_id) = legacy_record(conn, &card.reference)? else {
+                mark_contested(
+                    card,
+                    "qualification_unavailable: no record mapping",
+                );
                 continue;
             };
             let heads = crate::db::records::heads(conn, &record_id)?;
             let Some(revision) = heads.first() else {
-                card.epistemic = "contested";
-                card.exceptions
-                    .push("qualification_unavailable: no record head".into());
-                card.required = true;
-                card.bytes = card.statement.len()
-                    + card.exceptions.iter().map(|e| e.len() + 2).sum::<usize>()
-                    + card.exact_text.as_ref().map(|t| t.len()).unwrap_or(0);
+                mark_contested(card, "qualification_unavailable: no record head");
                 continue;
             };
             let legacy_id = card
@@ -249,13 +252,7 @@ impl View {
             let Ok((items, contrary)) = close_revision(conn, revision, legacy_id) else {
                 // Fail closed: a claim whose exceptions could not be loaded
                 // must not travel as an asserted Card.
-                card.epistemic = "contested";
-                card.exceptions
-                    .push("qualification_unavailable: evidence closure failed".into());
-                card.required = true;
-                card.bytes = card.statement.len()
-                    + card.exceptions.iter().map(|e| e.len() + 2).sum::<usize>()
-                    + card.exact_text.as_ref().map(|t| t.len()).unwrap_or(0);
+                mark_contested(card, "qualification_unavailable: evidence closure failed");
                 continue;
             };
             for item in items {
@@ -496,7 +493,8 @@ impl View {
             "INSERT INTO view_receipts (receipt_id, principal_id, brain_epoch, through_sequence, receipt_json) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![receipt_id, principal, restore_epoch, seq, json!({"profile": self.profile, "cards": self.cards.len()}).to_string()],
         )?;
-        for card in &self.cards {
+        for card in &mut self.cards {
+            card.expandable = false;
             let Some(record_id) = legacy_record(conn, &card.reference)? else {
                 continue;
             };
@@ -508,6 +506,7 @@ impl View {
                 "INSERT OR REPLACE INTO view_aliases (receipt_id, alias, record_id, revision_id, representation_version) VALUES (?1, ?2, ?3, ?4, 'brief/1')",
                 params![receipt_id, card.alias, record_id, revision],
             )?;
+            card.expandable = true;
         }
         sp.release()?;
         self.receipt_id = receipt_id;
@@ -607,7 +606,8 @@ impl View {
             "frontier": self.frontier,
             "cards": self.cards.iter().map(|c| json!({
                 "alias": c.alias, "label": c.label, "statement": c.statement, "epistemic": c.epistemic, "applicability": c.applicability,
-                "exceptions": c.exceptions, "freshness": c.freshness, "required": c.required, "expand": {"alias": c.alias, "receipt": self.receipt_id},
+                "exceptions": c.exceptions, "freshness": c.freshness, "required": c.required,
+                "expand": if c.expandable { json!({"alias": c.alias, "receipt": self.receipt_id}) } else { Value::Null },
                 // Memory is data: a card is a recalled claim with provenance,
                 // never an instruction to the reader and never a policy input.
                 "trust": {"kind": "recalled_claim", "instruction": false, "privilege": "none", "provenance": c.reference},
@@ -651,15 +651,19 @@ impl View {
             }
         }
         if !self.cards.is_empty() {
-            lines.push(format!(
-                "Evidence: expand {} for exact sources (receipt {})",
-                self.cards
-                    .iter()
-                    .map(|c| c.alias.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                self.receipt_id
-            ));
+            let expandable: Vec<&str> = self
+                .cards
+                .iter()
+                .filter(|c| c.expandable)
+                .map(|c| c.alias.as_str())
+                .collect();
+            if !expandable.is_empty() {
+                lines.push(format!(
+                    "Evidence: expand {} for exact sources (receipt {})",
+                    expandable.join(", "),
+                    self.receipt_id
+                ));
+            }
         }
         if !self.coverage.unmet.is_empty() {
             lines.push(format!("Unmet: {}", self.coverage.unmet.join(", ")));
@@ -672,6 +676,15 @@ impl View {
         }
         lines.join("\n")
     }
+}
+
+fn mark_contested(card: &mut Card, reason: &str) {
+    card.epistemic = "contested";
+    card.exceptions.push(reason.into());
+    card.required = true;
+    card.bytes = card.statement.len()
+        + card.exceptions.iter().map(|e| e.len() + 2).sum::<usize>()
+        + card.exact_text.as_ref().map(|t| t.len()).unwrap_or(0);
 }
 
 fn is_constraint_kind(kind: &str) -> bool {

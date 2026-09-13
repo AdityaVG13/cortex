@@ -315,12 +315,16 @@ fn parse_scan_cursor(continuation: Option<&str>, targets: &[ScanTarget]) -> (usi
         return (0, 0);
     };
     if let Some(rest) = raw.strip_prefix("memory:") {
-        let idx = targets.iter().position(|t| t.ns == "memory").unwrap_or(0);
-        return (idx, rest.parse().unwrap_or(0));
+        return match targets.iter().position(|t| t.ns == "memory") {
+            Some(idx) => (idx, rest.parse().unwrap_or(0)),
+            None => (0, 0),
+        };
     }
     if let Some(rest) = raw.strip_prefix("decision:") {
-        let idx = targets.iter().position(|t| t.ns == "decision").unwrap_or(0);
-        return (idx, rest.parse().unwrap_or(0));
+        return match targets.iter().position(|t| t.ns == "decision") {
+            Some(idx) => (idx, rest.parse().unwrap_or(0)),
+            None => (0, 0),
+        };
     }
     (0, raw.parse().unwrap_or(0))
 }
@@ -535,12 +539,18 @@ impl WriteTransaction for SqliteTx<'_> {
                     owner_id,
                 );
                 if let Some(v) = version {
-                    self.conn
+                    let stamped = self
+                        .conn
                         .execute(
                             "UPDATE decisions SET version_id = ?1 WHERE id = ?2",
                             params![v, id],
                         )
                         .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
+                    if stamped == 0 {
+                        return Err(StoreSpiError::Unavailable(format!(
+                            "decision {id} missing after insert"
+                        )));
+                    }
                 }
                 self.entries
                     .insert(local_name, LogicalId::from_legacy("decision", id));
@@ -569,12 +579,18 @@ impl WriteTransaction for SqliteTx<'_> {
                     owner_id,
                 );
                 if let Some(v) = version {
-                    self.conn
+                    let stamped = self
+                        .conn
                         .execute(
                             "UPDATE memories SET version_id = ?1 WHERE id = ?2",
                             params![v, id],
                         )
                         .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
+                    if stamped == 0 {
+                        return Err(StoreSpiError::Unavailable(format!(
+                            "memory {id} missing after insert"
+                        )));
+                    }
                 }
                 self.entries
                     .insert(local_name, LogicalId::from_legacy("memory", id));
@@ -593,7 +609,8 @@ impl WriteTransaction for SqliteTx<'_> {
                     .value
                     .parse()
                     .map_err(|_| StoreSpiError::LimitExceeded("non-numeric legacy id".into()))?;
-                self.conn
+                let updated = self
+                    .conn
                     .execute(
                         &format!(
                             "UPDATE {table} SET status = ?1, updated_at = datetime('now') WHERE id = ?2"
@@ -601,6 +618,12 @@ impl WriteTransaction for SqliteTx<'_> {
                         params![status, id],
                     )
                     .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
+                if updated == 0 {
+                    return Err(StoreSpiError::LimitExceeded(format!(
+                        "unknown record {}",
+                        target.canonical()
+                    )));
+                }
                 let _ = crate::traces::record_store_write(
                     self.conn,
                     &self.intent.principal,

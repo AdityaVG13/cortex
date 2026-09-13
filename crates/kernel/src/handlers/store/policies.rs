@@ -24,9 +24,13 @@ fn require_supersede(
         )
     }
     .map_err(|e| StoreError::Internal(e.to_string()))?;
+    require_updated(updated, target_id)
+}
+
+fn require_updated(updated: usize, target_id: i64) -> Result<(), StoreError> {
     if updated == 0 {
         return Err(StoreError::Internal(format!(
-            "conflict target {target_id} was not updated"
+            "decision `{target_id}` was not updated"
         )));
     }
     Ok(())
@@ -92,11 +96,13 @@ pub fn handle_contradiction_policy(
         Some((1.0 - relation.similarity_jaccard).clamp(0.0, 1.0)),
     )?;
     if !incoming_wins {
-        tx.execute(
-            "UPDATE decisions SET valid_until = ?1 WHERE id = ?2",
-            params![ts, new_id],
-        )
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let stamped = tx
+            .execute(
+                "UPDATE decisions SET valid_until = ?1 WHERE id = ?2",
+                params![ts, new_id],
+            )
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        require_updated(stamped, new_id)?;
     }
     let conflict_record_id = insert_conflict_record(
         &tx,
@@ -151,6 +157,7 @@ pub fn handle_agreement_policy(
     source_agent: &str,
     quality: i32,
     ts: &str,
+    owner_id: Option<i64>,
     relation: &ConflictResult,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let target_id = relation
@@ -163,33 +170,63 @@ pub fn handle_agreement_policy(
         String,
         Option<String>,
         i64,
-    ) = tx
-        .query_row(
+    ) = if let Some(owner_id) = owner_id {
+        tx.query_row(
+            "SELECT decision, context, COALESCE(merged_count, 0) FROM decisions WHERE id = ?1 AND owner_id = ?2",
+            params![target_id, owner_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| StoreError::Internal(e.to_string()))?
+    } else {
+        tx.query_row(
             "SELECT decision, context, COALESCE(merged_count, 0) FROM decisions WHERE id = ?1",
             params![target_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        .map_err(|e| StoreError::Internal(e.to_string()))?
+    };
     let merged_context = merge_context(existing_context, &existing_decision, context, decision);
     let merged_count = previous_merged_count + 1;
-    tx.execute(
-        "UPDATE decisions \
-         SET context = ?1, \
-             score = COALESCE(score, 0) + ?2, \
-             merged_count = ?3, \
-             quality = MAX(COALESCE(quality, 50), ?4), \
-             updated_at = ?5 \
-         WHERE id = ?6",
-        params![
-            merged_context,
-            MERGE_SCORE_BONUS,
-            merged_count,
-            quality,
-            ts,
-            target_id
-        ],
-    )
+    let merged = if let Some(owner_id) = owner_id {
+        tx.execute(
+            "UPDATE decisions \
+             SET context = ?1, \
+                 score = COALESCE(score, 0) + ?2, \
+                 merged_count = ?3, \
+                 quality = MAX(COALESCE(quality, 50), ?4), \
+                 updated_at = ?5 \
+             WHERE id = ?6 AND owner_id = ?7",
+            params![
+                merged_context,
+                MERGE_SCORE_BONUS,
+                merged_count,
+                quality,
+                ts,
+                target_id,
+                owner_id
+            ],
+        )
+    } else {
+        tx.execute(
+            "UPDATE decisions \
+             SET context = ?1, \
+                 score = COALESCE(score, 0) + ?2, \
+                 merged_count = ?3, \
+                 quality = MAX(COALESCE(quality, 50), ?4), \
+                 updated_at = ?5 \
+             WHERE id = ?6",
+            params![
+                merged_context,
+                MERGE_SCORE_BONUS,
+                merged_count,
+                quality,
+                ts,
+                target_id
+            ],
+        )
+    }
     .map_err(|e| StoreError::Internal(e.to_string()))?;
+    require_updated(merged, target_id)?;
     let conflict_record_id = insert_conflict_record(
         &tx,
         None,

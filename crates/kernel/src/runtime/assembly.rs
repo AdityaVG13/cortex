@@ -756,6 +756,14 @@ impl CortexRuntime {
             params![spec.id, principal, spec.scope, spec.kind, sequence],
         )
         .map_err(|err| err.to_string())?;
+        // Route edges are keyed by (principal, scope_label, cue, assembly_id).
+        // Relocating an assembly across scopes must not leave stale edges under
+        // the previous label, or ranking would credit the new row in the old scope.
+        tx.execute(
+            "DELETE FROM assembly_route_edges WHERE principal=?1 AND assembly_id=?2 AND scope_label!=?3",
+            params![principal, spec.id, spec.scope],
+        )
+        .map_err(|err| err.to_string())?;
         let revision_id = format!("{}@{}", spec.id, sequence);
         tx.execute(
             "INSERT INTO assembly_revisions VALUES(?1,?2,?3,?4,?5,?6)",

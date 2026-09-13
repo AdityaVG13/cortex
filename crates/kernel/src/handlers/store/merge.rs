@@ -46,7 +46,7 @@ pub fn merge_into_existing_decision(
         incoming_text,
     );
     let merged_count = previous_merged_count + 1;
-    if let Some(owner_id) = owner_id {
+    let merged = if let Some(owner_id) = owner_id {
         tx.execute(
             "UPDATE decisions \
              SET context = ?1, \
@@ -65,7 +65,7 @@ pub fn merge_into_existing_decision(
                 owner_id
             ],
         )
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        .map_err(|e| StoreError::Internal(e.to_string()))?
     } else {
         tx.execute(
             "UPDATE decisions \
@@ -84,7 +84,12 @@ pub fn merge_into_existing_decision(
                 target_id
             ],
         )
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        .map_err(|e| StoreError::Internal(e.to_string()))?
+    };
+    if merged == 0 {
+        return Err(StoreError::Internal(format!(
+            "decision `{target_id}` was not updated"
+        )));
     }
     let _ = log_event(
         &tx,

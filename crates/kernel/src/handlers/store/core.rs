@@ -347,6 +347,7 @@ pub fn store_decision_legacy(
                 source_agent,
                 quality,
                 ts,
+                owner_id,
                 &relation,
             );
         }

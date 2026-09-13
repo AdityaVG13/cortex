@@ -160,11 +160,11 @@ impl ReadSnapshot for MemorySnapshot {
 fn predicate_ok(p: &Predicate, row: &Row) -> bool {
     match p {
         Predicate::All => true,
-        Predicate::Kind(k) => {
-            k == "decision" && row.id.namespace == "decision"
-                || k == "memory" && row.id.namespace == "memory"
-                || &row.kind == k
-        }
+        Predicate::Kind(k) => match k.as_str() {
+            "decision" => row.id.namespace == "decision",
+            "memory" => row.id.namespace == "memory",
+            other => row.kind == other,
+        },
         Predicate::Eq { field, value } => row.body.get(field) == Some(value),
         Predicate::And(items) => items.iter().all(|i| predicate_ok(i, row)),
     }

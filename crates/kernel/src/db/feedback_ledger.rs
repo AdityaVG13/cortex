@@ -54,9 +54,12 @@ pub fn exposed_from_receipt(conn: &Connection, receipt_id: &str) -> Vec<String> 
 
 pub fn record(conn: &Connection, fb: &OutcomeFeedback) -> Result<i64, String> {
     ensure(conn).map_err(|e| e.to_string())?;
-    if !matches!(fb.outcome.as_str(), "success" | "partial" | "failure") {
-        return Err("outcome must be success|partial|failure".into());
-    }
+    let outcome = match fb.outcome.trim().to_ascii_lowercase().as_str() {
+        "success" | "ok" | "pass" => "success",
+        "partial" | "mixed" | "degraded" => "partial",
+        "failure" | "fail" | "error" => "failure",
+        _ => return Err("outcome must be success|partial|failure".into()),
+    };
     conn.execute(
         "INSERT INTO outcome_feedback (scope, task_family, task, prior_view_receipt, selected_action, outcome, exposed_json, used_json, harmful_reuse, wrong_scope, agent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
@@ -65,7 +68,7 @@ pub fn record(conn: &Connection, fb: &OutcomeFeedback) -> Result<i64, String> {
             fb.task,
             fb.prior_view_receipt,
             fb.selected_action,
-            fb.outcome,
+            outcome,
             serde_json::to_string(&fb.exposed).unwrap_or_else(|_| "[]".into()),
             serde_json::to_string(&fb.used).unwrap_or_else(|_| "[]".into()),
             fb.harmful_reuse as i64,
@@ -122,13 +125,15 @@ pub fn family_stats(
                 r.get::<_, i64>(4)?,
             ))
         })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     let mut stats = FamilyStats {
         scope: scope.into(),
         task_family: task_family.into(),
         ..Default::default()
     };
-    for (outcome, exposed, used, harmful, wrong) in rows.flatten() {
+    for (outcome, exposed, used, harmful, wrong) in rows {
         stats.outcomes += 1;
         let ok = outcome == "success";
         if ok {

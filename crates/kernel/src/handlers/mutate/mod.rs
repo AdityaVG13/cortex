@@ -40,8 +40,10 @@ pub fn list_permissions(conn: &Connection, owner_id: i64) -> Result<Vec<Value>, 
             Ok(json!({"client":row.get::<_,String>(0)?,"permission":row.get::<_,String>(1)?,"scope":row.get::<_,String>(2)?,
                 "grantedBy":row.get::<_,String>(3)?,"grantedAt":row.get::<_,String>(4)?}))
         })
+        .map_err(|err| err.to_string())?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|err| err.to_string())?;
-    Ok(rows.filter_map(Result::ok).collect())
+    Ok(rows)
 }
 
 pub fn grant_permission(
@@ -152,10 +154,11 @@ pub fn resolve_decision_with_metadata(
         return Err(format!("decision `{keep_id}` was not found"));
     }
     if let Some(other) = superseded_id {
-        let other_status = if action == "keep" {
-            "superseded"
+        // keep and merge both retire the loser; archive retires both sides.
+        let other_status = if action == "archive" {
+            "archived"
         } else {
-            status
+            "superseded"
         };
         let other_updated = tx
             .execute(

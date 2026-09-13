@@ -269,13 +269,15 @@ pub fn build_agent_feedback_stats_payload(
                 ))
             },
         )
+        .map_err(|err| err.to_string())?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|err| err.to_string())?;
     let mut overall = AgentFeedbackAggregate::default();
     let mut by_agent = HashMap::<String, AgentFeedbackAggregate>::new();
     let mut by_task = HashMap::<String, AgentFeedbackAggregate>::new();
     let mut source_counts = HashMap::<String, i64>::new();
     let mut rows_with_sources = 0;
-    for row in rows.flatten() {
+    for row in rows {
         let (
             agent,
             task_class,
@@ -380,10 +382,12 @@ pub fn recommend_recall_k(
         .query_map(params![owner_id, agent, task_class], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
         })
+        .map_err(|err| err.to_string())?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|err| err.to_string())?;
     let (mut success, mut partial, mut failure, mut quality_total, mut count) =
         (0usize, 0usize, 0usize, 0.0f64, 0usize);
-    for (outcome, quality) in rows.flatten() {
+    for (outcome, quality) in rows {
         count += 1;
         quality_total += quality.clamp(0.0, 1.0);
         match outcome.as_str() {

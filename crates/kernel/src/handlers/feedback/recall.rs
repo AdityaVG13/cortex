@@ -68,8 +68,9 @@ pub fn parse_source(source: &str) -> (String, Option<i64>) {
     if let Some(rest) = source.strip_prefix("decision::") {
         let id = rest.parse::<i64>().ok();
         ("decision".to_string(), id)
-    } else if let Some(_rest) = source.strip_prefix("memory::") {
-        ("memory".to_string(), None)
+    } else if let Some(rest) = source.strip_prefix("memory::") {
+        let id = rest.parse::<i64>().ok();
+        ("memory".to_string(), id)
     } else {
         ("unknown".to_string(), None)
     }

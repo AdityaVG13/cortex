@@ -663,6 +663,8 @@ pub async fn dispatch(
             } else {
                 0
             };
+            let sp = crate::db::SqliteSavepoint::enter(&*conn, "feedback_op")
+                .map_err(|e| e.to_string())?;
             let mut out = crate::handlers::feedback::record_agent_feedback_from_value(
                 &conn,
                 owner,
@@ -686,16 +688,16 @@ pub async fn dispatch(
                 task: arg_str(args, &["task", "notes"]).map(str::to_string),
                 prior_view_receipt: receipt,
                 selected_action: arg_str(args, &["selected_action", "action"]).map(str::to_string),
-                outcome: arg_str(args, &["outcome"]).unwrap_or("partial").to_string(),
+                outcome: out["outcome"].as_str().unwrap_or("partial").to_string(),
                 exposed,
                 used,
                 harmful_reuse: arg_bool(args, &["harmful_reuse", "harmfulReuse"]).unwrap_or(false),
                 wrong_scope: arg_bool(args, &["wrong_scope", "wrongScope"]).unwrap_or(false),
                 agent: caller.agent.to_string(),
             };
-            if let Ok(id) = crate::db::feedback_ledger::record(&conn, &fb) {
-                out["ledger"] = json!({"id": id, "exposed": fb.exposed.len(), "used": fb.used.len(), "scope": fb.scope, "task_family": fb.task_family});
-            }
+            let id = crate::db::feedback_ledger::record(&conn, &fb)?;
+            sp.release().map_err(|e| e.to_string())?;
+            out["ledger"] = json!({"id": id, "exposed": fb.exposed.len(), "used": fb.used.len(), "scope": fb.scope, "task_family": fb.task_family});
             Ok(out)
         }
     }
