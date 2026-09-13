@@ -109,18 +109,12 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
         }
     };
     validate_cli_options_or_exit(&args[3..], &[], &["--skip-verification"]);
-    // Documented dangerous-operation gate (capabilities payload
-    // `dangerous_operations`, robot-docs guide): restore refuses while a
-    // daemon appears active. Copying over a live daemon's database file
-    // corrupts it, so this refuses rather than warn-and-continue.
-    if let Some(pid) = auth::pid_file_live_pid(paths) {
-        eprintln!("[cortex] Error: daemon appears active (pid {pid} per {}).", paths.pid.display());
-        eprintln!("[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using.");
-        std::process::exit(1);
-    }
-    // Serve excludes via flock on `paths.lock` and may have crashed before
-    // writing the pid file. Hold that same lock for the copy so a worker
-    // cannot start mid-restore.
+    // Serve excludes via flock on `paths.lock`. Take that lock first so a
+    // worker cannot start in the window between the pid check and the copy.
+    // A live pid after we hold the lock is an old daemon without flock, or
+    // PID reuse of a non-daemon; refuse either rather than copy over it.
+    // Do not call `cleanup_stale_pid_lock` here: it would try_lock a second
+    // fd of the flock we already hold.
     let _lock = match auth::acquire_daemon_lock(paths) {
         Ok(lock) => lock,
         Err(err) => {
@@ -129,6 +123,12 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
             std::process::exit(1);
         }
     };
+    if let Some(pid) = auth::pid_file_live_pid(paths) {
+        eprintln!("[cortex] Error: daemon appears active (pid {pid} per {}).", paths.pid.display());
+        eprintln!("[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using.");
+        std::process::exit(1);
+    }
+    let _ = auth::cleanup_stale_pid_file(paths);
     match db::backup::restore_from(Path::new(restore_file), &paths.db, &paths.home) {
         Ok(report) => {
             let verified = report.integrity_ok && report.sample_reads_ok;

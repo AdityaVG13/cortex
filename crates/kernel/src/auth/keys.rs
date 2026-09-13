@@ -9,8 +9,9 @@ pub fn cortex_dir() -> PathBuf {
         return paths.home.clone();
     }
     if let Ok(explicit) = std::env::var("CORTEX_HOME") {
-        if !explicit.trim().is_empty() {
-            return PathBuf::from(explicit);
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
         }
     }
     default_home_root().join(CORTEX_DIR_NAME)

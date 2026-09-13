@@ -243,7 +243,12 @@ fn resolve_paths_with_binary(binary: impl AsRef<std::ffi::OsStr>) -> Result<Opti
 }
 
 fn fallback_cortex_paths() -> ResolvedCortexPaths {
-    let cortex_dir = env::var("CORTEX_HOME").ok().map(PathBuf::from).or_else(|| default_cortex_dir().ok());
+    let cortex_dir = env::var("CORTEX_HOME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| default_cortex_dir().ok());
 
     let port = match env::var("CORTEX_PORT") {
         Ok(value) => match value.parse::<u16>() {
@@ -308,8 +313,7 @@ pub fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
     let src_meta = fs::metadata(src).map_err(|e| format!("read {}: {e}", src.display()))?;
     let needs_copy = match fs::metadata(dest) {
         Ok(dest_meta) if dest_meta.len() == src_meta.len() => {
-            fs::read(dest).map_err(|e| format!("read {}: {e}", dest.display()))?
-                != fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?
+            fs::read(dest).map_err(|e| format!("read {}: {e}", dest.display()))? != fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?
         }
         Ok(_) => true,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,

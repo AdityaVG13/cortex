@@ -45,11 +45,11 @@ impl CortexPaths {
     pub fn resolve_with_overrides(home_override: Option<&str>, db_override: Option<&str>) -> Self {
         let home = home_override
             .map(PathBuf::from)
-            .or_else(|| std::env::var("CORTEX_HOME").ok().map(PathBuf::from))
+            .or_else(|| nonempty_env_path("CORTEX_HOME"))
             .unwrap_or_else(|| default_home_root().join(CORTEX_DIR_NAME));
         let db = db_override
             .map(PathBuf::from)
-            .or_else(|| std::env::var("CORTEX_DB").ok().map(PathBuf::from))
+            .or_else(|| nonempty_env_path("CORTEX_DB"))
             .unwrap_or_else(|| home.join("cortex.db"));
         Self {
             token: home.join("cortex.token"),
@@ -105,6 +105,16 @@ impl CortexPaths {
 }
 fn is_flag_token(value: &str) -> bool {
     value.starts_with("--")
+}
+
+/// Blank / whitespace `CORTEX_HOME` / `CORTEX_DB` must not become cwd-relative
+/// `cortex.token` paths that disagree with `cortex_dir()` and Control Center.
+fn nonempty_env_path(name: &str) -> Option<PathBuf> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 pub fn default_home_root() -> PathBuf {
@@ -655,27 +665,49 @@ fn read_secret_file_bounded(file: &mut fs::File) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+#[cfg(unix)]
+fn secret_staging_path(path: &Path) -> PathBuf {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("secret");
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    parent.join(format!(".{stem}.{}.{n}.tmp", std::process::id()))
+}
+
 pub fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write as _;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        // O_NOFOLLOW: a planted symlink must not redirect the secret. Mode is
-        // only applied on create; if the path already existed world-readable,
-        // fchmod before truncate so new bytes never sit at 0644.
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.set_len(0)?;
-        file.write_all(contents)?;
-        file.flush()?;
-        restrict_file_to_owner(path)?;
-        Ok(())
+        // Stage a new 0o600 inode, then rename over the destination so a
+        // concurrent Tauri `read_auth_token` never observes the empty window
+        // of in-place truncate. Path chmod after write followed a planted
+        // symlink; fchmod the staging fd instead.
+        let tmp = secret_staging_path(path);
+        let staged = (|| {
+            let mut file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&tmp)?;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            file.write_all(contents)?;
+            file.flush()?;
+            fs::rename(&tmp, path)
+        })();
+        if staged.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        staged
     }
     #[cfg(windows)]
     {

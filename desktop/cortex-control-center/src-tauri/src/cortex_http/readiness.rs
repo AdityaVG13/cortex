@@ -1,6 +1,6 @@
 use crate::constants::*;
 use crate::cortex_http::request::{send_cortex_request_with_port, validate_cortex_auth_token, RequestTimeouts};
-use crate::daemon::paths::{daemon_port, resolved_cortex_paths, token_path, ResolvedCortexPaths};
+use crate::daemon::paths::{resolved_cortex_paths, token_path, ResolvedCortexPaths};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
@@ -194,13 +194,12 @@ pub fn auth_token_ready() -> bool {
 
 pub fn read_auth_token_with_retry_blocking(timeout: Duration) -> Result<String, String> {
     let path = token_path()?;
-    if !is_cortex_reachable_with_port(daemon_port(), DAEMON_REACHABILITY_TIMEOUT_MS) {
-        return read_auth_token_once();
-    }
-
     let started = std::time::Instant::now();
     let mut last_error = format!("Auth token not ready at {}", path.display());
 
+    // Poll the file even when HTTP health is down: headless `cortex serve`
+    // never binds a port, and in-place/atomic secret writes have a window
+    // where the file is missing. Empty is not success; fail closed on timeout.
     loop {
         match read_auth_token_from_path(&path) {
             Ok(token) if !token.is_empty() => return Ok(token),

@@ -80,14 +80,23 @@ fn unlink_recorded_pid(path: &Path, expected: u32) -> bool {
 pub fn remove_own_pid_file(paths: &CortexPaths) {
     let _ = unlink_recorded_pid(&paths.pid, std::process::id());
 }
-pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
-    let _lock = super::locks::acquire_daemon_lock(paths).ok()?;
+/// Unlink a dead occupant. Caller must already hold exclusive `paths.lock`.
+///
+/// `cleanup_stale_pid_lock` acquires that flock itself. Serve and restore
+/// already hold it; calling the acquiring entry from those paths would
+/// `try_lock` a second fd of the same inode and fail (or block, if the
+/// lock wait env were honored).
+pub fn cleanup_stale_pid_file(paths: &CortexPaths) -> Option<u32> {
     let pid = stale_pid_candidate(paths)?;
     if !unlink_recorded_pid(&paths.pid, pid) {
         return None;
     }
     eprintln!("[cortex] Cleaned stale PID file (process {pid} not running)");
     Some(pid)
+}
+pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
+    let _lock = super::locks::acquire_daemon_lock(paths).ok()?;
+    cleanup_stale_pid_file(paths)
 }
 pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
     let pid = read_pid_file(&paths.pid)?.trim().parse::<u32>().ok()?;

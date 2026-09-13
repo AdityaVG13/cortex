@@ -1,7 +1,7 @@
 use super::read_pool::{
-    ReadConnectionPool, ReadConnectionProvider, open_query_only_connection, read_pool_size_from_env,
+    open_query_only_connection, read_pool_size_from_env, ReadConnectionPool, ReadConnectionProvider,
 };
-use super::runtime::{RuntimeState, current_unix_secs};
+use super::runtime::{current_unix_secs, RuntimeState};
 use super::types::{BrainFiringEvent, DaemonEvent, SqliteVecCanaryConfig};
 use crate::auth::CortexPaths;
 use asupersync::{
@@ -10,8 +10,8 @@ use asupersync::{
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::Arc;
 pub fn initialize(
     paths: &CortexPaths,
     allow_token_rotation: bool,
@@ -142,8 +142,17 @@ fn initialize_with_conn(
     } else if allow_token_rotation {
         crate::auth::try_generate_token_for(paths)
             .map_err(|e| format!("Failed to generate shared auth token: {e}"))?
+    } else if let Some(existing) = crate::auth::read_token_from(paths) {
+        existing
     } else {
-        crate::auth::read_token_from(paths).unwrap_or_else(crate::auth::generate_ephemeral_token)
+        // Persist the first shared secret so Control Center's file reader
+        // and this process agree. Rotation of an existing file is the
+        // `allow_token_rotation` path; do not mint a memory-only token that
+        // Tauri can never read.
+        match crate::auth::try_generate_token_for(paths) {
+            Ok(token) => token,
+            Err(_) => crate::auth::generate_ephemeral_token(),
+        }
     };
     let (events_tx, _) = broadcast::channel::<DaemonEvent>(256);
     let (brain_firing_tx, _) = broadcast::channel::<BrainFiringEvent>(256);

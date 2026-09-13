@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_MS, SSE_REFRESH_THROTTLE_MS } from "../constants.js";
+import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_ATTEMPTS, SSE_RECONNECT_MAX_MS, SSE_REFRESH_THROTTLE_MS } from "../constants.js";
 function useSseStream(ctx) { const { daemonState, cortexBase, refreshAllRef, tokenRef, streamConnectedAtRef, streamSessionEventCountRef,
     streamDisconnectedAtRef, } = ctx;
   return ( useEffect(() => { let stream = null, refreshTimer = null, reconnectTimer = null, reconnectAttempt = 0, lastRefreshAt = 0, refreshInFlight = !1,
@@ -16,11 +16,14 @@ function useSseStream(ctx) { const { daemonState, cortexBase, refreshAllRef, tok
               }));
           }, delay); }, handleRealtimeEvent = () => { scheduleRefresh();
         }, closeStream = () => { stream && (stream.close(), (stream = null)); }, scheduleReconnect = () => { if (disposed) return;
+          if (!daemonState.authTokenReady || reconnectAttempt >= SSE_RECONNECT_MAX_ATTEMPTS) return;
           const exponentialDelay = Math.min(SSE_RECONNECT_MAX_MS, SSE_RECONNECT_BASE_MS * 2 ** reconnectAttempt), jitter = Math.floor(Math.random() * 250);
           ((reconnectAttempt += 1), clearReconnectTimer(), (reconnectTimer = window.setTimeout(() => { ((reconnectTimer = null), connect());
             }, exponentialDelay + jitter))); }, connect = () => { if (disposed || stream) return;
           const token = tokenRef.current;
-          if (!token) { scheduleReconnect();
+          if (!token) { if (daemonState.authTokenReady) { scheduleRefresh();
+              scheduleReconnect();
+            }
             return;
           }
           const streamUrl = `${cortexBase}/events/stream?token=${encodeURIComponent(token)}`, nextStream = new EventSource(streamUrl);
