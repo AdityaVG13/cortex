@@ -13,7 +13,7 @@ static AUTHORIZATION_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 
 pub fn redact_secrets(text: &str) -> String {
     let bearer = BEARER_REDACTION_RE
-        .get_or_init(|| Regex::new(r"Bearer\s+[A-Za-z0-9._\-+=/]{16,}").ok())
+        .get_or_init(|| Regex::new(r"(?i)Bearer\s+[A-Za-z0-9._\-+=/]{16,}").ok())
         .as_ref()
         .map(|re| re.replace_all(text, "Bearer [REDACTED]").to_string())
         .unwrap_or_else(|| text.to_string());

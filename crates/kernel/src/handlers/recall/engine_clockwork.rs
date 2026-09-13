@@ -164,7 +164,7 @@ pub fn run_clock_quorum_recall(
 
     let mut trace = RouteTrace { rank_tuple: crate::clockwork::RANK_TUPLE_VERSION, ..RouteTrace::default() };
     apply_route_quotas(&mut by_key, &mut trace);
-    annotate_roles(conn, &mut by_key);
+    annotate_roles(conn, &mut by_key)?;
     let total = by_key.len();
     let mut admitted: Vec<ScoredCandidate> = Vec::new();
     for candidate in by_key.into_values() {
@@ -265,13 +265,17 @@ fn current_status_filters(frame: &QueryFrame, ctx: &RecallContext) -> Vec<String
 
 /// Required role (constraint-like kind) and open contradictions come from
 /// the row's own governance columns, never from relevance evidence.
-fn annotate_roles(conn: &Connection, by_key: &mut HashMap<(String, i64), ScoredCandidate>) {
+fn annotate_roles(conn: &Connection, by_key: &mut HashMap<(String, i64), ScoredCandidate>) -> Result<(), String> {
     for ((target_type, target_id), candidate) in by_key.iter_mut() {
         if target_type != "decision" {
             continue;
         }
-        if let Ok(kind) = conn.query_row("SELECT COALESCE(type, 'decision') FROM decisions WHERE id = ?1", params![target_id], |r| r.get::<_, String>(0)) {
-            candidate.required_role = matches!(kind.as_str(), "constraint" | "policy" | "rule" | "convention" | "contract" | "preference");
+        match conn.query_row("SELECT COALESCE(type, 'decision') FROM decisions WHERE id = ?1", params![target_id], |r| r.get::<_, String>(0)) {
+            Ok(kind) => {
+                candidate.required_role = matches!(kind.as_str(), "constraint" | "policy" | "rule" | "convention" | "contract" | "preference");
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(e) => return Err(e.to_string()),
         }
         candidate.contradiction = conn
             .query_row(
@@ -280,8 +284,9 @@ fn annotate_roles(conn: &Connection, by_key: &mut HashMap<(String, i64), ScoredC
                 |r| r.get::<_, i64>(0),
             )
             .map(|n| n > 0)
-            .unwrap_or(false);
+            .map_err(|e| e.to_string())?;
     }
+    Ok(())
 }
 
 fn rank_to_relevance(key: &RankKey) -> f64 {

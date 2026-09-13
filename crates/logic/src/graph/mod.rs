@@ -216,7 +216,7 @@ pub fn extract_mentions(text: &str) -> Vec<Mention> {
     for token in &tokens {
         let trimmed =
             token.trim_matches(|c: char| c == '`' || c == '"' || c == '\'' || c == ',' || c == '.');
-        if trimmed.contains('/') && trimmed.len() > 3 && !trimmed.starts_with("http") {
+        if trimmed.contains('/') && trimmed.len() > 3 && !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
             push(
                 trimmed.to_string(),
                 trimmed.to_lowercase(),

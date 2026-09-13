@@ -199,13 +199,33 @@ fn uuid_like(conn: &Connection) -> String {
     .unwrap_or_else(|_| "local".into())
 }
 
-pub fn brain_epochs(conn: &Connection) -> (String, String, String) {
+pub fn try_brain_epochs(conn: &Connection) -> rusqlite::Result<(String, String, String)> {
     conn.query_row(
         "SELECT brain_id, restore_epoch, policy_epoch FROM brain_meta WHERE singleton = 1",
         [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
-    .unwrap_or_else(|_| ("brain-unknown".into(), "0".into(), "0".into()))
+}
+
+/// Bootstrap/display helper. Missing `brain_meta` (not yet inserted, or
+/// schema not yet applied) is the seed epoch `"0"`. A locked/corrupt read
+/// is not a live epoch: `"0"` would pass never-restored equality checks, so
+/// the sentinel cannot match a minted receipt, compiled read, or origin id.
+pub fn brain_epochs(conn: &Connection) -> (String, String, String) {
+    match try_brain_epochs(conn) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            ("brain-unknown".into(), "0".into(), "0".into())
+        }
+        Err(err) if err.to_string().contains("no such table") => {
+            ("brain-unknown".into(), "0".into(), "0".into())
+        }
+        Err(_) => (
+            "brain-unreadable".into(),
+            "unreadable".into(),
+            "unreadable".into(),
+        ),
+    }
 }
 
 /// Append one commit row and return its sequence. The origin is this brain
@@ -216,7 +236,7 @@ pub fn append_commit(
     idempotency_key: Option<&str>,
     ack_profile: &str,
 ) -> rusqlite::Result<i64> {
-    let (brain_id, _, _) = brain_epochs(conn);
+    let (brain_id, _, _) = try_brain_epochs(conn)?;
     let counter: i64 = conn.query_row(
         "SELECT COALESCE(MAX(origin_counter), -1) + 1 FROM commits WHERE origin_id = ?1",
         params![brain_id],

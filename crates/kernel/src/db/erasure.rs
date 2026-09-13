@@ -240,7 +240,7 @@ pub fn erase(
             |r| r.get::<_, i64>(0),
         )
         .map(|n| n > 0)
-        .unwrap_or(false);
+        .map_err(|e| format!("record lookup failed: {e}"))?;
     if !exists {
         return Err(format!("unknown record {record_id}"));
     }
@@ -252,7 +252,9 @@ pub fn erase(
         let erasure_id = format!("erasure:{record_id}@{sequence}");
         let record = ErasureRecord {
             erasure_id: erasure_id.clone(),
-            brain_id: super::records::brain_epochs(conn).0,
+            brain_id: super::records::try_brain_epochs(conn)
+                .map_err(|e| e.to_string())?
+                .0,
             record_id: record_id.to_string(),
             authority: authority.to_string(),
             reason: reason.to_string(),
@@ -335,9 +337,11 @@ pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconci
     let floor_before = erasure_floor(conn);
     let db_has_ledger: i64 = conn
         .query_row("SELECT COUNT(*) FROM erasures", [], |r| r.get(0))
-        .unwrap_or(0);
+        .map_err(|e| format!("erasures table unreadable: {e}"))?;
     let quarantined = db_has_ledger == 0 && !ledger.is_empty();
-    let brain_id = super::records::brain_epochs(conn).0;
+    let brain_id = super::records::try_brain_epochs(conn)
+        .map_err(|e| format!("brain_id unreadable: {e}"))?
+        .0;
     let mut reapplied = 0usize;
     let mut already = 0usize;
     let mut foreign = 0usize;
@@ -354,7 +358,7 @@ pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconci
                 |r| r.get::<_, i64>(0),
             )
             .map(|n| n > 0)
-            .unwrap_or(false);
+            .map_err(|e| format!("erasure presence unreadable: {e}"))?;
         let exists: bool = conn
             .query_row(
                 "SELECT COUNT(*) FROM records WHERE record_id = ?1",
@@ -362,7 +366,7 @@ pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconci
                 |r| r.get::<_, i64>(0),
             )
             .map(|n| n > 0)
-            .unwrap_or(false);
+            .map_err(|e| format!("record presence unreadable: {e}"))?;
         if present {
             already += 1;
         } else if exists {
@@ -438,11 +442,15 @@ pub fn fence_check(conn: &Connection, through_sequence: i64) -> Result<(), Value
 }
 
 pub fn is_erased(conn: &Connection, record_id: &str) -> bool {
-    conn.query_row(
+    match conn.query_row(
         "SELECT COUNT(*) FROM erasures WHERE COALESCE(json_extract(target_descriptor, '$.record_id'), target_descriptor) = ?1",
         [record_id],
         |r| r.get::<_, i64>(0),
-    )
-    .map(|n| n > 0)
-    .unwrap_or(false)
+    ) {
+        Ok(n) => n > 0,
+        // COUNT(*) always returns a row when the table is readable. Any
+        // other error (locked, corrupt, missing table during a partial
+        // open) must not look like "not erased" on the alias expand path.
+        Err(_) => true,
+    }
 }

@@ -3,12 +3,27 @@ pub fn current_mode(conn: &Connection) -> String {
     if !table_exists(conn, "config") {
         return "solo".to_string();
     }
-    conn.query_row(
+    match conn.query_row(
         "SELECT value FROM config WHERE key = 'mode' LIMIT 1",
         [],
         |row| row.get::<_, String>(0),
-    )
-    .unwrap_or_else(|_| "solo".to_string())
+    ) {
+        Ok(mode) => mode,
+        // Missing key is the schema default (create_team_mode_tables seeds
+        // solo). A readable 'solo' after a team→solo downgrade must stay
+        // solo even if leftover `users` rows exist.
+        Err(rusqlite::Error::QueryReturnedNoRows) => "solo".to_string(),
+        // Unreadable config is not a solo verdict. `users` exists only in
+        // team-mode DBs; infer the same way repair does so boot ACL cannot
+        // fail open while identity tables are still present.
+        Err(_) => {
+            if table_exists(conn, "users") {
+                "team".to_string()
+            } else {
+                "solo".to_string()
+            }
+        }
+    }
 }
 pub fn is_team_mode(conn: &Connection) -> bool {
     current_mode(conn) == "team"
