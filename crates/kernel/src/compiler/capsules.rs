@@ -16,9 +16,6 @@ pub fn stored_max_timestamp(conn: &Connection) -> Option<String> {
 }
 
 pub fn get_last_boot_time(conn: &Connection, agent: &str) -> Option<String> {
-    if let Some(stored) = stored_max_timestamp(conn) {
-        return Some(stored);
-    }
     conn.query_row("SELECT data FROM events WHERE type = 'agent_boot' AND source_agent = ?1 ORDER BY created_at DESC, id DESC LIMIT 1", params![agent], |r| {
         r.get::<_, String>(0)
     })
@@ -335,16 +332,17 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             .collect();
         parts.push(format!("## Your Active Tasks\n{}", lines.join("\n")));
     }
-    if let Ok(mut stmt) = conn.prepare_cached(
+    if let Ok(mut stmt) = conn.prepare_cached(&format!(
         "SELECT d.id, d.decision, d.disputes_id, d.confirmed_by,
                 COALESCE(d.valid_from, d.observed_at, d.created_at), d.valid_until
          FROM decisions d
-         WHERE d.status = 'disputed'
+         WHERE d.status = 'disputed'{}
            AND (d.valid_from IS NULL OR julianday(d.valid_from) <= julianday('now'))
            AND (d.valid_until IS NULL OR julianday(d.valid_until) > julianday('now'))
            AND EXISTS (SELECT 1 FROM decision_conflicts c WHERE c.source_decision_id = d.id AND c.status = 'open')
          ORDER BY d.created_at DESC, d.id DESC LIMIT 6",
-    ) {
+        owner_clause(conn, "decisions", boot_owner()),
+    )) {
         if let Ok(rows) = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -468,7 +466,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
     if !has_new_section {
         let already_has_recent = parts.iter().any(|p| p.starts_with("Recent decisions:"));
         if !already_has_recent {
-            if let Ok(mut stmt) = conn.prepare_cached("SELECT id, decision, context FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, id DESC LIMIT 20") {
+            if let Ok(mut stmt) = conn.prepare_cached(&format!("SELECT id, decision, context FROM decisions WHERE status = 'active'{} AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, id DESC LIMIT 20", owner_clause(conn, "decisions", boot_owner()))) {
             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))) {
                 let collected: Vec<(i64, String, Option<String>)> = rows.flatten().collect();
                 let ids: Vec<i64> = collected.iter().map(|row| row.0).collect();

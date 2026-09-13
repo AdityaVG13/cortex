@@ -62,22 +62,28 @@ pub fn cache_set(conn: &Connection, key: &str, hash: &str, compressed: &str, tok
 pub fn build_identity_capsule(conn: &Connection) -> (String, usize) {
     // Cache key over exactly the rows the capsule renders (top 20 by score),
     // computed in SQL: O(20 rows), not O(all feedback bytes) per boot.
+    let mem_scope = super::owner_clause(conn, "memories", super::boot_owner());
+    let owner_tag = super::boot_owner()
+        .map(|id| id.to_string())
+        .unwrap_or_default();
     let feedback_hash = {
         let digest: String = conn
             .query_row(
-                "SELECT COALESCE(group_concat(id || ':' || length(text) || ':' || score, ','), '') FROM (SELECT id, text, score FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) ORDER BY score DESC, id ASC LIMIT 20)",
+                &format!(
+                    "SELECT COALESCE(group_concat(id || ':' || length(text) || ':' || score, ','), '') FROM (SELECT id, text, score FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')){mem_scope} ORDER BY score DESC, id ASC LIMIT 20)"
+                ),
                 [],
                 |r| r.get(0),
             )
             .unwrap_or_default();
-        content_hash(&digest)
+        content_hash(&format!("{digest}|{owner_tag}"))
     };
     if let Some((cached, tokens)) = cache_get(conn, "identity_capsule", &feedback_hash) {
         return (cached, tokens);
     }
     let mut parts = vec![detect_identity()];
     let constraint_re = identity_constraint_re();
-    if let Ok(mut stmt) = conn.prepare_cached("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) ORDER BY score DESC, id ASC LIMIT 20") {
+    if let Ok(mut stmt) = conn.prepare_cached(&format!("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')){mem_scope} ORDER BY score DESC, id ASC LIMIT 20")) {
         if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
             let constraints: Vec<String> = rows
                 .filter_map(|r| r.ok())
@@ -91,7 +97,7 @@ pub fn build_identity_capsule(conn: &Connection) -> (String, usize) {
         }
     }
     let edge_re = identity_edge_re();
-    if let Ok(mut stmt) = conn.prepare_cached("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) ORDER BY score DESC, id ASC LIMIT 20") {
+    if let Ok(mut stmt) = conn.prepare_cached(&format!("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')){mem_scope} ORDER BY score DESC, id ASC LIMIT 20")) {
         if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
             let edges: Vec<String> = rows
                 .filter_map(|r| r.ok())

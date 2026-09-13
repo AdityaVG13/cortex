@@ -56,14 +56,14 @@ pub fn prune_expired_entries(conn: &Connection, failures: &mut Vec<MaintenanceFa
         conn,
         failures,
         "prune_expired_entries DELETE memories",
-        "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+        "DELETE FROM memories WHERE expires_at IS NOT NULL AND julianday(expires_at) < julianday('now')",
         [],
     );
     let decisions_deleted = exec_counted(
         conn,
         failures,
         "prune_expired_entries DELETE decisions",
-        "DELETE FROM decisions WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+        "DELETE FROM decisions WHERE expires_at IS NOT NULL AND julianday(expires_at) < julianday('now')",
         [],
     );
     let count = memories_deleted + decisions_deleted;

@@ -171,69 +171,7 @@ impl ReadSnapshot for SqliteSnapshot<'_> {
         continuation: Option<&str>,
         limits: ScanLimits,
     ) -> Result<Page, StoreSpiError> {
-        let after: i64 = continuation.and_then(|c| c.parse().ok()).unwrap_or(0);
-        let kind = predicate_kind(predicate).unwrap_or("decision");
-        let (table, text_col) = match kind {
-            "memory" => ("memories", "text"),
-            _ => ("decisions", "decision"),
-        };
-        let fetch = limits.rows.saturating_add(1) as i64;
-        let sql = format!("SELECT id, {text_col}, status, source_agent, created_at, COALESCE(version_id,0) FROM {table} WHERE id > ?1 ORDER BY id LIMIT ?2");
-        let mut stmt = self
-            .conn
-            .prepare(&sql)
-            .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
-        let mut rows = Vec::new();
-        let mut bytes = 0u64;
-        let mut examined = 0u64;
-        let mut truncated = false;
-        let iter = stmt
-            .query_map(params![after, fetch], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, i64>(5)?,
-                ))
-            })
-            .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
-        for item in iter {
-            let (id, text, status, agent, created_at, version) =
-                item.map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
-            examined += 1;
-            if rows.len() as u32 >= limits.rows || bytes + text.len() as u64 > limits.bytes {
-                truncated = true;
-                break;
-            }
-            let body =
-                json!({"text": text, "status": status, "agent": agent, "created_at": created_at});
-            if !predicate_matches(predicate, &body) {
-                continue;
-            }
-            bytes += text.len() as u64;
-            rows.push(Row {
-                id: LogicalId::from_legacy(kind, id),
-                revision: LogicalId::from_legacy("version", version),
-                kind: kind.into(),
-                body,
-            });
-        }
-        let continuation = if truncated {
-            rows.last().map(|r| r.id.value.clone())
-        } else {
-            None
-        };
-        Ok(Page {
-            rows,
-            coverage: Coverage {
-                frontier: self.frontier.clone(),
-                exhausted: !truncated,
-                rows_examined: examined,
-                continuation,
-            },
-        })
+        scan_rows(self.conn, &self.frontier, predicate, continuation, limits)
     }
     fn candidates(
         &self,
@@ -318,6 +256,210 @@ impl ReadSnapshot for SqliteSnapshot<'_> {
             },
         })
     }
+}
+
+struct ScanTarget {
+    ns: &'static str,
+    table: &'static str,
+    text_col: &'static str,
+    type_eq: Option<String>,
+}
+
+fn scan_targets(predicate: &Predicate) -> Vec<ScanTarget> {
+    match predicate_kind(predicate) {
+        Some("decision") => vec![ScanTarget {
+            ns: "decision",
+            table: "decisions",
+            text_col: "decision",
+            type_eq: None,
+        }],
+        Some("memory") => vec![ScanTarget {
+            ns: "memory",
+            table: "memories",
+            text_col: "text",
+            type_eq: None,
+        }],
+        Some(other) => vec![
+            ScanTarget {
+                ns: "decision",
+                table: "decisions",
+                text_col: "decision",
+                type_eq: Some(other.to_string()),
+            },
+            ScanTarget {
+                ns: "memory",
+                table: "memories",
+                text_col: "text",
+                type_eq: Some(other.to_string()),
+            },
+        ],
+        None => vec![
+            ScanTarget {
+                ns: "decision",
+                table: "decisions",
+                text_col: "decision",
+                type_eq: None,
+            },
+            ScanTarget {
+                ns: "memory",
+                table: "memories",
+                text_col: "text",
+                type_eq: None,
+            },
+        ],
+    }
+}
+
+fn parse_scan_cursor(continuation: Option<&str>, targets: &[ScanTarget]) -> (usize, i64) {
+    let Some(raw) = continuation.filter(|s| !s.is_empty()) else {
+        return (0, 0);
+    };
+    if let Some(rest) = raw.strip_prefix("memory:") {
+        let idx = targets.iter().position(|t| t.ns == "memory").unwrap_or(0);
+        return (idx, rest.parse().unwrap_or(0));
+    }
+    if let Some(rest) = raw.strip_prefix("decision:") {
+        let idx = targets.iter().position(|t| t.ns == "decision").unwrap_or(0);
+        return (idx, rest.parse().unwrap_or(0));
+    }
+    (0, raw.parse().unwrap_or(0))
+}
+
+fn cursor_token(multi: bool, ns: &str, id: i64) -> String {
+    if multi {
+        format!("{ns}:{id}")
+    } else {
+        id.to_string()
+    }
+}
+
+fn cursor_from_row(multi: bool, row: &Row) -> String {
+    cursor_token(multi, &row.id.namespace, row.id.value.parse().unwrap_or(0))
+}
+
+fn map_scan_row(
+    r: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(i64, String, String, String, String, i64, String)> {
+    Ok((
+        r.get::<_, i64>(0)?,
+        r.get::<_, String>(1)?,
+        r.get::<_, String>(2)?,
+        r.get::<_, String>(3)?,
+        r.get::<_, String>(4)?,
+        r.get::<_, i64>(5)?,
+        r.get::<_, String>(6)?,
+    ))
+}
+
+fn scan_rows(
+    conn: &Connection,
+    frontier: &Frontier,
+    predicate: &Predicate,
+    continuation: Option<&str>,
+    limits: ScanLimits,
+) -> Result<Page, StoreSpiError> {
+    let targets = scan_targets(predicate);
+    let multi = targets.len() > 1;
+    let (start_idx, mut after) = parse_scan_cursor(continuation, &targets);
+    let mut rows = Vec::new();
+    let mut bytes = 0u64;
+    let mut examined = 0u64;
+    let mut truncated = false;
+    let mut continuation_out = None;
+    let fetch = (limits.rows as i64).saturating_add(1).max(32);
+    'tables: for (idx, target) in targets.iter().enumerate() {
+        if idx < start_idx {
+            continue;
+        }
+        if idx > start_idx {
+            after = 0;
+        }
+        loop {
+            let type_clause = if target.type_eq.is_some() {
+                " AND type = ?3"
+            } else {
+                ""
+            };
+            let sql = format!(
+                "SELECT id, {text_col}, status, source_agent, created_at, COALESCE(version_id,0), COALESCE(type, '{ns}') \
+                 FROM {table} WHERE id > ?1{type_clause} ORDER BY id LIMIT ?2",
+                text_col = target.text_col,
+                ns = target.ns,
+                table = target.table,
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
+            let batch: Vec<(i64, String, String, String, String, i64, String)> =
+                if let Some(typ) = &target.type_eq {
+                    stmt.query_map(params![after, fetch, typ], map_scan_row)
+                        .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?
+                } else {
+                    stmt.query_map(params![after, fetch], map_scan_row)
+                        .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?
+                };
+            if batch.is_empty() {
+                break;
+            }
+            let batch_len = batch.len();
+            for (id, text, status, agent, created_at, version, row_type) in batch {
+                examined += 1;
+                after = id;
+                let body =
+                    json!({"text": text, "status": status, "agent": agent, "created_at": created_at});
+                if !predicate_matches(predicate, &body) {
+                    continue;
+                }
+                if rows.len() as u32 >= limits.rows {
+                    truncated = true;
+                    continuation_out = rows
+                        .last()
+                        .map(|r| cursor_from_row(multi, r))
+                        .or_else(|| Some(cursor_token(multi, target.ns, id)));
+                    break 'tables;
+                }
+                let text_len = text.len() as u64;
+                if bytes.saturating_add(text_len) > limits.bytes && limits.bytes > 0 {
+                    if rows.is_empty() {
+                        // A single row larger than the byte budget must not
+                        // pin the cursor: skip it so the next page can move.
+                        continue;
+                    }
+                    truncated = true;
+                    continuation_out = rows.last().map(|r| cursor_from_row(multi, r));
+                    break 'tables;
+                }
+                bytes = bytes.saturating_add(text_len);
+                let kind = if target.ns == "decision" {
+                    "decision".to_string()
+                } else {
+                    row_type
+                };
+                rows.push(Row {
+                    id: LogicalId::from_legacy(target.ns, id),
+                    revision: LogicalId::from_legacy("version", version),
+                    kind,
+                    body,
+                });
+            }
+            if batch_len < fetch as usize {
+                break;
+            }
+        }
+    }
+    Ok(Page {
+        rows,
+        coverage: Coverage {
+            frontier: frontier.clone(),
+            exhausted: !truncated,
+            rows_examined: examined,
+            continuation: continuation_out,
+        },
+    })
 }
 
 fn predicate_kind(p: &Predicate) -> Option<&str> {
@@ -438,9 +580,9 @@ impl WriteTransaction for SqliteTx<'_> {
                     .insert(local_name, LogicalId::from_legacy("memory", id));
             }
             Op::SetStatus { target, status } => {
-                let table = match target.namespace.as_str() {
-                    "decision" => "decisions",
-                    "memory" => "memories",
+                let (table, target_type) = match target.namespace.as_str() {
+                    "decision" => ("decisions", "decision"),
+                    "memory" => ("memories", "memory"),
                     other => {
                         return Err(StoreSpiError::LimitExceeded(format!(
                             "unknown record namespace {other}"
@@ -453,10 +595,21 @@ impl WriteTransaction for SqliteTx<'_> {
                     .map_err(|_| StoreSpiError::LimitExceeded("non-numeric legacy id".into()))?;
                 self.conn
                     .execute(
-                        &format!("UPDATE {table} SET status = ?1 WHERE id = ?2"),
+                        &format!(
+                            "UPDATE {table} SET status = ?1, updated_at = datetime('now') WHERE id = ?2"
+                        ),
                         params![status, id],
                     )
                     .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
+                let _ = crate::traces::record_store_write(
+                    self.conn,
+                    &self.intent.principal,
+                    &status,
+                    "status",
+                    target_type,
+                    Some(id),
+                    None,
+                );
             }
         }
         Ok(())

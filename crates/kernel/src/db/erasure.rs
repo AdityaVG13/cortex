@@ -136,12 +136,26 @@ fn apply(
         let (table, col) = match namespace.as_str() {
             "decision" => ("decisions", "decision"),
             "memory" => ("memories", "text"),
-            _ => ("decisions", "decision"),
+            other => {
+                return Err(format!(
+                    "legacy address namespace {other} is not a memories/decisions table"
+                ));
+            }
+        };
+        let extra = if crate::db::table_has_column(conn, table, "compressed_text") {
+            ", compressed_text = NULL"
+        } else {
+            ""
+        };
+        let side = if namespace == "decision" {
+            ", context = NULL"
+        } else {
+            ", tags = NULL"
         };
         legacy_rows += conn
             .execute(
                 &format!(
-                    "UPDATE {table} SET {col} = '[erased]', context = NULL, status = 'erased', compressed_text = NULL WHERE id = ?1 AND status != 'erased'"
+                    "UPDATE {table} SET {col} = '[erased]'{side}{extra}, status = 'erased' WHERE id = ?1 AND status != 'erased'"
                 ),
                 params![id],
             )
@@ -164,6 +178,11 @@ fn apply(
         if table == "decisions" {
             let _ = conn.execute(
                 "INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) SELECT 'delete', id, '[erased]', NULL FROM decisions WHERE id = ?1",
+                params![id],
+            );
+        } else {
+            let _ = conn.execute(
+                "INSERT INTO memories_fts(memories_fts, rowid, text, source, tags) SELECT 'delete', id, '[erased]', NULL, NULL FROM memories WHERE id = ?1",
                 params![id],
             );
         }

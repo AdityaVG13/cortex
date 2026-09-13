@@ -36,7 +36,10 @@ pub fn empty_rank_components() -> RankComponents {
 }
 pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
     let mut candidates = Vec::new();
+    let mem_scope = super::owner_clause(conn, "memories", super::boot_owner());
+    let dec_scope = super::owner_clause(conn, "decisions", super::boot_owner());
     if let Ok(mut stmt) = conn.prepare_cached(
+        &format!(
         "SELECT id, text, retention_class, score, retrievals, last_accessed, updated_at, created_at, status, confirmed_by,
                 COALESCE(valid_from, observed_at, created_at), valid_until
          FROM memories
@@ -44,9 +47,10 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
            AND (expires_at IS NULL OR julianday(expires_at) > julianday('now'))
            AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now'))
            AND (valid_until IS NULL OR julianday(valid_until) > julianday('now'))
-           AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned'))
+           AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){mem_scope}
          ORDER BY updated_at DESC, id DESC
-         LIMIT 80",
+         LIMIT 80"
+        ),
     ) {
         if let Ok(rows) = stmt.query_map([], |row| {
             Ok(RankedCandidate {
@@ -70,6 +74,7 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
         }
     }
     if let Ok(mut stmt) = conn.prepare_cached(
+        &format!(
         "SELECT id, decision, context, retention_class, score, retrievals, last_accessed, updated_at, created_at, status, confirmed_by,
                 COALESCE(valid_from, observed_at, created_at), valid_until
          FROM decisions
@@ -77,9 +82,10 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
            AND (expires_at IS NULL OR julianday(expires_at) > julianday('now'))
            AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now'))
            AND (valid_until IS NULL OR julianday(valid_until) > julianday('now'))
-           AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned'))
+           AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){dec_scope}
          ORDER BY updated_at DESC, id DESC
-         LIMIT 80",
+         LIMIT 80"
+        ),
     ) {
         if let Ok(rows) = stmt.query_map([], |row| {
             let decision: String = row.get(1)?;

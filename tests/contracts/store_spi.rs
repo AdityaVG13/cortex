@@ -324,3 +324,87 @@ fn export_snapshot_uses_the_online_backup_api_and_round_trips() {
     assert!(diag.integrity_ok);
     assert!(diag.sqlite_version.starts_with("3."));
 }
+
+fn memory(name: &str, text: &str, kind: &str) -> Op {
+    Op::InsertMemory {
+        local_name: name.into(),
+        text: text.into(),
+        kind: kind.into(),
+        agent: "spi-agent".into(),
+        owner_id: None,
+    }
+}
+
+#[test]
+fn insert_memory_is_not_a_decision_row() {
+    let (_dir, path) = temp_db();
+    let mut store = SqliteStore::new(open_file_db(&path)).expect("store");
+    let mut tx = store.begin_write(intent("r-mem", None)).unwrap();
+    tx.apply(memory("m", "feedback note about retries", "feedback"))
+        .unwrap();
+    let receipt = tx.commit(Durability::ProcessCrash).unwrap();
+    let id = receipt.entries["m"].clone();
+    assert_eq!(id.namespace, "memory");
+    let snapshot = store.read_snapshot().unwrap();
+    let got = snapshot.get(&[id.clone()]).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].kind, "feedback");
+    let page = snapshot
+        .scan(
+            &Predicate::Kind("memory".into()),
+            None,
+            ScanLimits::default(),
+        )
+        .unwrap();
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0].id.namespace, "memory");
+    let as_decision = snapshot
+        .scan(
+            &Predicate::Kind("decision".into()),
+            None,
+            ScanLimits::default(),
+        )
+        .unwrap();
+    assert!(
+        as_decision.rows.is_empty(),
+        "Kind(decision) must not return memories: {:?}",
+        as_decision.rows
+    );
+}
+
+#[test]
+fn scan_eq_predicate_does_not_claim_exhaustion_after_a_sql_limit() {
+    let (_dir, path) = temp_db();
+    let mut store = SqliteStore::new(open_file_db(&path)).expect("store");
+    let mut tx = store.begin_write(intent("r-eq", None)).unwrap();
+    for i in 0..40 {
+        tx.apply(decision(&format!("d{i}"), &format!("noise {i}")))
+            .unwrap();
+    }
+    tx.apply(decision("hit", "unique-scan-needle")).unwrap();
+    tx.commit(Durability::ProcessCrash).unwrap();
+    let snapshot = store.read_snapshot().unwrap();
+    let page = snapshot
+        .scan(
+            &Predicate::Eq {
+                field: "text".into(),
+                value: serde_json::json!("unique-scan-needle"),
+            },
+            None,
+            ScanLimits {
+                rows: 2,
+                bytes: 1 << 20,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        page.rows.len(),
+        1,
+        "the matching row lives past the first SQL page: {:?}",
+        page.rows
+    );
+    assert!(
+        page.coverage.exhausted,
+        "one match under the row cap is a complete answer"
+    );
+}

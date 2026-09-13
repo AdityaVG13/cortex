@@ -185,6 +185,9 @@ impl WriteTransaction for MemoryTx<'_> {
     }
     fn commit(self, _durability: Durability) -> Result<Receipt, StoreSpiError> {
         let store = self.store;
+        let mut rows = store.rows.clone();
+        let mut next_id = store.next_id.clone();
+        let mut log = store.log.clone();
         let mut entries = BTreeMap::new();
         for op in self.staged {
             match op {
@@ -193,51 +196,54 @@ impl WriteTransaction for MemoryTx<'_> {
                     text,
                     agent,
                     ..
+                } => {
+                    insert_memory_row(
+                        &mut rows,
+                        &mut next_id,
+                        &mut log,
+                        &mut entries,
+                        "decision",
+                        "decision",
+                        local_name,
+                        text,
+                        agent,
+                    );
                 }
-                | Op::InsertMemory {
+                Op::InsertMemory {
                     local_name,
                     text,
+                    kind,
                     agent,
                     ..
                 } => {
-                    let ns = if local_name.is_empty() {
-                        "decision"
+                    let kind = if kind.is_empty() {
+                        "memory".to_string()
                     } else {
-                        "decision"
+                        kind
                     };
-                    let id = store.next_id.entry(ns.into()).or_insert(0);
-                    *id += 1;
-                    let logical = LogicalId::from_legacy(ns, *id);
-                    let version = store.log.len() as i64 + 1;
-                    store.rows.insert(
-                        logical.canonical(),
-                        Stored {
-                            kind: ns.into(),
-                            text,
-                            status: "active".into(),
-                            agent: agent.clone(),
-                            version,
-                        },
-                    );
-                    store.log.push(Change {
-                        sequence: version,
-                        target: logical.clone(),
-                        action: "stored".into(),
+                    insert_memory_row(
+                        &mut rows,
+                        &mut next_id,
+                        &mut log,
+                        &mut entries,
+                        "memory",
+                        &kind,
+                        local_name,
+                        text,
                         agent,
-                    });
-                    entries.insert(local_name, logical);
+                    );
                 }
                 Op::SetStatus { target, status } => {
-                    let Some(row) = store.rows.get_mut(&target.canonical()) else {
+                    let Some(row) = rows.get_mut(&target.canonical()) else {
                         return Err(StoreSpiError::LimitExceeded(format!(
                             "unknown record {}",
                             target.canonical()
                         )));
                     };
                     row.status = status;
-                    let version = store.log.len() as i64 + 1;
+                    let version = log.len() as i64 + 1;
                     row.version = version;
-                    store.log.push(Change {
+                    log.push(Change {
                         sequence: version,
                         target,
                         action: "status".into(),
@@ -246,6 +252,9 @@ impl WriteTransaction for MemoryTx<'_> {
                 }
             }
         }
+        store.rows = rows;
+        store.next_id = next_id;
+        store.log = log;
         let frontier = store.frontier();
         let receipt = Receipt {
             receipt_id: LogicalId::new("receipt", store.log.len().to_string()),
@@ -272,6 +281,40 @@ impl WriteTransaction for MemoryTx<'_> {
         Ok(receipt)
     }
     fn abort(self) {}
+}
+
+fn insert_memory_row(
+    rows: &mut BTreeMap<String, Stored>,
+    next_id: &mut BTreeMap<String, i64>,
+    log: &mut Vec<Change>,
+    entries: &mut BTreeMap<String, LogicalId>,
+    ns: &str,
+    kind: &str,
+    local_name: String,
+    text: String,
+    agent: String,
+) {
+    let id = next_id.entry(ns.into()).or_insert(0);
+    *id += 1;
+    let logical = LogicalId::from_legacy(ns, *id);
+    let version = log.len() as i64 + 1;
+    rows.insert(
+        logical.canonical(),
+        Stored {
+            kind: kind.into(),
+            text,
+            status: "active".into(),
+            agent: agent.clone(),
+            version,
+        },
+    );
+    log.push(Change {
+        sequence: version,
+        target: logical.clone(),
+        action: "stored".into(),
+        agent,
+    });
+    entries.insert(local_name, logical);
 }
 
 impl BrainStore for MemoryStore {

@@ -50,14 +50,32 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
     // Cheap cache key: the durable set's cardinality, newest id and newest
     // update; the capsule is rebuilt only when that changes. Project paths
     // are part of the key so a scoped boot cannot reuse an unscoped cache.
+    let scope = super::capsules::owner_clause(
+        conn,
+        "decisions",
+        super::capsules::boot_owner(),
+    );
     let key: String = conn
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM decisions) || ':' || COALESCE((SELECT MAX(id) FROM decisions),0) || ':' || COALESCE((SELECT MAX(updated_at) FROM decisions),'')",
+            &format!(
+                "SELECT COUNT(*) || ':' || COALESCE(MAX(id),0) || ':' || COALESCE(MAX(updated_at),'') \
+                 FROM decisions WHERE status = 'active' AND COALESCE(retention_class,'operational') = 'durable' \
+                 AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) \
+                 AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) \
+                 AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) \
+                 AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){scope}"
+            ),
             [],
             |r| r.get(0),
         )
         .unwrap_or_default();
-    let key = format!("{key}|{}", super::capsules::with_boot_paths(|paths| paths.join("\u{1f}")));
+    let key = format!(
+        "{key}|{}|{}",
+        super::capsules::with_boot_paths(|paths| paths.join("\u{1f}")),
+        super::capsules::boot_owner()
+            .map(|id| id.to_string())
+            .unwrap_or_default()
+    );
     if let Some((cached, omitted)) = super::cache::cache_get(conn, "constraints_capsule", &key) {
         return (cached, omitted);
     }
@@ -66,11 +84,14 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
     (text, omitted)
 }
 fn build_constraints_capsule_uncached(conn: &Connection) -> (String, usize) {
+    let scope = super::capsules::owner_clause(conn, "decisions", super::capsules::boot_owner());
     let Ok(mut stmt) = conn.prepare_cached(
-        "SELECT id, decision, COALESCE(type,'decision') FROM decisions WHERE status = 'active' AND COALESCE(retention_class,'operational') = 'durable' \
-         AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) \
-         AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) \
-         ORDER BY CASE WHEN type IN ('constraint','policy','rule','convention','contract','preference') THEN 0 ELSE 1 END, created_at ASC, id ASC",
+        &format!(
+            "SELECT id, decision, COALESCE(type,'decision') FROM decisions WHERE status = 'active' AND COALESCE(retention_class,'operational') = 'durable' \
+             AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) \
+             AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){scope} \
+             ORDER BY CASE WHEN type IN ('constraint','policy','rule','convention','contract','preference') THEN 0 ELSE 1 END, created_at ASC, id ASC"
+        ),
     ) else {
         return (String::new(), 0);
     };

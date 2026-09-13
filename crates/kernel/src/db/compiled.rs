@@ -128,17 +128,19 @@ pub fn run_compiled(
     let params_json = params_value.to_string();
     let id = compiled_id(recipe_id, principal, &params_json, environment);
     // Reuse path: stored guards must all match the current epochs.
-    let cached: Option<(String, String, String, String, i64)> = conn
+    let cached: Option<(String, String, String, String, i64, String)> = conn
         .query_row(
-            "SELECT result_json, brain_epoch, policy_epoch, environment_ref, through_sequence FROM compiled_reads WHERE compiled_id = ?1 AND principal_id = ?2",
+            "SELECT result_json, brain_epoch, policy_epoch, environment_ref, through_sequence, operator_versions FROM compiled_reads WHERE compiled_id = ?1 AND principal_id = ?2",
             params![id, principal],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    if let Some((result_json, brain, policy, env, _)) = cached {
-        let mut valid =
-            brain == snap.brain_epoch && policy == snap.policy_epoch && env == snap.environment;
+    if let Some((result_json, brain, policy, env, _, stored_ops)) = cached {
+        let mut valid = brain == snap.brain_epoch
+            && policy == snap.policy_epoch
+            && env == snap.environment
+            && stored_ops == cortex_logic::recipe::OPERATOR_VERSIONS;
         if valid {
             let mut stmt = conn
                 .prepare("SELECT scope_id, guard_key, expected_generation, kind FROM compiled_guards WHERE compiled_id = ?1")

@@ -253,6 +253,12 @@ fn team_boot_capsules_are_owner_scoped() {
     conn.execute("INSERT INTO tasks (task_id, title, files_json, priority, required_capability, status, created_at, owner_id) VALUES ('t-mine', 'mine', '[]', 'high', 'any', 'pending', '2026-09-05T00:00:00Z', ?1)", [owner]).unwrap();
     conn.execute("INSERT INTO tasks (task_id, title, files_json, priority, required_capability, status, created_at, owner_id) VALUES ('t-theirs', 'theirs SECRET-TASK', '[]', 'high', 'any', 'pending', '2026-09-05T00:00:00Z', ?1)", [other]).unwrap();
     conn.execute("INSERT INTO messages (id, sender, recipient, message, timestamp, owner_id) VALUES ('m1', 'x', 'agent-1', 'SECRET-MESSAGE', '2026-09-05T00:00:00Z', ?1)", [other]).unwrap();
+    conn.execute(
+        "INSERT INTO decisions (decision, type, source_agent, status, retention_class, owner_id) \
+         VALUES ('SECRET-CONSTRAINT never leak across owners', 'constraint', 'seed', 'active', 'durable', ?1)",
+        [other],
+    )
+    .unwrap();
     let home = std::env::temp_dir();
     let mine =
         cortex_kernel::compiler::compile_for_owner(&conn, &home, "agent-1", 4000, Some(owner), &[]);
@@ -265,6 +271,11 @@ fn team_boot_capsules_are_owner_scoped() {
     assert!(
         !mine.boot_prompt.contains("SECRET-MESSAGE"),
         "another owner's message leaked: {}",
+        mine.boot_prompt
+    );
+    assert!(
+        !mine.boot_prompt.contains("SECRET-CONSTRAINT"),
+        "another owner's durable decision leaked: {}",
         mine.boot_prompt
     );
     let theirs =

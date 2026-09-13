@@ -467,3 +467,37 @@ fn restore_reconciliation_refuses_oversize_erasure_ledger() {
     let err = reconcile_after_restore(&conn, &home).unwrap_err();
     assert_eq!(err, "erasure_ledger_byte_limit");
 }
+
+#[test]
+fn erasure_of_a_memory_does_not_rewrite_a_decision_row() {
+    let home = unique_temp_dir("erase-memory");
+    fs::create_dir_all(&home).unwrap();
+    let conn = open_file_db(&home.join("cortex.db"));
+    conn.execute(
+        "INSERT INTO memories (text, type, source_agent, status, retention_class) VALUES ('MEM-secret', 'note', 'seed', 'active', 'operational')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO decisions (decision, type, source_agent, status, retention_class) VALUES ('DEC-keep', 'decision', 'seed', 'active', 'durable')",
+        [],
+    )
+    .unwrap();
+    import_legacy(&conn).unwrap();
+    let record = record_for_legacy(&conn, "memory", 1).unwrap().unwrap();
+    let report = erase(&conn, &home, &record, "owner:aditya", "gdpr request").unwrap();
+    assert_eq!(report.legacy_rows_erased, 1);
+    let mem: String = conn
+        .query_row("SELECT text, status FROM memories WHERE id = 1", [], |r| {
+            Ok(format!("{}:{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .unwrap();
+    assert_eq!(mem, "[erased]:erased");
+    let decision: String = conn
+        .query_row("SELECT decision, status FROM decisions WHERE id = 1", [], |r| {
+            Ok(format!("{}:{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .unwrap();
+    assert_eq!(decision, "DEC-keep:active");
+    let _ = fs::remove_dir_all(&home);
+}
