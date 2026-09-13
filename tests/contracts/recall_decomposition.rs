@@ -388,3 +388,16 @@ fn compare_accepts_ident_kinds_other_than_memory_and_decision() {
         );
     });
 }
+
+#[test]
+fn search_keyword_cap_skips_stop_words_before_taking() {
+    let filler = ["the"; 40].join(" ");
+    let terms = cortex_kernel::handlers::recall::extract_search_keywords(&format!(
+        "{filler} payments gateway"
+    ));
+    assert!(
+        terms.iter().any(|t| t == "payments"),
+        "stop words must not consume MAX_QUERY_TOKENS: {terms:?}"
+    );
+    assert!(terms.iter().any(|t| t == "gateway"), "{terms:?}");
+}

@@ -425,7 +425,7 @@ pub fn fence_check(conn: &Connection, through_sequence: i64) -> Result<(), Value
 
 pub fn is_erased(conn: &Connection, record_id: &str) -> bool {
     conn.query_row(
-        "SELECT COUNT(*) FROM erasures WHERE json_extract(target_descriptor, '$.record_id') = ?1",
+        "SELECT COUNT(*) FROM erasures WHERE COALESCE(json_extract(target_descriptor, '$.record_id'), target_descriptor) = ?1",
         [record_id],
         |r| r.get::<_, i64>(0),
     )

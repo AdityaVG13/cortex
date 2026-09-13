@@ -501,3 +501,32 @@ fn erasure_of_a_memory_does_not_rewrite_a_decision_row() {
     assert_eq!(decision, "DEC-keep:active");
     let _ = fs::remove_dir_all(&home);
 }
+
+#[test]
+fn is_erased_matches_plain_string_target_descriptor() {
+    let home = unique_temp_dir("erase-plain-descriptor");
+    fs::create_dir_all(&home).unwrap();
+    let conn = open_file_db(&home.join("cortex.db"));
+    conn.execute(
+        "INSERT INTO decisions (decision, type, source_agent, status, retention_class) VALUES ('DEC-plain', 'decision', 'seed', 'active', 'durable')",
+        [],
+    )
+    .unwrap();
+    import_legacy(&conn).unwrap();
+    let record = record_for_legacy(&conn, "decision", 1).unwrap().unwrap();
+    erase(&conn, &home, &record, "owner:aditya", "gdpr request").unwrap();
+    conn.execute(
+        "UPDATE erasures SET target_descriptor = ?1",
+        [&record],
+    )
+    .unwrap();
+    assert!(
+        is_erased(&conn, &record),
+        "pre-JSON target_descriptor rows still identify the erased record"
+    );
+    assert!(
+        !is_erased(&conn, "authority") && !is_erased(&conn, "record_id"),
+        "plain-string identity is exact, not a JSON-key substring"
+    );
+    let _ = fs::remove_dir_all(&home);
+}

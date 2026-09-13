@@ -432,7 +432,7 @@ fn is_rare_term(token: &str) -> bool {
             && cleaned.chars().any(|c| c.is_ascii_lowercase())
 }
 
-fn is_stop_word(token: &str) -> bool {
+pub(crate) fn is_stop_word(token: &str) -> bool {
     STOP_WORDS.contains(&token)
 }
 fn looks_like_secret(token: &str) -> bool {

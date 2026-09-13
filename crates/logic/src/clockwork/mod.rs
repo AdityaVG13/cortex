@@ -15,6 +15,7 @@ pub use anchors::{
     extract_anchors, normalize_anchor_value, Anchor, AnchorKind, MAX_ANCHORS_PER_QUERY,
     MAX_ANCHORS_PER_TRACE,
 };
+pub(crate) use anchors::is_stop_word;
 pub use bridge::expand_query_frame;
 pub use evidence::{
     direct_domains, independent_support, ClockEvidence, ClockWhy, FilterEvidence, LinkHit,

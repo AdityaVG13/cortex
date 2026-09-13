@@ -297,20 +297,28 @@ pub fn ingest_for_target(
 
 /// Resolves a free-text query to entity IDs.
 pub fn resolve_query(conn: &Connection, query: &str) -> Vec<i64> {
+    let query = crate::clockwork::bound_query_text(query);
     let mut ids: Vec<i64> = extract_mentions(query)
         .iter()
         .filter_map(|m| resolve_mention_to_existing(conn, m))
         .collect();
-    for token in query
-        .split_whitespace()
-        .take(crate::clockwork::MAX_QUERY_TOKENS)
-    {
+    // Count only lookup candidates toward MAX_QUERY_TOKENS so filler
+    // ("the", kind suffixes) cannot evict the named qualifier.
+    let mut considered = 0usize;
+    for token in query.split_whitespace() {
         let token = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
         let lowered = token.to_ascii_lowercase();
         let norm = normalize_token(token);
-        if norm.len() < 2 || kind_class(&norm).is_some() {
+        if norm.len() < 2
+            || kind_class(&norm).is_some()
+            || crate::clockwork::is_stop_word(&norm)
+        {
             continue;
         }
+        if considered >= crate::clockwork::MAX_QUERY_TOKENS {
+            break;
+        }
+        considered += 1;
         if let Some(id) = lookup_alias(conn, &lowered) {
             ids.push(id);
             continue;

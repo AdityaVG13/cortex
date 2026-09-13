@@ -760,9 +760,10 @@ pub fn extract_keywords(text: &str) -> Vec<String> {
         .collect()
 }
 pub fn extract_search_keywords(text: &str) -> Vec<String> {
+    let stop_words = keyword_stop_words();
     normalize_text(text)
         .split_whitespace()
-        .filter(|word| word.len() > 1)
+        .filter(|word| word.len() > 1 && !stop_words.contains(*word))
         .take(crate::clockwork::MAX_QUERY_TOKENS)
         .map(str::to_string)
         .collect()

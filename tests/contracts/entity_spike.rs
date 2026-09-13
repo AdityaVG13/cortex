@@ -38,6 +38,10 @@ fn aliases_resolve_to_one_entity_without_an_llm() {
         for _ in 0..2 {
             assert!(resolve(&cx, &runtime, "warp drive assembly").await.is_empty(), "queries must not create entities");
         }
+        let filler = ["the"; 40].join(" ");
+        let late = resolve(&cx, &runtime, &format!("{filler} payments")).await;
+        assert_eq!(late.len(), 1, "stop-word prefix must not consume the query token cap");
+        assert_eq!(late[0].1, "payments");
     });
 }
 

@@ -206,8 +206,11 @@ impl NeedFrame {
         let mut unresolved = Vec::new();
         for raw in explicit_needs
             .iter()
-            .take(crate::clockwork::MAX_QUERY_TOKENS)
+            .take(crate::clockwork::MAX_QUERY_TOKENS.saturating_mul(4))
         {
+            if needs.len() >= crate::clockwork::MAX_QUERY_TOKENS {
+                break;
+            }
             match Need::parse(raw) {
                 Some(need) => {
                     if !needs.contains(&need) {
