@@ -225,10 +225,17 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
                 _ => {}
             }
         }
-        let decisions = crate::handlers::recall::explicit_paths_by_target(conn, "decision", &decision_ids)
-            .unwrap_or_default();
-        let memories = crate::handlers::recall::explicit_paths_by_target(conn, "memory", &memory_ids)
-            .unwrap_or_default();
+        // Read law treats missing paths as unscoped (visible). A failed
+        // lookup is not "no paths": it would admit every foreign project
+        // into a path-scoped boot, the same leak store already fail-closes.
+        let Ok(decisions) = crate::handlers::recall::explicit_paths_by_target(conn, "decision", &decision_ids) else {
+            truth_candidates.clear();
+            return;
+        };
+        let Ok(memories) = crate::handlers::recall::explicit_paths_by_target(conn, "memory", &memory_ids) else {
+            truth_candidates.clear();
+            return;
+        };
         truth_candidates.retain(|candidate| {
             let map = match candidate.source_kind {
                 "decision" => &decisions,

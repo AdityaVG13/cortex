@@ -620,7 +620,7 @@ fn collect_history_arm(
             contradiction: false,
         };
         row.witness(WitnessDomain::History, as_of.clone().unwrap_or_else(|| "recent".into()), if as_of.is_some() { 2 } else { 1 });
-        row.use_score = feedback_use_score(conn, &row.source);
+        row.use_score = feedback_use_score(conn, &row.source)?;
         upsert(out, row);
     }
     Ok(())
@@ -897,6 +897,7 @@ struct LoadedRow {
 fn loaded_candidate(
     conn: &Connection, row: &LoadedRow, hops: u8, write: u8, truth: u8, task: u8, history: u8, hard_anchor: bool, strong_lexical: bool, specificity: u8,
 ) -> Result<ScoredCandidate, String> {
+    let use_score = feedback_use_score(conn, &row.source)?;
     Ok(ScoredCandidate {
         target_type: row.target_type.clone(),
         target_id: row.target_id,
@@ -914,7 +915,7 @@ fn loaded_candidate(
         strong_lexical,
         specificity,
         fts_rank: (write as i64) * 100,
-        use_score: feedback_use_score(conn, &row.source),
+        use_score,
         anchors: Vec::new(),
         links: Vec::new(),
         arms: Vec::new(),
@@ -977,6 +978,7 @@ fn load_target(conn: &Connection, target_type: &str, target_id: i64, ctx: &Recal
     if !is_visible(owner_id, visibility.as_deref(), ctx) {
         return Ok(None);
     }
+    let use_score = feedback_use_score(conn, &source)?;
     Ok(Some(ScoredCandidate {
         target_type: target_type.to_string(),
         target_id,
@@ -994,7 +996,7 @@ fn load_target(conn: &Connection, target_type: &str, target_id: i64, ctx: &Recal
         strong_lexical: false,
         specificity: 0,
         fts_rank: 0,
-        use_score: feedback_use_score(conn, &source),
+        use_score,
         anchors: Vec::new(),
         links: Vec::new(),
         arms: Vec::new(),
@@ -1209,7 +1211,7 @@ fn canonical_entity_name(conn: &Connection, entity_id: i64) -> Option<String> {
         .flatten()
 }
 
-fn feedback_use_score(conn: &Connection, source: &str) -> i64 {
+fn feedback_use_score(conn: &Connection, source: &str) -> Result<i64, String> {
     let pos: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(CASE WHEN signal > 0 THEN signal ELSE 0 END), 0),
@@ -1219,11 +1221,10 @@ fn feedback_use_score(conn: &Connection, source: &str) -> i64 {
             |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
         )
         .optional()
-        .ok()
-        .flatten()
+        .map_err(|e| e.to_string())?
         .map(|(p, n)| p - (2.0 * n))
         .unwrap_or(0.0);
-    pos.round() as i64
+    Ok(pos.round() as i64)
 }
 
 fn pack_budget(items: Vec<RecallItem>, token_budget: usize, query_text: &str) -> Vec<RecallItem> {
