@@ -4,15 +4,16 @@ import {
   DAEMON_STOP_WAIT_TIMEOUT_MS, EMPTY_DAEMON, } from "../constants.js";
 import { persistBrowserAuthToken } from "../browser-bootstrap.js";
 import { formatDaemonEndpoint } from "../utils/format.js";
-import { isDaemonOfflineErrorMessage, isDaemonOfflineState, isReachableHealthPayload } from "../utils/daemon.js";
+import { isDaemonCommandResult, isDaemonOfflineErrorMessage, isDaemonOfflineState, isReachableHealthPayload } from "../utils/daemon.js";
 function useDaemonConnection(ctx) { const { cortexBase, setFeedbackMessage, invokeRef, tokenRef, runRefreshAll, readAuthToken,
       api, call, setDaemonState, daemonTransitionRef, resetStartupRetryState, clearDisconnectedData, scheduleStartupRecoveryRetry, } = ctx,
     waitForDaemonReachable = useCallback( async (options = {}) => { const shortCircuitIfStarting = options?.shortCircuitIfStarting === !0, started = Date.now();
-        for (; Date.now() - started < DAEMON_START_WAIT_TIMEOUT_MS;) { try { if (invokeRef.current) { const state = {
-                ...EMPTY_DAEMON, ...(await call("daemon_status")), };
-              if ((setDaemonState(state), state?.reachable)) return !0;
-              if ( shortCircuitIfStarting && state?.running && !state?.reachable && Date.now() - started >= DAEMON_START_STILL_STARTING_GRACE_MS )
-                return !1;
+        for (; Date.now() - started < DAEMON_START_WAIT_TIMEOUT_MS;) { try { if (invokeRef.current) { const raw = await call("daemon_status");
+              if (isDaemonCommandResult(raw)) { const state = { ...EMPTY_DAEMON, ...raw };
+                if ((setDaemonState(state), state?.reachable)) return !0;
+                if ( shortCircuitIfStarting && state?.running && !state?.reachable && Date.now() - started >= DAEMON_START_STILL_STARTING_GRACE_MS )
+                  return !1;
+              }
             } else { const health = await api("/health");
               if (isReachableHealthPayload(health)) return !0;
             }
@@ -20,8 +21,10 @@ function useDaemonConnection(ctx) { const { cortexBase, setFeedbackMessage, invo
           await new Promise((resolve) => setTimeout(resolve, DAEMON_START_POLL_INTERVAL_MS));
         }
         return !1; }, [api, call], ), waitForDaemonOffline = useCallback(async () => { const started = Date.now();
-      for (; Date.now() - started < DAEMON_STOP_WAIT_TIMEOUT_MS;) { try { if (invokeRef.current) { const state = await call("daemon_status");
-            if ((setDaemonState(state), isDaemonOfflineState(state))) return !0;
+      for (; Date.now() - started < DAEMON_STOP_WAIT_TIMEOUT_MS;) { try { if (invokeRef.current) { const raw = await call("daemon_status");
+            if (isDaemonCommandResult(raw)) { const state = { ...EMPTY_DAEMON, ...raw };
+              if ((setDaemonState(state), isDaemonOfflineState(state))) return !0;
+            }
           } else await api("/health");
         } catch (error) { if (isDaemonOfflineErrorMessage(error?.message || error)) return !0;
         }

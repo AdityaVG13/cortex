@@ -1,4 +1,5 @@
 import { CURRENCY_OPTIONS } from "../../constants.js";
+import { DEFAULT_CORTEX_PORT, FEED_KIND_LABEL } from "../constants.js";
 function formatDaemonEndpoint(cortexBase) { try { const url = new URL(cortexBase), port = url.port || (url.protocol === "https:" ? "443" : "80");
     return `${url.hostname}:${port}`;
   } catch { return `127.0.0.1:${DEFAULT_CORTEX_PORT}`;

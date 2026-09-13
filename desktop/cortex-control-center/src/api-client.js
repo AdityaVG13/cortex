@@ -15,6 +15,8 @@ const normalizedPath=String(path||"").trim(),route=normalizedPath.startsWith("/"
 const parsed=JSON.parse(bodyText);if(parsed&&typeof parsed.error=="string"&&parsed.error.trim())return`${path}: HTTP ${status} (${parsed.error.trim()})`
 ;if(parsed&&typeof parsed.message=="string"&&parsed.message.trim())return`${path}: HTTP ${status} (${parsed.message.trim()})`}catch{
 const trimmed=bodyText.trim().slice(0,200);if(trimmed)return`${path}: HTTP ${status} (${trimmed})`}return`${path}: HTTP ${status}`}
+function parseDaemonJson(path,bodyText){if(typeof bodyText!="string"||!bodyText.trim())throw new Error(`${path}: empty daemon payload`);try{return JSON.parse(bodyText)}catch{throw new Error(`${path}: invalid JSON payload`)}}
+function requirePayloadArray(payload,key,path){if(!payload||typeof payload!="object"||Array.isArray(payload))throw new Error(`${path}: unexpected daemon payload`);const value=payload[key];if(!Array.isArray(value))throw new Error(`${path}: missing ${key} array`);return value}
 function resolveIpcTimeoutMs(path){const normalized=normalizePathForTimeoutRouting(path)
 ;return normalized==="/health"||normalized.startsWith("/health?")?12e3:normalized==="/sessions"||normalized==="/locks"||normalized.startsWith("/tasks")?15e3:normalized.startsWith("/feed")||normalized.startsWith("/messages")||normalized.startsWith("/activity")||normalized.startsWith("/conflicts")||normalized.startsWith("/permissions")?2e4:normalized.startsWith("/savings")?6e4:normalized.startsWith("/mcp-rpc")?3e4:normalized.startsWith("/recall")?2e4:8e3
 }function resolveIpcTransportTimeoutMs(path){return Math.max(500,resolveIpcTimeoutMs(path)-500)}function isIpcResponseEnvelope(value){
@@ -33,12 +35,12 @@ if(withAuth&&!token)throw new Error(`${path}: no auth token (Tauri IPC ${invoke?
 "X-Cortex-Request":"true"};withAuth&&(headers.Authorization=`Bearer ${token}`);const response=await fetch(buildHttpFallbackUrl(cortexBase,path),{headers:headers
 });if(isAuthStatus(response.status)&&withAuth&&!_retried&&await refreshTokenIfChanged(onTokenRefresh,getToken,token))return api(path,withAuth,!0)
 ;if(!response.ok){const bodyText=await response.text().catch(()=>"");throw new Error(formatHttpError(path,response.status,bodyText))}
-return await response.json()};if(invoke)try{
+const okBody=await response.text().catch(()=>"");return parseDaemonJson(path,okBody)};if(invoke)try{
 const timeoutMs=resolveIpcTimeoutMs(path),transportTimeoutMs=resolveIpcTransportTimeoutMs(path),response=await withTimeout(invoke("fetch_cortex",{path:path,
 authToken:withAuth?token:"",timeoutMs:transportTimeoutMs}),timeoutMs,`${path}: IPC request`)
 ;if(!isIpcResponseEnvelope(response))throw new Error(`${path}: invalid IPC response`)
 ;if(isAuthStatus(response.status)&&withAuth&&!_retried&&await refreshTokenIfChanged(onTokenRefresh,getToken,token))return api(path,withAuth,!0)
-;if(response.status<200||response.status>=300)throw new Error(formatHttpError(path,response.status,response.body));return JSON.parse(response.body)
+;if(response.status<200||response.status>=300)throw new Error(formatHttpError(path,response.status,response.body));return parseDaemonJson(path,response.body)
 }catch(ipcError){if(!shouldFallbackToHttp(ipcError))throw ipcError;try{return await requestViaHttp()}catch(httpError){
 throw buildFallbackFailure(ipcError,httpError)}}return requestViaHttp()}}
 function createPostApi({getInvoke:getInvoke,getToken:getToken,cortexBase:cortexBase,onTokenRefresh:onTokenRefresh}){
@@ -47,12 +49,12 @@ if(await refreshTokenIfChanged(onTokenRefresh,getToken,token))return postApi(pat
 if(!token)throw new Error(`POST ${path}: no auth token`);const requestViaHttp=async()=>{const response=await fetch(buildHttpFallbackUrl(cortexBase,path),{
 method:"POST",headers:{"Content-Type":"application/json","X-Cortex-Request":"true",Authorization:`Bearer ${token}`},body:JSON.stringify(body)})
 ;if(isAuthStatus(response.status)&&!_retried&&await refreshTokenIfChanged(onTokenRefresh,getToken,token))return postApi(path,body,!0);if(!response.ok){
-const bodyText=await response.text().catch(()=>"");throw new Error(formatHttpError(`POST ${path}`,response.status,bodyText))}return await response.json()}
+const bodyText=await response.text().catch(()=>"");throw new Error(formatHttpError(`POST ${path}`,response.status,bodyText))}const okBody=await response.text().catch(()=>"");return parseDaemonJson(`POST ${path}`,okBody)}
 ;if(invoke)try{const timeoutMs=resolveIpcTimeoutMs(path),transportTimeoutMs=resolveIpcTransportTimeoutMs(path),response=await withTimeout(invoke("post_cortex",{
 path:path,authToken:token,body:JSON.stringify(body),timeoutMs:transportTimeoutMs}),timeoutMs,`POST ${path}: IPC request`)
 ;if(!isIpcResponseEnvelope(response))throw new Error(`POST ${path}: invalid IPC response`)
 ;if(isAuthStatus(response.status)&&!_retried&&await refreshTokenIfChanged(onTokenRefresh,getToken,token))return postApi(path,body,!0)
-;if(response.status<200||response.status>=300)throw new Error(formatHttpError(`POST ${path}`,response.status,response.body));return JSON.parse(response.body)
+;if(response.status<200||response.status>=300)throw new Error(formatHttpError(`POST ${path}`,response.status,response.body));return parseDaemonJson(`POST ${path}`,response.body)
 }catch(ipcError){if(!shouldFallbackToHttp(ipcError))throw ipcError;try{return await requestViaHttp()}catch(httpError){
 throw buildFallbackFailure(ipcError,httpError)}}return requestViaHttp()}}const PANEL_LABELS={"/sessions":"Sessions","/locks":"Locks","/tasks":"Tasks",
 "/feed":"Feed","/messages":"Messages","/activity":"Activity","/savings":"Savings","/conflicts":"Conflicts","/permissions":"Permissions"}
@@ -64,8 +66,8 @@ const unique=[...new Set((errors||[]).filter(Boolean))];if(!unique.length)return
 ;if(authFailures.length!==unique.length)return unique.join("; ");const panels=authFailures.map(panelLabelFromError).filter(Boolean)
 ;return panels.length?`${panels.join(", ")} could not authenticate. Refresh the token or restart the daemon from Control Center.`:"Protected Cortex panels could not authenticate. Refresh the token or restart the daemon from Control Center."
 }async function settledWithRethrow(tasks){const results=await Promise.allSettled(tasks.map(t=>t.fn()));results.forEach((r,i)=>{
-tasks[i].apply(r.status==="fulfilled"?r.value:null)});const failed=results.filter(r=>r.status==="rejected");if(failed.length){
+r.status==="fulfilled"&&tasks[i].apply(r.value)});const failed=results.filter(r=>r.status==="rejected");if(failed.length){
 const reasons=failed.map(f=>errorMessage(f.reason));throw new Error(reasons.join("; "))}}async function settledCollectErrors(fns){
 const failures=(await Promise.allSettled(fns.map(fn=>fn()))).filter(r=>r.status==="rejected");if(!failures.length)return[]
 ;const reasons=failures.map(f=>errorMessage(f.reason));return[...new Set(reasons)]}
-export{createApi,createPostApi,isAuthFailure,settledCollectErrors,settledWithRethrow,summarizeDashboardErrors};
+export{createApi,createPostApi,isAuthFailure,parseDaemonJson,requirePayloadArray,settledCollectErrors,settledWithRethrow,summarizeDashboardErrors};

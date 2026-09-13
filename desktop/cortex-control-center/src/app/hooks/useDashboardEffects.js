@@ -26,8 +26,8 @@ const {
   setBusyActionKey:setBusyActionKey,refreshCoreData:refreshCoreData
 }=ctx
 ;useEffect(()=>{localStorage.setItem(CORTEX_BASE_STORAGE_KEY,cortexBase),refreshAllRef.current()},[cortexBase]),useEffect(()=>{
-isTauriRuntime&&(cortexBase!==DEFAULT_CORTEX_BASE&&setCortexBase(DEFAULT_CORTEX_BASE),tokenRef.current&&(tokenRef.current="",persistBrowserAuthToken("")))
-},[cortexBase,isTauriRuntime]),useEffect(()=>{localStorage.setItem("cortex_currency",safeCurrency)},[safeCurrency]),useEffect(()=>{
+if(!isTauriRuntime)return;cortexBase!==DEFAULT_CORTEX_BASE&&setCortexBase(DEFAULT_CORTEX_BASE)
+},[cortexBase,isTauriRuntime]),useEffect(()=>{if(!isTauriRuntime)return;tokenRef.current="",persistBrowserAuthToken("")},[isTauriRuntime]),useEffect(()=>{localStorage.setItem("cortex_currency",safeCurrency)},[safeCurrency]),useEffect(()=>{
 budgetDraftDirty||setBudgetDraft(createBudgetDraftFromStatus(activeBudgetStatus))},[activeBudgetStatus,budgetDraftDirty]),useEffect(()=>{
 if(panel!=="settings"||!ipcAvailable||budgetConfigStatus||budgetConfigBusy||budgetConfigLoadAttemptedRef.current)return
 ;const budgetReloadTimer=window.setTimeout(()=>{reloadBudgetConfigDraft({silent:!0})},effectiveReducedMotion?0:MOTION_MS.panel);return()=>{
@@ -113,23 +113,23 @@ const message=error?.message||String(error)
 ;!message||isDaemonSuppressibleErrorMessage(message)||setFeedbackMessage(summarizeDashboardErrors([message])||message)
 },[]),handleTaskClaim=useCallback(async task=>{const operator=selectedOperatorName;if(!operator){setFeedbackMessage("Select an operator before claiming tasks.")
 ;return}setBusyActionKey(`claim:${task.taskId}`);try{await postApi("/tasks/claim",{taskId:task.taskId,agent:operator}),
-setFeedbackMessage(`Claimed ${task.title}.`),await refreshCoreData()}catch(error){reportSurfaceError(error)}finally{setBusyActionKey("")}
-},[postApi,refreshCoreData,reportSurfaceError,selectedOperatorName]),handleTaskAbandon=useCallback(async task=>{const operator=selectedOperatorName
+setFeedbackMessage(`Claimed ${task.title}.`),await Promise.all([refreshCoreData(),refreshFeed()])}catch(error){reportSurfaceError(error)}finally{setBusyActionKey("")}
+},[postApi,refreshCoreData,refreshFeed,reportSurfaceError,selectedOperatorName]),handleTaskAbandon=useCallback(async task=>{const operator=selectedOperatorName
 ;if(!operator){setFeedbackMessage("Select an operator before abandoning tasks.");return}setBusyActionKey(`abandon:${task.taskId}`);try{
 await postApi("/tasks/abandon",{taskId:task.taskId,agent:operator}),setFeedbackMessage(`Returned ${task.title} to pending.`),setCompletionTaskId(""),
-await refreshCoreData()}catch(error){reportSurfaceError(error)}finally{setBusyActionKey("")}
-},[postApi,refreshCoreData,reportSurfaceError,selectedOperatorName]),handleTaskComplete=useCallback(async(task,summary)=>{const operator=selectedOperatorName
+await Promise.all([refreshCoreData(),refreshFeed()])}catch(error){reportSurfaceError(error)}finally{setBusyActionKey("")}
+},[postApi,refreshCoreData,refreshFeed,reportSurfaceError,selectedOperatorName]),handleTaskComplete=useCallback(async(task,summary)=>{const operator=selectedOperatorName
 ;if(!operator){setFeedbackMessage("Select an operator before completing tasks.");return}setBusyActionKey(`complete:${task.taskId}`);try{
 await postApi("/tasks/complete",{taskId:task.taskId,agent:operator,summary:summary.trim()||void 0}),setFeedbackMessage(`Completed ${task.title}.`),
 setCompletionTaskId(""),setTaskCompletionDrafts(current=>({...current,[task.taskId]:""})),await Promise.all([refreshCoreData(),refreshFeed()])}catch(error){
 reportSurfaceError(error)}finally{setBusyActionKey("")}
 },[postApi,refreshCoreData,refreshFeed,reportSurfaceError,selectedOperatorName]),handleTaskDelete=useCallback(async task=>{
 setBusyActionKey(`delete:${task.taskId}`);try{await postApi("/tasks/delete",{taskId:task.taskId}),setFeedbackMessage(`Deleted ${task.title}.`),
-await refreshCoreData()}catch(error){reportSurfaceError(error)}finally{setBusyActionKey("")}
-},[postApi,refreshCoreData,reportSurfaceError]),handleUnlock=useCallback(async lock=>{const operator=selectedOperatorName;if(!operator){
+await Promise.all([refreshCoreData(),refreshFeed()])}catch(error){reportSurfaceError(error)}finally{setBusyActionKey("")}
+},[postApi,refreshCoreData,refreshFeed,reportSurfaceError]),handleUnlock=useCallback(async lock=>{const operator=selectedOperatorName;if(!operator){
 setFeedbackMessage("Select an operator before unlocking files.");return}setBusyActionKey(`unlock:${lock.path}`);try{await postApi("/unlock",{path:lock.path,
-agent:operator}),setFeedbackMessage(`Unlocked ${lock.path}.`),await refreshCoreData()}catch(error){reportSurfaceError(error)}finally{setBusyActionKey("")}
-},[postApi,refreshCoreData,reportSurfaceError,selectedOperatorName]),handleSendMessage=useCallback(async event=>{event?.preventDefault()
+agent:operator}),setFeedbackMessage(`Unlocked ${lock.path}.`),await Promise.all([refreshCoreData(),refreshFeed()])}catch(error){reportSurfaceError(error)}finally{setBusyActionKey("")}
+},[postApi,refreshCoreData,refreshFeed,reportSurfaceError,selectedOperatorName]),handleSendMessage=useCallback(async event=>{event?.preventDefault()
 ;const operator=selectedOperatorName,recipient=messageTargetName,message=messageDraft.trim();if(!operator){
 setFeedbackMessage("Select an operator before sending messages.");return}if(!recipient){setFeedbackMessage("Choose a recipient before sending a message.")
 ;return}if(!message){setFeedbackMessage("Write a message before sending it.");return}setBusyActionKey("message:send");try{await postApi("/message",{

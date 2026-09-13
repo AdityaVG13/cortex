@@ -3,6 +3,8 @@ import {
   createApi,
   createPostApi,
   isAuthFailure,
+  parseDaemonJson,
+  requirePayloadArray,
   settledWithRethrow,
   settledCollectErrors,
   summarizeDashboardErrors,
@@ -189,7 +191,13 @@ describe("createApi - api()", () => {
   it("throws on IPC JSON parse failure", async () => {
     const invoke = vi.fn(() => Promise.resolve({ status: 200, body: "not json{{{" }));
     const api = createApi(makeDeps({ invoke, token: "tok" }));
-    await expect(api("/health")).rejects.toThrow();
+    await expect(api("/health")).rejects.toThrow("/health: invalid JSON payload");
+  });
+
+  it("throws on empty IPC JSON body instead of succeeding", async () => {
+    const invoke = vi.fn(() => Promise.resolve({ status: 200, body: "" }));
+    const api = createApi(makeDeps({ invoke, token: "tok" }));
+    await expect(api("/health")).rejects.toThrow("/health: empty daemon payload");
   });
 
   it("returns parsed JSON on IPC success", async () => {
@@ -506,6 +514,7 @@ describe("createPostApi - postApi()", () => {
         ok: true,
         status: 200,
         json: () => Promise.resolve({ ok: true }),
+        text: () => Promise.resolve('{"ok":true}'),
       });
 
     const postApi = createPostApi(
@@ -560,7 +569,7 @@ describe("settledWithRethrow", () => {
     expect(results).toEqual(["a", "b"]);
   });
 
-  it("applies partial results then re-throws on partial failure", async () => {
+  it("applies fulfilled results then re-throws without treating failures as empty success", async () => {
     const results = [];
     await expect(
       settledWithRethrow([
@@ -573,7 +582,7 @@ describe("settledWithRethrow", () => {
       ]),
     ).rejects.toThrow("/sessions: HTTP 403");
 
-    expect(results).toEqual(["ok", null, "also-ok"]);
+    expect(results).toEqual(["ok", "also-ok"]);
   });
 
   it("joins multiple failure reasons", async () => {
@@ -655,5 +664,29 @@ describe("isAuthFailure", () => {
 
   it("ignores unrelated errors", () => {
     expect(isAuthFailure("/health: HTTP 500")).toBe(false);
+  });
+});
+
+describe("parseDaemonJson", () => {
+  it("rejects empty and non-json daemon bodies", () => {
+    expect(() => parseDaemonJson("/health", "")).toThrow("/health: empty daemon payload");
+    expect(() => parseDaemonJson("/health", "   ")).toThrow("/health: empty daemon payload");
+    expect(() => parseDaemonJson("/health", "<html>nope</html>")).toThrow("/health: invalid JSON payload");
+  });
+
+  it("returns parsed objects for valid JSON", () => {
+    expect(parseDaemonJson("/health", '{"status":"ok"}')).toEqual({ status: "ok" });
+  });
+});
+
+describe("requirePayloadArray", () => {
+  it("returns the named array", () => {
+    expect(requirePayloadArray({ sessions: [{ id: 1 }] }, "sessions", "/sessions")).toEqual([{ id: 1 }]);
+  });
+
+  it("does not treat a missing collection as empty success", () => {
+    expect(() => requirePayloadArray({ error: "nope" }, "sessions", "/sessions")).toThrow("/sessions: missing sessions array");
+    expect(() => requirePayloadArray(null, "sessions", "/sessions")).toThrow("/sessions: unexpected daemon payload");
+    expect(() => requirePayloadArray([], "sessions", "/sessions")).toThrow("/sessions: unexpected daemon payload");
   });
 });

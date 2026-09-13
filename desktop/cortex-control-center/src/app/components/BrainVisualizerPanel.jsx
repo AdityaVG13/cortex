@@ -15,8 +15,8 @@ class BrainErrorBoundary extends Component { constructor(props) { (super(props),
       : this.props.children;
   }
 }
-function BrainVisualizerPanel() { const { brainPanelRef, panel, brainPanelMounted, api, cortexBase, tokenRef, effectiveReducedMotion } = useDashboard(),
-    authToken = tokenRef.current;
+function BrainVisualizerPanel() { const { brainPanelRef, panel, brainPanelMounted, api, cortexBase, tokenRef, daemonState, effectiveReducedMotion } = useDashboard(),
+    authToken = daemonState?.authTokenReady ? tokenRef.current || "" : "";
   return brainPanelMounted
     ? React.createElement( "section", { ref: brainPanelRef,
           className: `panel brain-panel ${panel === "brain" ? "active" : "panel-hidden"}`, "aria-hidden": panel === "brain" ? void 0 : !0,

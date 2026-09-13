@@ -10,7 +10,7 @@ import {
   isTransientDaemonFeedback,
   shouldContinueStartupRecovery,
 } from "../../../desktop/cortex-control-center/src/daemon-startup.js";
-import { isReachableHealthPayload, isReadyReadinessPayload, isDaemonOfflineState } from "../../../desktop/cortex-control-center/src/app/utils/daemon.js";
+import { isReachableHealthPayload, isReadyReadinessPayload, isDaemonOfflineState, daemonStateAfterStatusProbeFailure, isStartingHealthPayload, shouldOpenSseStream, shouldScheduleSseReconnect, isDaemonCommandResult } from "../../../desktop/cortex-control-center/src/app/utils/daemon.js";
 
 describe("buildFirstRunReadiness", () => {
   it("asks for a local start when the daemon is offline", () => {
@@ -250,8 +250,35 @@ describe("health and readiness payload classification", () => {
       stats: { memories: 0 },
     };
     expect(isReachableHealthPayload(startingHealth)).toBe(false);
+    expect(isStartingHealthPayload(startingHealth)).toBe(true);
     expect(isReachableHealthPayload({ status: "ok", ready: true, runtime: { version: "0.6.0" } })).toBe(true);
     expect(isReachableHealthPayload({ status: "degraded", stats: { memories: 1 } })).toBe(true);
+  });
+
+  it("keeps a starting daemon starting when status IPC fails closed", () => {
+    const previous = { running: true, reachable: false, managed: true, pid: 42, message: "still starting" };
+    const offline = { running: false, reachable: false, managed: false, authTokenReady: false, pid: null, message: "Cannot reach daemon" };
+    expect(daemonStateAfterStatusProbeFailure(previous, offline)).toMatchObject({
+      running: true,
+      reachable: false,
+      managed: true,
+      pid: 42,
+    });
+    expect(daemonStateAfterStatusProbeFailure({ running: false, reachable: false }, offline)).toEqual(offline);
+  });
+
+  it("opens SSE only when a token exists and the daemon is reachable", () => {
+    expect(shouldOpenSseStream({ token: "tok", reachable: true })).toBe(true);
+    expect(shouldOpenSseStream({ token: "tok", reachable: false })).toBe(false);
+    expect(shouldOpenSseStream({ token: "", reachable: true })).toBe(false);
+    expect(shouldScheduleSseReconnect({ token: "", reachable: true, reconnectAttempt: 0, maxAttempts: 8 })).toBe(true);
+    expect(shouldScheduleSseReconnect({ token: "tok", reachable: false, reconnectAttempt: 8, maxAttempts: 8 })).toBe(false);
+  });
+
+  it("rejects malformed daemon_status payloads instead of treating them as offline", () => {
+    expect(isDaemonCommandResult({ running: false, reachable: false })).toBe(true);
+    expect(isDaemonCommandResult("offline")).toBe(false);
+    expect(isDaemonCommandResult({ message: "nope" })).toBe(false);
   });
 
   it("does not treat ready:false as ready even when status is ok", () => {

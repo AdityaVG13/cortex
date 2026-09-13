@@ -15,8 +15,10 @@ function useDashboardHandlers(ctx) { const { panel, sidebarCollapsed, isNarrowVi
     dismissConnectionDialog, setMemorySearching, setMemoryResults, } = ctx;
   async function handleMemorySearch(e) { if ((e?.preventDefault(), !!memoryQuery.trim())) { setMemorySearching(!0);
       try { const peekResult = await api(`/peek?q=${encodeURIComponent(memoryQuery.trim())}&k=15`, !0);
-        setMemoryResults(peekResult?.matches || []);
-      } catch { setMemoryResults([]);
+        if (!peekResult || typeof peekResult != "object") throw new Error("/peek: unexpected daemon payload");
+        if (!Array.isArray(peekResult.matches)) throw new Error("/peek: missing matches array");
+        setMemoryResults(peekResult.matches);
+      } catch (err) { setFeedbackMessage(`Memory search failed: ${err?.message || err}`);
       }
       setMemorySearching(!1);
     }

@@ -60,9 +60,7 @@ function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", authToken =
         !reducedMotion && quality.idleFiring
           ? createIdleSimulator({ onFake: (slotId) => dispatcher.dispatchFake(slotId), getNodeIds: () => satellitesRef.current?.getAllIds() || [], })
           : null;
-      ((idleSimRef.current = idleSim), !reducedMotion && authToken && (firingClientRef.current = createFiringClient({
-            baseUrl: cortexBase, token: authToken, onEvent: (event) => { (idleSim?.noteRealEvent(), dispatcher.dispatch(event));
-            }, })));
+      ((idleSimRef.current = idleSim));
       const unregister = sceneHandle.registerTick((t, now) => { if (
           (reducedMotion || (tickCore(core, t, now), satellites.tick(t, now), beams.tick(now), cameraHandle.tick(now)), hover.tick(),
           now - lastStatsAtRef.current >= 1e3)
@@ -82,7 +80,13 @@ function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", authToken =
             (sceneHandle.scene.remove(coreRef.current), disposeCore(coreRef.current), (coreRef.current = null)), sceneHandle.dispose(),
           (sceneRef.current = null));
       };
-    }, [active, reducedMotion, quality]), useEffect(() => { sceneRef.current && sceneRef.current.resize(dimensions.width, dimensions.height);
+    }, [active, reducedMotion, quality]), useEffect(() => { if (!active || reducedMotion || !authToken || !dispatcherRef.current) return;
+      const dispatcher = dispatcherRef.current, idleSim = idleSimRef.current, client = createFiringClient({
+        baseUrl: cortexBase, token: authToken, onEvent: (event) => { (idleSim?.noteRealEvent(), dispatcher.dispatch(event));
+        }, });
+      return ((firingClientRef.current = client), () => { (client.disconnect(), firingClientRef.current === client && (firingClientRef.current = null));
+      });
+    }, [active, authToken, cortexBase, quality, reducedMotion]), useEffect(() => { sceneRef.current && sceneRef.current.resize(dimensions.width, dimensions.height);
     }, [dimensions.width, dimensions.height]), useEffect(() => { if (!active) return;
       let cancelled = !1;
       async function load() { if (typeof api == "function")

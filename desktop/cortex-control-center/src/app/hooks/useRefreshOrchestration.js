@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { createApi, createPostApi, settledCollectErrors, summarizeDashboardErrors } from "../../api-client.js";
+import { createApi, createPostApi, requirePayloadArray, settledCollectErrors, summarizeDashboardErrors } from "../../api-client.js";
 import { filterFeedEntries, normalizeTask } from "../../live-surface.js";
 import {
   createBudgetDraftFromStatus, serializeBudgetDraftForSave, validateBudgetDraft, } from "../../settings/settings-state.js";
@@ -10,7 +10,8 @@ import { formatDaemonEndpoint } from "../utils/format.js";
 import { isRouteMissingError, normalizeConflictPairsPayload } from "../normalize/conflicts.js";
 import { normalizePermissionPayload } from "../normalize/permissions.js";
 import {
-  isDaemonSuppressibleErrorMessage, isDaemonTimeoutErrorMessage, isReadyReadinessPayload, isReachableHealthPayload, } from "../utils/daemon.js";
+  daemonStateAfterStatusProbeFailure, isDaemonCommandResult, isDaemonSuppressibleErrorMessage, isDaemonTimeoutErrorMessage, isReadyReadinessPayload,
+  isReachableHealthPayload, isStartingHealthPayload, } from "../utils/daemon.js";
 function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, locks, savings,
       feedFilters, activitySince, permissionsEndpointAvailable, permissionDraft, setPermissionDraft, selectedEditorIds, cortexBase, setFeedbackMessage,
       budgetDraft, invokeRef, tokenRef, editorSetupTriggerRef, selectedOperatorName, closeEditorSetupWizard, daemonTransitionRef, browserHealthProbeRef,
@@ -22,9 +23,14 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
       lastSecondaryRefreshAtRef, startupSecondaryRefreshInFlightRef, daemonStateRef, setDaemonTimeoutStaleSummary,
       setSecondaryAvailabilityFeedback, startupCoreReadyRef, setStartupCoreReadyState, budgetConfigLoadAttemptedRef,
     } = ctx, refreshTokenForApi = useCallback(async () => {
-      if (!invokeRef.current) return ((tokenRef.current = readPersistedBrowserAuthToken()), tokenRef.current);
+      if (!invokeRef.current) { const persisted = readPersistedBrowserAuthToken();
+        return ((tokenRef.current = persisted), setDaemonState((current) => current.authTokenReady === !!persisted ? current : { ...current, authTokenReady: !!persisted, }), persisted);
+      }
       try { const token = await invokeRef.current("read_auth_token");
-        ((tokenRef.current = token || ""), persistBrowserAuthToken(tokenRef.current));
+        ((tokenRef.current = token || ""), persistBrowserAuthToken(tokenRef.current), setDaemonState((current) => {
+            const ready = !!tokenRef.current;
+            return current.authTokenReady === ready ? current : { ...current, authTokenReady: ready };
+          }));
       } catch {}
       return tokenRef.current;
     }, []), api = useCallback( createApi({ getInvoke: () => invokeRef.current,
@@ -35,17 +41,24 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
       if (!invokeRef.current) throw new Error("No Tauri IPC available");
       return invokeRef.current(command, args);
     }, []), readAuthToken = useCallback(
-      async ({ suppressFeedback = !1 } = {}) => { if (!invokeRef.current) return ((tokenRef.current = readPersistedBrowserAuthToken()), tokenRef.current);
+      async ({ suppressFeedback = !1 } = {}) => { if (!invokeRef.current) { const persisted = readPersistedBrowserAuthToken();
+          return ((tokenRef.current = persisted), setDaemonState((current) => current.authTokenReady === !!persisted ? current : { ...current, authTokenReady: !!persisted, }), persisted);
+        }
         if (invokeRef.current)
           try { const token = await call("read_auth_token");
-            return ((tokenRef.current = token || ""), persistBrowserAuthToken(tokenRef.current), tokenRef.current);
-          } catch (err) { ((tokenRef.current = ""), persistBrowserAuthToken(""));
+            return ((tokenRef.current = token || ""), persistBrowserAuthToken(tokenRef.current), setDaemonState((current) => {
+                const ready = !!tokenRef.current;
+                return current.authTokenReady === ready ? current : { ...current, authTokenReady: ready };
+              }), tokenRef.current);
+          } catch (err) { ((tokenRef.current = ""), persistBrowserAuthToken(""), setDaemonState((current) => current.authTokenReady ? { ...current, authTokenReady: !1 } : current));
             const message = err?.message || String(err);
             !suppressFeedback && (!daemonTransitionRef.current || !isDaemonSuppressibleErrorMessage(message)) &&
               setFeedbackMessage(`Auth token read failed: ${message}`);
           }
         return tokenRef.current; }, [call], ), refreshDaemonState = useCallback(async () => { if (invokeRef.current)
-        try { const state = { ...EMPTY_DAEMON, ...(await call("daemon_status")) };
+        try { const raw = await call("daemon_status");
+          if (!isDaemonCommandResult(raw)) throw new Error("daemon_status: unexpected IPC payload");
+          const state = { ...EMPTY_DAEMON, ...raw };
           return ((browserHealthProbeRef.current = null), setDaemonState(state), state);
         } catch {}
       let health;
@@ -55,10 +68,15 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
       if (isReachableHealthPayload(health)) { const nextState = { running: !0, reachable: !0,
           managed: !1, authTokenReady: !!tokenRef.current, pid: null, message: `Connected -- ${health.stats?.memories ?? 0} memories`, };
         return (setDaemonState(nextState), nextState);
-      } else { const nextState = { running: !1, reachable: !1,
-          managed: !1, authTokenReady: !1, pid: null, message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`, };
+      }
+      if (isStartingHealthPayload(health)) { const nextState = { running: !0, reachable: !1,
+          managed: !1, authTokenReady: !!tokenRef.current, pid: null, message: `Daemon is still starting on ${formatDaemonEndpoint(cortexBase)}.`, };
         return (setDaemonState(nextState), nextState);
       }
+      const offlineState = { running: !1, reachable: !1,
+        managed: !1, authTokenReady: !1, pid: null, message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`, },
+        nextState = daemonStateAfterStatusProbeFailure(daemonStateRef.current, offlineState);
+      return (setDaemonState(nextState), nextState);
     }, [api, call]), probeReadiness = useCallback(async () => { try { const readiness = await api("/readiness");
         return isReadyReadinessPayload(readiness);
       } catch { return !1;
@@ -77,9 +95,9 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
       const next = health.stats;
       return ( setStats({ memories: next.memories ?? 0, decisions: next.decisions ?? 0, events: next.events ?? 0, }), isReachableHealthPayload(health) );
     }, [api, probeReadiness]), refreshCoreData = useCallback( async (options = {}) => { const throwOnError = options?.throwOnError !== !1,
-          jobs = [ { fn: () => api("/sessions", !0), apply: (v) => setSessions(Array.isArray(v?.sessions) ? v.sessions : []),
-            }, { fn: () => api("/locks", !0), apply: (v) => setLocks(Array.isArray(v?.locks) ? v.locks : []),
-            }, { fn: () => api("/tasks?status=all", !0), apply: (v) => setTasks(Array.isArray(v?.tasks) ? v.tasks.map(normalizeTask) : []),
+          jobs = [ { fn: async () => requirePayloadArray(await api("/sessions", !0), "sessions", "/sessions"), apply: (v) => setSessions(v),
+            }, { fn: async () => requirePayloadArray(await api("/locks", !0), "locks", "/locks"), apply: (v) => setLocks(v),
+            }, { fn: async () => requirePayloadArray(await api("/tasks?status=all", !0), "tasks", "/tasks").map(normalizeTask), apply: (v) => setTasks(v),
             }, ], results = await Promise.allSettled(jobs.map((job) => job.fn())), errors = [];
         let successCount = 0;
         (results.forEach((result, index) => { if (result.status === "fulfilled") { (jobs[index].apply(result.value), (successCount += 1));
@@ -92,7 +110,7 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
         return summary; }, [api, clearTransientFeedback], ), refreshFeed = useCallback(async () => { const query = new URLSearchParams();
       (query.set("since", feedFilters.since), feedFilters.kind !== "all" && query.set("kind", feedFilters.kind), feedFilters.unread && selectedOperatorName &&
           (query.set("agent", selectedOperatorName), query.set("unread", "true")));
-      const feedResult = await api(`/feed?${query.toString()}`, !0), entries = Array.isArray(feedResult?.entries) ? [...feedResult.entries].reverse() : [];
+      const feedResult = await api(`/feed?${query.toString()}`, !0), entries = [...requirePayloadArray(feedResult, "entries", "/feed")].reverse();
       (setFeedEntries(filterFeedEntries(entries, feedFilters.agent)), clearTransientFeedback());
     }, [api, clearTransientFeedback, feedFilters, selectedOperatorName]), refreshMessages = useCallback(async () => { const operator = selectedOperatorName;
       if (!operator) { setMessageEntries([]);
@@ -100,16 +118,19 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
       }
       const query = new URLSearchParams();
       query.set("agent", operator);
-      const result = await api(`/messages?${query.toString()}`, !0), entries = Array.isArray(result?.messages) ? [...result.messages].reverse() : [];
+      const result = await api(`/messages?${query.toString()}`, !0), entries = [...requirePayloadArray(result, "messages", "/messages")].reverse();
       (setMessageEntries(entries), clearTransientFeedback());
     }, [api, clearTransientFeedback, selectedOperatorName]), refreshActivity = useCallback(async () => { const query = new URLSearchParams();
       query.set("since", activitySince);
-      const result = await api(`/activity?${query.toString()}`, !0), entries = Array.isArray(result?.activities) ? [...result.activities].reverse() : [];
+      const result = await api(`/activity?${query.toString()}`, !0), entries = [...requirePayloadArray(result, "activities", "/activity")].reverse();
       (setActivityEntries(entries), clearTransientFeedback());
     }, [activitySince, api, clearTransientFeedback]), refreshSavings = useCallback(async () => { const result = await api("/savings", !0);
-      (result && setSavings(result), clearTransientFeedback());
+      if (!result || typeof result != "object") throw new Error("/savings: unexpected daemon payload");
+      (setSavings(result), clearTransientFeedback());
     }, [api, clearTransientFeedback]), refreshConflicts = useCallback(async () => {
-      const result = await api("/conflicts", !0), normalizedPairs = normalizeConflictPairsPayload(result);
+      const result = await api("/conflicts", !0);
+      if (!result || typeof result != "object") throw new Error("/conflicts: unexpected daemon payload");
+      const normalizedPairs = normalizeConflictPairsPayload(result);
       (setConflictPairs(normalizedPairs), setResolveDrafts((current) => { if (!current || typeof current != "object") return {};
           const next = {}, validKeys = new Set(normalizedPairs.map((pair) => pair.key));
           for (const [key, value] of Object.entries(current)) validKeys.has(key) && (next[key] = value);
@@ -216,6 +237,7 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
         } }, [permissionsEndpointAvailable, postApi, refreshPermissions], ), openEditorSetupWizard = useCallback( async (event) => {
         ((editorSetupTriggerRef.current = event?.currentTarget || document.activeElement), setIsSettingUpEditors(!0));
         try { const result = await call("detect_editors");
+          if (!Array.isArray(result)) throw new Error("detect_editors: unexpected IPC payload");
           (setEditorDetections(result), setSelectedEditorIds(result.filter((entry) => entry.detected).map((entry) => entry.id)), setShowEditorSetupWizard(!0));
           const detected = result.filter((entry) => entry.detected).length;
           setFeedbackMessage( detected
@@ -231,6 +253,7 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
       }
       setIsSettingUpEditors(!0);
       try { const result = await call("setup_editors", { editorIds: selectedEditorIds, });
+        if (!Array.isArray(result)) throw new Error("setup_editors: unexpected IPC payload");
         (setEditorSetup(result), closeEditorSetupWizard());
         const detected = result.filter((entry) => entry.detected).length, registered = result.filter((entry) => entry.registered).length,
           failed = result.filter((entry) => entry.detected && !entry.registered).length;
