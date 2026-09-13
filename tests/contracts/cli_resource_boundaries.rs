@@ -13,19 +13,16 @@
 
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-fn unique_temp_home(prefix: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("cortex-clibnd-{prefix}-{nanos}"));
-    fs::create_dir_all(&dir).expect("create temp home");
-    dir
+#[path = "../support/mod.rs"]
+mod support;
+
+fn unique_temp_home(prefix: &str) -> std::path::PathBuf {
+    support::unique_temp_dir(prefix)
 }
 
 fn run_bin(args: &[&str], home: &Path) -> Output {

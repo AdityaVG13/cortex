@@ -8,11 +8,23 @@
 use cortex_kernel::{BootInput, CortexError, CortexRuntime, LensInput};
 
 fn listening_ports() -> Vec<u16> {
-    // Ports this process is listening on, via `lsof` when available; the
-    // assertion below tolerates an empty answer only on platforms without it.
+    // `lsof` exits 1 when this process has no listeners; parse stdout either way.
+    // A missing binary would make before==after vacuously empty and hide a bind.
     let pid = std::process::id().to_string();
-    let out = std::process::Command::new("lsof").args(["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-p", &pid]).output();
-    let Ok(out) = out else { return Vec::new() };
+    let out = match std::process::Command::new("lsof")
+        .args(["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-p", &pid])
+        .output()
+    {
+        Ok(out) => out,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if cfg!(unix) {
+                panic!("lsof is required to prove open() did not bind a listener: {err}");
+            } else {
+                return Vec::new();
+            }
+        }
+        Err(err) => panic!("lsof failed: {err}"),
+    };
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| l.rsplit(':').next().and_then(|tail| tail.split_whitespace().next()).and_then(|p| p.parse::<u16>().ok()))
@@ -32,7 +44,11 @@ fn kernel_opens_deposits_and_lenses_without_a_server_or_a_port() {
     let excerpts: Vec<&str> = view["results"].as_array().unwrap().iter().filter_map(|r| r["excerpt"].as_str()).collect();
     assert!(excerpts.iter().any(|e| e.contains("EMB-1")), "{view}");
     let boot = rt.boot(&cx, BootInput { agent: "outfit".into(), ..Default::default() }).await.expect("boot");
-    assert!(boot.boot_prompt.contains("EMB-1") || boot.token_estimate > 0, "boot compiles in-process: {}", boot.boot_prompt);
+    assert!(
+        boot.boot_prompt.contains("EMB-1"),
+        "boot must compile the deposited decision, not any positive token count: {}",
+        boot.boot_prompt
+    );
     // Typed errors at the library boundary, not strings.
     let err = rt.deposit(&cx, "req-embed-2", "x", "outfit", None).await.unwrap_err();
     assert!(matches!(err, CortexError::Rejected(_)), "{err:?}");
@@ -43,12 +59,23 @@ fn kernel_opens_deposits_and_lenses_without_a_server_or_a_port() {
     let again = other.lens(&cx, LensInput { query: "EMB-1".into(), agent: "other".into(), ..Default::default() }).await.unwrap();
     assert!(again.to_string().contains("EMB-1"));
     // The kernel's dependency graph carries no HTTP server.
-    let tree = std::process::Command::new("cargo").args(["tree", "-p", "cortex-kernel", "-e", "normal", "--prefix", "none"]).current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).output();
-    if let Ok(tree) = tree {
-        let text = String::from_utf8_lossy(&tree.stdout);
-        for banned in ["axum", "hyper", "tower-http", "tokio-rustls", "reqwest"] {
-            assert!(!text.lines().any(|l| l.starts_with(&format!("{banned} "))), "cortex-kernel must not depend on {banned}");
-        }
+    let tree = std::process::Command::new("cargo")
+        .args(["tree", "-p", "cortex-kernel", "-e", "normal", "--prefix", "none"])
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
+        .output()
+        .expect("cargo tree");
+    assert!(
+        tree.status.success(),
+        "cargo tree failed ({:?}); skipping would hide a banned dependency:\n{}",
+        tree.status.code(),
+        String::from_utf8_lossy(&tree.stderr)
+    );
+    let text = String::from_utf8_lossy(&tree.stdout);
+    for banned in ["axum", "hyper", "tower-http", "tokio-rustls", "reqwest"] {
+        assert!(
+            !text.lines().any(|l| l.starts_with(&format!("{banned} "))),
+            "cortex-kernel must not depend on {banned}"
+        );
     }
     });
 }

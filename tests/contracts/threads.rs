@@ -259,9 +259,18 @@ fn team_boot_capsules_are_owner_scoped() {
         [other],
     )
     .unwrap();
-    let home = std::env::temp_dir();
-    let mine =
-        cortex_kernel::compiler::compile_for_owner(&conn, &home, "agent-1", 4000, Some(owner), &[]);
+    let home = tempfile::Builder::new()
+        .prefix("cortex-threads-owner-")
+        .tempdir()
+        .expect("unique compile home");
+    let mine = cortex_kernel::compiler::compile_for_owner(
+        &conn,
+        home.path(),
+        "agent-1",
+        4000,
+        Some(owner),
+        &[],
+    );
     assert!(mine.boot_prompt.contains("mine"), "{}", mine.boot_prompt);
     assert!(
         !mine.boot_prompt.contains("SECRET-TASK"),
@@ -278,8 +287,14 @@ fn team_boot_capsules_are_owner_scoped() {
         "another owner's durable decision leaked: {}",
         mine.boot_prompt
     );
-    let theirs =
-        cortex_kernel::compiler::compile_for_owner(&conn, &home, "agent-1", 4000, Some(other), &[]);
+    let theirs = cortex_kernel::compiler::compile_for_owner(
+        &conn,
+        home.path(),
+        "agent-1",
+        4000,
+        Some(other),
+        &[],
+    );
     assert!(
         theirs.boot_prompt.contains("SECRET-TASK") && theirs.boot_prompt.contains("SECRET-MESSAGE"),
         "{}",

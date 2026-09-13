@@ -22,11 +22,33 @@ where
     runtime.block_on(test(cx))
 }
 
+fn finish_schema(conn: &mut Connection) {
+    db::run_pending_migrations(conn);
+    let pending = db::pending_migration_versions(conn).expect("read pending migrations");
+    assert!(
+        pending.is_empty(),
+        "test fixture must not hide pending migrations: {pending:?}"
+    );
+}
+
+/// Exclusive directory under the process temp root.
+///
+/// Clock- or pid-only names can collide under parallel tests and reuse a leftover
+/// SQLite/WAL from a previous run (`create_dir_all` on a dirty path). Callers
+/// that `remove_dir_all` still clean up; Drop of this PathBuf does not.
+pub fn unique_temp_dir(prefix: &str) -> PathBuf {
+    tempfile::Builder::new()
+        .prefix(&format!("cortex-{prefix}-"))
+        .tempdir()
+        .expect("unique temp dir")
+        .keep()
+}
+
 pub fn test_conn() -> Connection {
     let mut conn = Connection::open_in_memory().expect("open in-memory db");
     db::configure(&conn).expect("configure db");
     db::initialize_schema(&conn).expect("initialize schema");
-    db::run_pending_migrations(&mut conn);
+    finish_schema(&mut conn);
     conn
 }
 
@@ -34,7 +56,7 @@ pub fn open_file_db(path: &Path) -> Connection {
     let mut conn = Connection::open(path).expect("open sqlite");
     db::configure(&conn).expect("configure db");
     db::initialize_schema(&conn).expect("initialize schema");
-    db::run_pending_migrations(&mut conn);
+    finish_schema(&mut conn);
     conn
 }
 

@@ -132,11 +132,11 @@ fn f03_hidden_cutoff_is_never_labeled_no_match() {
             panic!("a tiny budget over a matching corpus produced no_match: {view}");
         }
         assert!(
-            status != "ok"
+            status == "needs_more_budget"
+                || status == "partial"
                 || omissions > 0
-                || unmet > 0
-                || view["cards"].as_array().map(|c| c.len()).unwrap_or(0) >= 1,
-            "cutoffs are reported as partial/omissions, never hidden: {view}"
+                || unmet > 0,
+            "a 300-token query over 40 notes must not claim unlabeled complete ok: {view}"
         );
     });
 }
@@ -261,8 +261,9 @@ fn f07_companion_falsifiers_are_named_and_point_at_existing_test_binaries() {
 }
 
 fn support_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("cortex-fals-{label}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    tempfile::Builder::new()
+        .prefix(&format!("cortex-fals-{label}-"))
+        .tempdir()
+        .expect("unique falsifier home")
+        .keep()
 }

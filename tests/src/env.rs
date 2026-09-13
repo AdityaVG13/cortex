@@ -42,11 +42,17 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
         return true;
     }
     let mut cmd = Command::new(std::env::current_exe().expect("test executable"));
-    cmd.args(["--exact", test, "--nocapture", "--test-threads=1"])
-        .env(CHILD, test)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args([
+        "--exact",
+        test,
+        "--nocapture",
+        "--test-threads=1",
+        "--color=never",
+    ])
+    .env(CHILD, test)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     for (key, value) in variables {
         match value {
             Some(value) => {
@@ -97,6 +103,14 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
     assert!(
         stdout.lines().any(|line| line.trim() == "running 1 test"),
         "isolated contract {test} did not run (a 0-test child would hide the contract):\n{stdout}\n{stderr}"
+    );
+    // `--exact` ignored would still print "running 1 test" when the binary has one test.
+    assert!(
+        stdout.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with(&format!("test {test} ")) || line.starts_with(&format!("test {test}..."))
+        }),
+        "isolated contract {test} ran a different test (wrong filter would hide the contract):\n{stdout}\n{stderr}"
     );
     false
 }

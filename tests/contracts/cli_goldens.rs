@@ -235,13 +235,13 @@ fn run_cortex(args: &[&str]) -> Output {
 }
 
 fn unused_test_home(name: &str) -> PathBuf {
-    // A per-process namespace prevents concurrent contract runs sharing fixtures.
-    let home = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("cli-goldens")
-        .join(std::process::id().to_string())
-        .join(name);
-    let _ = fs::remove_dir_all(&home);
+    // tempfile uniqueness, then remove: discovery must see a path that does not exist yet.
+    let home = tempfile::Builder::new()
+        .prefix(&format!("cli-goldens-{name}-"))
+        .tempdir()
+        .expect("unique unused home")
+        .keep();
+    fs::remove_dir_all(&home).expect("unused home must not exist yet");
     home
 }
 

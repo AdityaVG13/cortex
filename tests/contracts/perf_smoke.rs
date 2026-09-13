@@ -66,4 +66,10 @@ fn hotpath_bench_compare_matches_committed_baseline() {
          stdout:\n{stdout}\nstderr:\n{stderr}",
         output.status.code()
     );
+    assert!(
+        output.status.success(),
+        "hotpath_bench printed {verdict_line} then exited {:?}; a crash after the verdict would hide a defect\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status.code()
+    );
 }
