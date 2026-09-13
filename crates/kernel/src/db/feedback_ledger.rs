@@ -43,13 +43,15 @@ pub struct OutcomeFeedback {
 
 /// Exposed sources are read from the prior View receipt when the caller did
 /// not list them: exposure is what the View contained, not what was used.
-pub fn exposed_from_receipt(conn: &Connection, receipt_id: &str) -> Vec<String> {
-    conn.prepare("SELECT record_id FROM view_aliases WHERE receipt_id = ?1 ORDER BY alias")
-        .and_then(|mut s| {
-            s.query_map([receipt_id], |r| r.get::<_, String>(0))
-                .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default()
+pub fn exposed_from_receipt(conn: &Connection, receipt_id: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT record_id FROM view_aliases WHERE receipt_id = ?1 ORDER BY alias")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([receipt_id], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 pub fn record(conn: &Connection, fb: &OutcomeFeedback) -> Result<i64, String> {
@@ -60,6 +62,8 @@ pub fn record(conn: &Connection, fb: &OutcomeFeedback) -> Result<i64, String> {
         "failure" | "fail" | "error" => "failure",
         _ => return Err("outcome must be success|partial|failure".into()),
     };
+    let exposed_json = serde_json::to_string(&fb.exposed).map_err(|e| e.to_string())?;
+    let used_json = serde_json::to_string(&fb.used).map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO outcome_feedback (scope, task_family, task, prior_view_receipt, selected_action, outcome, exposed_json, used_json, harmful_reuse, wrong_scope, agent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
@@ -69,8 +73,8 @@ pub fn record(conn: &Connection, fb: &OutcomeFeedback) -> Result<i64, String> {
             fb.prior_view_receipt,
             fb.selected_action,
             outcome,
-            serde_json::to_string(&fb.exposed).unwrap_or_else(|_| "[]".into()),
-            serde_json::to_string(&fb.used).unwrap_or_else(|_| "[]".into()),
+            exposed_json,
+            used_json,
             fb.harmful_reuse as i64,
             fb.wrong_scope as i64,
             fb.agent

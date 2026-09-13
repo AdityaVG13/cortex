@@ -1,5 +1,6 @@
 use super::types::{ConfigMethod, DetectedTool, StepResult};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 pub(crate) fn step_configure(tools: &[DetectedTool], cortex_exe: &str) -> Vec<(&'static str, StepResult)> {
@@ -70,7 +71,7 @@ pub(crate) fn merge_mcp_config(config_path: &Path, cortex_exe: &str, agent_name:
             fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
         }
         let output = serde_json::to_string_pretty(&config).map_err(|e| format!("JSON serialize failed: {e}"))?;
-        fs::write(config_path, output).map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
+        write_config_atomic(config_path, &output)?;
     }
     Ok(format!("{action} at {}", config_path.display()))
 }
@@ -104,10 +105,61 @@ pub(crate) fn merge_toml_config(config_path: &Path, cortex_exe: &str, agent_name
             fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
         }
         let output = toml::to_string_pretty(&config).map_err(|e| format!("TOML serialize failed: {e}"))?;
-        fs::write(config_path, output).map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
+        write_config_atomic(config_path, &output)?;
     }
     Ok(format!("{action} at {}", config_path.display()))
 }
+
+/// Stage beside the destination then rename. In-place `fs::write` truncates
+/// the live inode first; a crash mid-write leaves a truncated Claude/Cursor
+/// MCP config that the host then fails to parse.
+fn write_config_atomic(path: &Path, contents: &str) -> Result<(), String> {
+    let parent = path.parent().ok_or_else(|| format!("Invalid config path: {}", path.display()))?;
+    fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config");
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    let write_tmp = (|| {
+        let mut file = File::create(&temp_path).map_err(|e| format!("Cannot write {}: {e}", temp_path.display()))?;
+        file.write_all(contents.as_bytes())
+            .map_err(|e| format!("Cannot write {}: {e}", temp_path.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("Cannot flush {}: {e}", temp_path.display()))?;
+        Ok::<(), String>(())
+    })();
+    if let Err(err) = write_tmp {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    #[cfg(windows)]
+    {
+        if path.exists() {
+            if let Err(e) = fs::remove_file(path) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(format!("Cannot replace {}: {e}", path.display()));
+            }
+        }
+    }
+    if let Err(err) = fs::rename(&temp_path, path) {
+        #[cfg(windows)]
+        {
+            if !path.exists() {
+                let _ = fs::rename(&temp_path, path);
+            } else {
+                let _ = fs::remove_file(&temp_path);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = fs::remove_file(&temp_path);
+        }
+        return Err(format!("Cannot write {}: {err}", path.display()));
+    }
+    Ok(())
+}
+
 fn mcp_stdio_args(agent_name: &str) -> Vec<String> {
     let paths = crate::auth::CortexPaths::resolve();
     let mut args = vec!["mcp".into(), "--agent".into(), agent_name.into(), "--home".into(), paths.home.to_string_lossy().into_owned()];

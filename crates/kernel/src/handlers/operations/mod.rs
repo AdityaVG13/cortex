@@ -659,7 +659,9 @@ pub async fn dispatch(
         Operation::Feedback => {
             let conn = state.db.lock(cx).await.map_err(|e| e.to_string())?;
             let owner = if state.team_mode {
-                caller.owner_id.unwrap_or_default()
+                caller
+                    .owner_id
+                    .ok_or_else(|| "Team mode requires a local owner".to_string())?
             } else {
                 0
             };
@@ -675,10 +677,10 @@ pub async fn dispatch(
             // use from the caller; they are never the same list.
             let receipt =
                 arg_str(args, &["receipt", "prior_view_receipt", "receipt_id"]).map(str::to_string);
-            let exposed = receipt
-                .as_deref()
-                .map(|r| crate::db::feedback_ledger::exposed_from_receipt(&conn, r))
-                .unwrap_or_default();
+            let exposed = match receipt.as_deref() {
+                Some(r) => crate::db::feedback_ledger::exposed_from_receipt(&conn, r)?,
+                None => Vec::new(),
+            };
             let used = arg_list(args, &["memorySources", "memory_sources", "used"]);
             let fb = crate::db::feedback_ledger::OutcomeFeedback {
                 scope: arg_str(args, &["scope"]).unwrap_or("default").to_string(),

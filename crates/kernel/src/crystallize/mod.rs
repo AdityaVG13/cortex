@@ -35,6 +35,7 @@ struct Candidate {
     text: String,
     score: f64,
     target_type: String,
+    recency: Option<f64>,
 }
 
 fn fold_jaccard_token(token: &str) -> String {
@@ -119,7 +120,7 @@ pub fn run_crystallize_pass_with_brain(
     brain: &BrainFiringSender,
 ) -> Result<CrystallizeResult, String> {
     cx.checkpoint().map_err(|e| e.to_string())?;
-    let candidates = scan_candidates(conn, owner_id);
+    let candidates = scan_candidates(conn, owner_id)?;
     if candidates.is_empty() {
         return Ok(CrystallizeResult {
             clusters_found: 0,
@@ -135,6 +136,10 @@ pub fn run_crystallize_pass_with_brain(
 
     let mut crystals_created = 0usize;
     let mut entries_consolidated = 0usize;
+    // One savepoint for the pass: a failed member INSERT must not leave a
+    // cluster whose stored member_count disagrees with cluster_members.
+    let sp = crate::db::SqliteSavepoint::enter(conn, "crystallize_pass")
+        .map_err(|e| e.to_string())?;
 
     for member_indices in &qualified {
         let member_candidates: Vec<&Candidate> =
@@ -151,29 +156,26 @@ pub fn run_crystallize_pass_with_brain(
         let centroid_blob = Vec::<u8>::new();
 
         let member_count = member_indices.len() as i64;
-        let insert = conn.execute(
+        conn.execute(
             "INSERT INTO memory_clusters (label, centroid, consolidated_text, member_count, owner_id, visibility) VALUES (?1, ?2, ?3, ?4, ?5, 'private')",
             params![label, centroid_blob, consolidated_text, member_count, owner_id],
-        );
-        if insert.is_ok() {
-            let cluster_id = conn.last_insert_rowid();
-            let mut inserted = 0usize;
-            for &idx in member_indices {
-                let cand = &candidates[idx];
-                if conn
-                    .execute(
-                        "INSERT INTO cluster_members (cluster_id, source, target_type, target_id) VALUES (?1, ?2, ?3, ?4)",
-                        params![cluster_id, cand.text, cand.target_type, cand.id],
-                    )
-                    .is_ok()
-                {
-                    inserted += 1;
-                }
-            }
-            crystals_created += 1;
-            entries_consolidated += inserted;
+        )
+        .map_err(|e| e.to_string())?;
+        let cluster_id = conn.last_insert_rowid();
+        let mut inserted = 0usize;
+        for &idx in member_indices {
+            let cand = &candidates[idx];
+            conn.execute(
+                "INSERT INTO cluster_members (cluster_id, source, target_type, target_id) VALUES (?1, ?2, ?3, ?4)",
+                params![cluster_id, cand.text, cand.target_type, cand.id],
+            )
+            .map_err(|e| e.to_string())?;
+            inserted += 1;
         }
+        crystals_created += 1;
+        entries_consolidated += inserted;
     }
+    sp.release().map_err(|e| e.to_string())?;
 
     let result = CrystallizeResult {
         clusters_found: crystals_created,
@@ -208,99 +210,94 @@ pub fn run_crystallize_pass_with_brain(
     Ok(result)
 }
 
-fn scan_candidates(conn: &Connection, owner_id: Option<i64>) -> Vec<Candidate> {
-    let mut out: Vec<Candidate> = Vec::new();
+const CANDIDATE_SELECT_TAIL: &str = "julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), '')))";
 
-    let mem_sql = if owner_id.is_some() {
-        format!("SELECT id, text, COALESCE(source,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') AND (owner_id = ?1 OR owner_id IS NULL) ORDER BY {CANDIDATE_RECENCY} LIMIT ?2")
-    } else {
-        format!("SELECT id, text, COALESCE(source,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') ORDER BY {CANDIDATE_RECENCY} LIMIT ?2")
-    };
-    let mut stmt = match conn.prepare(&mem_sql) {
-        Ok(s) => s,
-        Err(_) => return out,
-    };
-    let rows = if owner_id.is_some() {
-        stmt.query_map(params![owner_id, MAX_SCAN_ROWS], |row| {
-            Ok(Candidate {
-                id: row.get(0)?,
-                text: row.get(1)?,
-                score: row.get(3)?,
-                target_type: "memory".to_string(),
-            })
-        })
-    } else {
-        return scan_candidates_no_owner(conn);
-    };
-    if let Ok(mapped) = rows {
-        for r in mapped.flatten() {
-            out.push(r);
-        }
-    }
-    let dec_sql = if owner_id.is_some() {
-        format!("SELECT id, decision, COALESCE(context,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') AND (owner_id = ?1 OR owner_id IS NULL) ORDER BY {CANDIDATE_RECENCY} LIMIT ?2")
-    } else {
-        format!("SELECT id, decision, COALESCE(context,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') ORDER BY {CANDIDATE_RECENCY} LIMIT ?2")
-    };
-    if owner_id.is_some() {
-        if let Ok(mut dstmt) = conn.prepare(&dec_sql) {
-            if let Ok(mapped) = dstmt.query_map(params![owner_id, MAX_SCAN_ROWS], |row| {
-                Ok(Candidate {
-                    id: row.get(0)?,
-                    text: row.get(1)?,
-                    score: row.get(3)?,
-                    target_type: "decision".to_string(),
-                })
-            }) {
-                for r in mapped.flatten() {
-                    out.push(r);
-                }
-            }
-        }
-    }
-
-    out
+fn candidate_from_row(row: &rusqlite::Row<'_>, target_type: &str) -> rusqlite::Result<Candidate> {
+    Ok(Candidate {
+        id: row.get(0)?,
+        text: row.get(1)?,
+        score: row.get(3)?,
+        target_type: target_type.to_string(),
+        recency: row.get(4)?,
+    })
 }
 
-fn scan_candidates_no_owner(conn: &Connection) -> Vec<Candidate> {
+fn cap_candidates_by_recency(out: &mut Vec<Candidate>) {
+    if out.len() as i64 <= MAX_SCAN_ROWS {
+        return;
+    }
+    out.sort_by(|a, b| {
+        b.recency
+            .unwrap_or(f64::NEG_INFINITY)
+            .total_cmp(&a.recency.unwrap_or(f64::NEG_INFINITY))
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    out.truncate(MAX_SCAN_ROWS as usize);
+}
+
+fn scan_candidates(conn: &Connection, owner_id: Option<i64>) -> Result<Vec<Candidate>, String> {
+    if owner_id.is_none() {
+        return scan_candidates_no_owner(conn);
+    }
     let mut out: Vec<Candidate> = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
-        &format!("SELECT id, text, COALESCE(source,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') ORDER BY {CANDIDATE_RECENCY} LIMIT ?1"),
-    ) {
-        if let Ok(mapped) = stmt.query_map(params![MAX_SCAN_ROWS], |row| {
-            Ok(Candidate {
-                id: row.get(0)?,
-                text: row.get(1)?,
-                score: row.get(3)?,
-                target_type: "memory".to_string(),
-            })
-        }) {
-            for r in mapped.flatten() {
-                out.push(r);
-            }
-        }
+    let mem_sql = format!(
+        "SELECT id, text, COALESCE(source,''), COALESCE(score,1.0), {CANDIDATE_SELECT_TAIL} FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') AND (owner_id = ?1 OR owner_id IS NULL) ORDER BY {CANDIDATE_RECENCY} LIMIT ?2"
+    );
+    let mut stmt = conn.prepare(&mem_sql).map_err(|e| e.to_string())?;
+    let mapped = stmt
+        .query_map(params![owner_id, MAX_SCAN_ROWS], |row| {
+            candidate_from_row(row, "memory")
+        })
+        .map_err(|e| e.to_string())?;
+    for r in mapped {
+        out.push(r.map_err(|e| e.to_string())?);
     }
-    if let Ok(mut stmt) = conn.prepare(
-        &format!("SELECT id, decision, COALESCE(context,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') ORDER BY {CANDIDATE_RECENCY} LIMIT ?1"),
-    ) {
-        if let Ok(mapped) = stmt.query_map(params![MAX_SCAN_ROWS], |row| {
-            Ok(Candidate {
-                id: row.get(0)?,
-                text: row.get(1)?,
-                score: row.get(3)?,
-                target_type: "decision".to_string(),
-            })
-        }) {
-            for r in mapped.flatten() {
-                out.push(r);
-            }
-        }
+    drop(stmt);
+    let dec_sql = format!(
+        "SELECT id, decision, COALESCE(context,''), COALESCE(score,1.0), {CANDIDATE_SELECT_TAIL} FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') AND (owner_id = ?1 OR owner_id IS NULL) ORDER BY {CANDIDATE_RECENCY} LIMIT ?2"
+    );
+    let mut dstmt = conn.prepare(&dec_sql).map_err(|e| e.to_string())?;
+    let mapped = dstmt
+        .query_map(params![owner_id, MAX_SCAN_ROWS], |row| {
+            candidate_from_row(row, "decision")
+        })
+        .map_err(|e| e.to_string())?;
+    for r in mapped {
+        out.push(r.map_err(|e| e.to_string())?);
     }
-    if out.len() as i64 > MAX_SCAN_ROWS {
-        out.sort_by(|a, b| b.id.cmp(&a.id));
-        out.truncate(MAX_SCAN_ROWS as usize);
+    cap_candidates_by_recency(&mut out);
+    Ok(out)
+}
+
+fn scan_candidates_no_owner(conn: &Connection) -> Result<Vec<Candidate>, String> {
+    let mut out: Vec<Candidate> = Vec::new();
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT id, text, COALESCE(source,''), COALESCE(score,1.0), {CANDIDATE_SELECT_TAIL} FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') ORDER BY {CANDIDATE_RECENCY} LIMIT ?1"
+        ))
+        .map_err(|e| e.to_string())?;
+    let mapped = stmt
+        .query_map(params![MAX_SCAN_ROWS], |row| candidate_from_row(row, "memory"))
+        .map_err(|e| e.to_string())?;
+    for r in mapped {
+        out.push(r.map_err(|e| e.to_string())?);
     }
-    out
+    drop(stmt);
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT id, decision, COALESCE(context,''), COALESCE(score,1.0), {CANDIDATE_SELECT_TAIL} FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') ORDER BY {CANDIDATE_RECENCY} LIMIT ?1"
+        ))
+        .map_err(|e| e.to_string())?;
+    let mapped = stmt
+        .query_map(params![MAX_SCAN_ROWS], |row| {
+            candidate_from_row(row, "decision")
+        })
+        .map_err(|e| e.to_string())?;
+    for r in mapped {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    cap_candidates_by_recency(&mut out);
+    Ok(out)
 }
 
 fn cluster_by_jaccard(candidates: &[Candidate]) -> Vec<Vec<usize>> {

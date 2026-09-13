@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {
     let existing: Option<(i64, String)> = conn
         .query_row(
-            "SELECT id, label FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY started_at DESC, id DESC LIMIT 1",
+            "SELECT id, label FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
             params![agent],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -23,27 +23,40 @@ format!("Focus session already open with label '{open_label}'")}),
 "message":format!("Focus started: '{label}'. Store decisions normally — they'll be tracked. Call focus_end when done.")}))
 }
 pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
-    let result: Option<(i64, String)> = conn
-        .query_row("SELECT id, raw_entries FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY started_at DESC LIMIT 1", params![agent], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .ok();
-    if let Some((id, raw_json)) = result {
-        let Ok(mut entries) = serde_json::from_str::<Vec<String>>(&raw_json) else {
-            return false;
-        };
-        entries.push(entry.to_string());
-        let Ok(updated) = serde_json::to_string(&entries) else {
-            return false;
-        };
-        conn.execute(
-            "UPDATE focus_sessions SET raw_entries = ?1 WHERE id = ?2",
-            params![updated, id],
-        )
-        .is_ok()
-    } else {
-        false
-    }
+    let result = conn.query_row(
+        "SELECT id, raw_entries FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
+        params![agent],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    );
+    let (id, raw_json) = match result {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return false,
+        Err(_) => return false,
+    };
+    // Corrupt raw_entries used to make every later append no-op while the
+    // session stayed "open". Keep the unreadable blob as one entry so the
+    // session can still capture new deposits until focus_end.
+    let mut entries = match serde_json::from_str::<Vec<String>>(&raw_json) {
+        Ok(entries) => entries,
+        Err(_) => {
+            let trimmed = raw_json.trim();
+            if trimmed.is_empty() || trimmed == "[]" || trimmed == "null" {
+                Vec::new()
+            } else {
+                vec![raw_json]
+            }
+        }
+    };
+    entries.push(entry.to_string());
+    let Ok(updated) = serde_json::to_string(&entries) else {
+        return false;
+    };
+    conn.execute(
+        "UPDATE focus_sessions SET raw_entries = ?1 WHERE id = ?2 AND status = 'open'",
+        params![updated, id],
+    )
+    .ok()
+    .is_some_and(|n| n > 0)
 }
 pub fn focus_end(
     conn: &mut Connection,
@@ -126,7 +139,7 @@ pub fn focus_end(
 pub fn focus_current(conn: &Connection, agent: &str, owner: Option<i64>) -> Option<Value> {
     let scope = crate::db::owner_and_clause(conn, "focus_sessions", owner);
     conn.query_row(
-        &format!("SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE agent = ?1 AND status = 'open'{scope} ORDER BY started_at DESC LIMIT 1"),
+        &format!("SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE agent = ?1 AND status = 'open'{scope} ORDER BY julianday(started_at) DESC, id DESC LIMIT 1"),
         params![agent],
         |row| {
             let raw: String = row.get(2)?;
