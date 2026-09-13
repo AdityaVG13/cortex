@@ -40,7 +40,29 @@ pub(crate) fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
         Err(err) => return Err(format!("Cannot read {}: {err}", dest.display())),
     };
     if needs_copy {
-        fs::copy(src, dest).map_err(|e| format!("Cannot copy {} to {}: {e}", src.display(), dest.display()))?;
+        // Stage beside the destination then rename. In-place `fs::copy`
+        // truncates the installed inode first; a crash or a live MCP
+        // process mapped to `~/.cortex/bin/cortex` then observes a
+        // truncated image (Unix SIGBUS / Windows sharing failure).
+        let tmp = dest.with_extension("tmp");
+        if let Err(err) = fs::copy(src, &tmp) {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("Cannot copy {} to {}: {err}", src.display(), tmp.display()));
+        }
+        if let Err(rename_err) = fs::rename(&tmp, dest) {
+            // Unix rename replaces. Windows refuses to rename over an
+            // existing dest; remove then rename so we never truncate the
+            // live inode in place. A locked running image fails closed.
+            let replaced = fs::remove_file(dest).and_then(|_| fs::rename(&tmp, dest));
+            if let Err(err) = replaced {
+                let _ = fs::remove_file(&tmp);
+                return Err(format!(
+                    "Cannot install {} from {} (rename: {rename_err}; replace: {err})",
+                    dest.display(),
+                    src.display()
+                ));
+            }
+        }
     }
     Ok(())
 }

@@ -5,9 +5,9 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let today_like = format!("{today}%");
     let benchmark_source_pattern = format!("{}%", crate::compaction::BENCHMARK_SOURCE_AGENT_PREFIX);
-    let total_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |r| r.get(0)).unwrap_or(0);
-    let total_decisions: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |r| r.get(0)).unwrap_or(0);
-    let total_conflicts: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'disputed'", [], |r| r.get(0)).unwrap_or(0);
+    let total_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let total_decisions: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let total_conflicts: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'disputed'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
     let new_memories: i64 = conn
         .query_row("SELECT COUNT(*) FROM memories WHERE created_at LIKE ?1", params![today_like.clone()], |r| r.get(0))
         .unwrap_or(0);

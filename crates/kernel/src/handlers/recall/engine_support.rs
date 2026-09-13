@@ -163,7 +163,12 @@ pub fn enforce_budget_token_invariant(results: Vec<RecallItem>, token_budget: us
 }
 pub fn hash_content(content: &str) -> u32 {
     let mut hash: u32 = 2_166_136_261;
-    for ch in content.chars().take(100) {
+    // Length first so two excerpts that share a long prefix still differ.
+    // Hash the whole string: recall excerpts are already bounded, and a
+    // 100-char window treated distinct memories as already-served.
+    hash ^= content.chars().count() as u32;
+    hash = hash.wrapping_mul(16_777_619);
+    for ch in content.chars() {
         hash ^= ch as u32;
         hash = hash.wrapping_mul(16_777_619);
     }

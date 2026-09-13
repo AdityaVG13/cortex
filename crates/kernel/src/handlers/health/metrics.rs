@@ -18,13 +18,25 @@ static HEALTH_HEAVY_METRICS_CACHE: OnceLock<Mutex<Option<HealthHeavyMetricsSnaps
     OnceLock::new();
 static SAVINGS_PAYLOAD_CACHE: OnceLock<Mutex<Option<SavingsPayloadSnapshot>>> = OnceLock::new();
 pub fn directory_size_bytes(path: &std::path::Path) -> u64 {
-    match std::fs::metadata(path) {
+    directory_size_bytes_inner(path, true)
+}
+
+/// `follow_root` lets `CORTEX_HOME` itself be a symlink. Child entries are
+/// measured with `lstat` so a planted symlink under home cannot walk `/`.
+fn directory_size_bytes_inner(path: &std::path::Path, follow_root: bool) -> u64 {
+    let meta = if follow_root {
+        std::fs::metadata(path)
+    } else {
+        std::fs::symlink_metadata(path)
+    };
+    match meta {
+        Ok(meta) if !follow_root && meta.file_type().is_symlink() => 0,
         Ok(meta) if meta.is_file() => meta.len(),
         Ok(meta) if meta.is_dir() => std::fs::read_dir(path)
             .map(|entries| {
                 entries
                     .filter_map(|entry| entry.ok())
-                    .map(|entry| directory_size_bytes(&entry.path()))
+                    .map(|entry| directory_size_bytes_inner(&entry.path(), false))
                     .sum()
             })
             .unwrap_or(0),

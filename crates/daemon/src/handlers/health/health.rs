@@ -27,11 +27,11 @@ pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, inc
     let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let (memories, decisions, embeddings_count, events, db_freelist_pages, retrieval) = {
         let conn = state.db_read.lock(cx).await.map_err(|err| err.to_string())?;
-        let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap_or(0);
-        let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0)).unwrap_or(0);
-        let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).unwrap_or(0);
-        let ev: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap_or(0);
-        let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0)).unwrap_or(0);
+        let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let ev: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         let retrieval = cortex_kernel::handlers::recall::clock_health_payload(&conn);
         (m, d, e, ev, freelist, retrieval)
     };
