@@ -158,7 +158,7 @@ impl View {
         // when required exceptions are known; here every admitted Card is kept.
         // Engine leads (candidates not admitted as results) must not wait for
         // close_evidence: empty Cards with leftover material is `ambiguous`.
-        let engine_leads = payload["routes"]["leads"].as_u64().unwrap_or(0) as usize;
+        let engine_leads = json_count(&payload["routes"]["leads"]);
         let (status, required_plan_bytes) = if cards.is_empty() {
             if engine_leads == 0 {
                 (ResponseStatus::NoMatch, None)
@@ -339,6 +339,7 @@ impl View {
                 .collect();
             self.cards.clear();
             self.used_bytes = 0;
+            self.refresh_need_coverage();
             return;
         }
         let mut remaining = self.budget_bytes.saturating_sub(required_total);
@@ -416,23 +417,13 @@ impl View {
             self.required_plan_bytes = Some(smallest);
             self.cards.clear();
             self.coverage.omissions = omissions;
+            self.refresh_need_coverage();
             return;
         }
         self.cards = delivered;
         self.coverage.omissions = omissions;
         // Coverage is decided on what is actually delivered, with kinds known.
-        self.coverage.covered = self
-            .needs
-            .iter()
-            .filter(|n| need_covered(n, &self.cards))
-            .map(Need::label)
-            .collect();
-        self.coverage.unmet = self
-            .needs
-            .iter()
-            .filter(|n| !need_covered(n, &self.cards))
-            .map(Need::label)
-            .collect();
+        self.refresh_need_coverage();
         self.status = if self.cards.is_empty() {
             if self.leads.is_empty() && self.engine_leads == 0 {
                 ResponseStatus::NoMatch
@@ -485,7 +476,6 @@ impl View {
         crate::db::records::ensure_authoritative_schema(conn)?;
         let (_, restore_epoch, policy_epoch) = crate::db::records::brain_epochs(conn);
         self.apply_change_cursor(conn, principal, &restore_epoch);
-        self.apply_presence(conn, &restore_epoch, &policy_epoch)?;
         let frontier = crate::store_spi::sqlite::current_frontier(conn);
         let seq = crate::store_spi::sqlite::frontier_sequence(&frontier);
         let random: String =
@@ -512,6 +502,9 @@ impl View {
             )?;
             card.expandable = true;
         }
+        // Presence is a transport saving. Bind aliases first so a suppressed
+        // Card in `present` can still be expanded by alias+receipt.
+        self.apply_presence(conn, &restore_epoch, &policy_epoch)?;
         sp.release()?;
         self.receipt_id = receipt_id;
         Ok(())
@@ -534,9 +527,9 @@ impl View {
             policy_epoch: policy_epoch.to_string(),
         };
         let context_epoch = inputs.context_epoch.clone().unwrap_or_default();
-        let mut kept = Vec::new();
-        for card in std::mem::take(&mut self.cards) {
-            let revision = legacy_record(conn, &card.reference)?
+        let mut i = 0;
+        while i < self.cards.len() {
+            let revision = legacy_record(conn, &self.cards[i].reference)?
                 .and_then(|record| crate::db::records::heads(conn, &record).ok())
                 .and_then(|h| h.first().cloned());
             let decision = match revision.as_ref() {
@@ -552,13 +545,13 @@ impl View {
                 None => PresenceDecision::DeliverRepresentationDiffers,
             };
             if decision.suppresses() {
+                let card = self.cards.remove(i);
                 self.present
                     .push(json!({"alias": card.alias, "label": card.label, "revision": revision, "representation": "brief/1", "decision": decision}));
             } else {
-                kept.push(card);
+                i += 1;
             }
         }
-        self.cards = kept;
         self.used_bytes = self.cards.iter().map(|c| c.bytes).sum();
         Ok(())
     }
@@ -680,6 +673,28 @@ impl View {
         }
         lines.join("\n")
     }
+
+    fn refresh_need_coverage(&mut self) {
+        self.coverage.covered = self
+            .needs
+            .iter()
+            .filter(|n| need_covered(n, &self.cards))
+            .map(Need::label)
+            .collect();
+        self.coverage.unmet = self
+            .needs
+            .iter()
+            .filter(|n| !need_covered(n, &self.cards))
+            .map(Need::label)
+            .collect();
+    }
+}
+
+fn json_count(value: &Value) -> usize {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+        .unwrap_or(0) as usize
 }
 
 fn mark_contested(card: &mut Card, reason: &str) {
@@ -700,7 +715,8 @@ fn is_constraint_kind(kind: &str) -> bool {
 
 fn need_covered(need: &Need, cards: &[Card]) -> bool {
     match need {
-        Need::Conflicts | Need::Unverified => true,
+        Need::Conflicts => cards.iter().any(|c| c.epistemic == "contested"),
+        Need::Unverified => cards.iter().any(|c| c.epistemic != "asserted"),
         Need::Answer | Need::Map => !cards.is_empty(),
         Need::CurrentConstraints => cards.iter().any(|c| is_constraint_kind(&c.kind)),
         Need::AsKnown | Need::Changes => !cards.is_empty(),

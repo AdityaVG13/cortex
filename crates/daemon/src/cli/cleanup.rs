@@ -1,5 +1,7 @@
-use super::common::{is_cli_option_token, validate_cli_options_or_exit};
-use crate::{auth, db};
+use super::common::{
+    first_positional, is_cli_option_token, validate_cli_options_allowing_one_positional_or_exit,
+};
+use crate::{auth, compaction, db};
 use chrono::{Local, Utc};
 use std::path::Path;
 
@@ -72,7 +74,7 @@ pub(crate) fn top_event_type_counts(conn: &rusqlite::Connection, limit: usize) -
         .unwrap_or_default()
 }
 
-pub fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool, include_events: bool, _max_event_passes: usize) {
+pub fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool, include_events: bool, max_event_passes: usize) {
     let mut actions = Vec::new();
     actions.push(format!("{} old backups", if dry_run { "Would prune" } else { "Pruned" }));
     if !dry_run {
@@ -83,10 +85,69 @@ pub fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool, include_events:
         let _ = auth::cleanup_stale_pid_lock(paths);
     }
     if include_events {
-        actions.push("EVENTS cleanup is handled by the storage governor".to_string());
+        actions.push(event_cleanup_action(paths, dry_run, max_event_passes));
     }
     for action in actions {
         println!("{action}");
+    }
+}
+
+fn event_cleanup_action(paths: &auth::CortexPaths, dry_run: bool, max_event_passes: usize) -> String {
+    let conn = match db::open(&paths.db).and_then(|conn| db::configure(&conn).map(|()| conn)) {
+        Ok(conn) => conn,
+        Err(err) => return format!("EVENTS cleanup failed: {err}"),
+    };
+    let before = compaction::non_boot_event_count(&conn);
+    let pressure = compaction::classify_event_pressure(before);
+    if dry_run {
+        return format!(
+            "Would prune events ({before} nonboot rows, pressure={pressure}, max_passes={max_event_passes})"
+        );
+    }
+    let mut failures = Vec::new();
+    let mut deleted = 0usize;
+    deleted += compaction::rollup_old_boot_savings(&conn, &mut failures);
+    deleted += compaction::rollup_old_savings_events(
+        &conn,
+        &mut failures,
+        compaction::SAVINGS_EVENT_ROLLUP_RETENTION_DAYS,
+    );
+    deleted += compaction::prune_old_event_savings_rollups(
+        &conn,
+        &mut failures,
+        compaction::EVENT_SAVINGS_ROLLUP_RETENTION_DAYS,
+    );
+    let batch = Some(compaction::STARTUP_EVENT_PRUNE_BATCH_ROWS);
+    for _ in 0..max_event_passes {
+        let n = compaction::prune_old_events_with_retention_limit(
+            &conn,
+            &mut failures,
+            compaction::EVENT_RETENTION_DAYS,
+            batch,
+        ) + compaction::prune_event_type_caps_with_limit(
+            &conn,
+            &mut failures,
+            compaction::EVENT_TYPE_SOFT_CAPS,
+            batch,
+        ) + compaction::prune_nonboot_event_overflow_with_limit(
+            &conn,
+            &mut failures,
+            compaction::EVENT_NONBOOT_SOFT_KEEP_ROWS,
+            batch,
+        );
+        deleted += n;
+        if n == 0 {
+            break;
+        }
+    }
+    let after = compaction::non_boot_event_count(&conn);
+    if failures.is_empty() {
+        format!("Pruned {deleted} event rows ({before} -> {after} nonboot, pressure={pressure})")
+    } else {
+        format!(
+            "Pruned {deleted} event rows with {} failure(s) ({before} -> {after} nonboot)",
+            failures.len()
+        )
     }
 }
 
@@ -101,14 +162,15 @@ pub fn run_backup_cli(paths: &auth::CortexPaths) {
 }
 
 pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
-    let restore_file = match args.get(2) {
+    let rest = args.get(2..).unwrap_or_default();
+    validate_cli_options_allowing_one_positional_or_exit(rest, &[], &["--skip-verification"]);
+    let restore_file = match first_positional(rest, &[]) {
         Some(path) if !is_cli_option_token(path) => path,
         _ => {
             eprintln!("Usage: cortex restore <backup-file.db>");
             std::process::exit(1);
         }
     };
-    validate_cli_options_or_exit(&args[3..], &[], &["--skip-verification"]);
     // Serve excludes via flock on `paths.lock`. Take that lock first so a
     // worker cannot start in the window between the pid check and the copy.
     // A live pid after we hold the lock is an old daemon without flock, or

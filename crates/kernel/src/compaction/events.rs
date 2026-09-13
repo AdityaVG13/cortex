@@ -21,7 +21,7 @@ pub fn rollup_old_boot_savings_with_retention(
                  COUNT(*) \
              FROM events \
              WHERE type = 'boot_savings' \
-               AND created_at < datetime('now', ?1) \
+               AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?1) \
                AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
                AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
                AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
@@ -70,7 +70,7 @@ pub fn rollup_old_boot_savings_with_retention(
         "rollup_old_boot_savings DELETE events (boot_savings)",
         "DELETE FROM events \
          WHERE type = 'boot_savings' \
-           AND created_at < datetime('now', ?1) \
+           AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?1) \
            AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
            AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
            AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
@@ -146,7 +146,7 @@ pub fn rollup_old_savings_events(
              FROM events \
              WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
                AND created_at IS NOT NULL \
-               AND created_at < datetime('now', ?1) \
+               AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?1) \
                AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
                AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
                AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2) \
@@ -183,7 +183,7 @@ row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,i64>(8)?,))})?;rows.collec
         "DELETE FROM events \
          WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
            AND created_at IS NOT NULL \
-           AND created_at < datetime('now', ?1) \
+           AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?1) \
            AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
            AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
            AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
@@ -221,7 +221,7 @@ pub fn prune_old_events_with_retention_limit(
                SELECT id \
                FROM events \
                WHERE type NOT IN ('boot_savings', 'boot_savings_rollup') \
-                 AND (created_at IS NULL OR TRIM(created_at) = '' OR created_at < datetime('now', ?1)) \
+                 AND (created_at IS NULL OR TRIM(created_at) = '' OR julianday(created_at) < julianday('now', ?1)) \
                ORDER BY id ASC \
                LIMIT ?2 \
              )",
@@ -234,7 +234,7 @@ pub fn prune_old_events_with_retention_limit(
         "prune_old_events DELETE events",
         "DELETE FROM events \
          WHERE type NOT IN ('boot_savings', 'boot_savings_rollup') \
-           AND (created_at IS NULL OR TRIM(created_at) = '' OR created_at < datetime('now', ?1))",
+           AND (created_at IS NULL OR TRIM(created_at) = '' OR julianday(created_at) < julianday('now', ?1))",
         params![retention_window],
     )
 }
