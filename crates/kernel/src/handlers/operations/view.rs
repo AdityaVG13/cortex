@@ -116,21 +116,9 @@ impl View {
         let empty = Vec::new();
         let results = payload["results"].as_array().unwrap_or(&empty);
         let mut cards = Vec::new();
-        let mut hidden = 0usize;
         for (index, item) in results.iter().enumerate() {
             let statement = item["excerpt"].as_str().unwrap_or("").trim().to_string();
-            let has_handle = item["source"]
-                .as_str()
-                .map(|s| s.contains("::"))
-                .unwrap_or(false);
-            if statement.is_empty() || !has_handle {
-                // Family/merged rows and context/source keys without a Card
-                // handle cannot be expanded; they are not Cards. Count
-                // non-empty ones as engine leads so a hidden cutoff cannot
-                // masquerade as no_match.
-                if !statement.is_empty() {
-                    hidden += 1;
-                }
+            if statement.is_empty() {
                 continue;
             }
             let arms = item["why"]["clockVotes"]["admittedArms"]
@@ -150,6 +138,8 @@ impl View {
                 required: false,
                 expandable: false,
                 exact_text: None,
+                // Free-form source/context without `::` cannot be expanded;
+                // it is still an admitted claim, not a hidden lead.
                 reference: item["source"].as_str().unwrap_or("").to_string(),
                 bytes: statement.len(),
                 statement,
@@ -166,8 +156,15 @@ impl View {
         }
         // Budget selection happens after closure (`select_within_budget`),
         // when required exceptions are known; here every admitted Card is kept.
+        // Engine leads (candidates not admitted as results) must not wait for
+        // close_evidence: empty Cards with leftover material is `ambiguous`.
+        let engine_leads = payload["routes"]["leads"].as_u64().unwrap_or(0) as usize;
         let (status, required_plan_bytes) = if cards.is_empty() {
-            (ResponseStatus::NoMatch, None)
+            if engine_leads == 0 {
+                (ResponseStatus::NoMatch, None)
+            } else {
+                (ResponseStatus::Ambiguous, None)
+            }
         } else {
             (ResponseStatus::Ok, None)
         };
@@ -206,7 +203,7 @@ impl View {
             profile: frame.profile.as_str().to_string(),
             cards: delivered,
             leads: Vec::new(),
-            engine_leads: payload["routes"]["leads"].as_u64().unwrap_or(0) as usize + hidden,
+            engine_leads,
             coverage: Coverage {
                 covered,
                 unmet,
@@ -229,10 +226,12 @@ impl View {
         use super::closure::{close_revision, DependencyRole};
         for card in &mut self.cards {
             let Some(record_id) = legacy_record(conn, &card.reference)? else {
-                mark_contested(
-                    card,
-                    "qualification_unavailable: no record mapping",
-                );
+                if card.reference.contains("::") {
+                    mark_contested(
+                        card,
+                        "qualification_unavailable: no record mapping",
+                    );
+                }
                 continue;
             };
             let heads = crate::db::records::heads(conn, &record_id)?;

@@ -166,7 +166,7 @@ pub fn prune_telemetry(conn: &Connection) -> rusqlite::Result<usize> {
     let mut pruned = 0;
     let cutoff = format!("-{FEED_RETENTION_DAYS} days");
     pruned += conn.execute(
-        "DELETE FROM feed WHERE timestamp < datetime('now', ?1)",
+        "DELETE FROM feed WHERE julianday(timestamp) < julianday('now', ?1)",
         params![cutoff],
     )?;
     pruned += conn

@@ -58,7 +58,7 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
               FROM events
             )
             WHERE (?1 = 'any' OR kind = ?1)
-            ORDER BY julianday(created_at) DESC, id DESC
+            ORDER BY julianday(NULLIF(TRIM(created_at), '')) DESC, id DESC
             LIMIT 32
         "
     } else {
@@ -86,7 +86,7 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
               FROM events
             )
             WHERE (?1 = 'any' OR kind = ?1)
-            ORDER BY julianday(created_at) DESC, id DESC
+            ORDER BY julianday(NULLIF(TRIM(created_at), '')) DESC, id DESC
             LIMIT 32
         "
     };
@@ -108,9 +108,9 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
     for row in rows {
         let (row_kind, id, created_at, source_agent, summary, detail, owner_id, visibility) =
             row.map_err(|err| err.to_string())?;
-        let Some(created_at) = created_at.filter(|value| !value.trim().is_empty()) else {
-            continue;
-        };
+        // Missing created_at is display-only. Skipping it hid the newest
+        // row when every candidate in the window lacked a timestamp.
+        let created_at = created_at.filter(|value| !value.trim().is_empty());
         if let Some(filter) = agent_filter.as_deref() {
             let current = source_agent.as_deref().map(str::to_lowercase).unwrap_or_default();
             if current != filter {

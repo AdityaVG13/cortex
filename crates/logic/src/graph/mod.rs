@@ -441,8 +441,8 @@ pub fn entity_arm_candidates(
             "SELECT COALESCE(d.context, 'decision::' || d.id), d.decision FROM entity_mentions em \
              JOIN decisions d ON em.target_type = 'decision' AND d.id = em.target_id \
              WHERE em.entity_id = ?1 AND d.status NOT IN ('superseded','archived') \
-               AND (d.expires_at IS NULL OR julianday(d.expires_at) > julianday('now')) \
-               AND (d.valid_from IS NULL OR julianday(d.valid_from) <= julianday('now')) AND (d.valid_until IS NULL OR julianday(d.valid_until) > julianday('now')) \
+               AND (d.expires_at IS NULL OR TRIM(d.expires_at) = '' OR julianday(d.expires_at) > julianday('now')) \
+               AND (d.valid_from IS NULL OR TRIM(d.valid_from) = '' OR julianday(d.valid_from) <= julianday('now')) AND (d.valid_until IS NULL OR TRIM(d.valid_until) = '' OR julianday(d.valid_until) > julianday('now')) \
                AND (d.version_id IS NULL OR d.version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) \
              ORDER BY d.id DESC LIMIT ?2",
         ) {
@@ -460,8 +460,8 @@ pub fn entity_arm_candidates(
             "SELECT COALESCE(m.source, 'memory::' || m.id), m.text FROM entity_mentions em \
              JOIN memories m ON em.target_type = 'memory' AND m.id = em.target_id \
              WHERE em.entity_id = ?1 AND m.status NOT IN ('superseded','archived') \
-               AND (m.expires_at IS NULL OR julianday(m.expires_at) > julianday('now')) \
-               AND (m.valid_from IS NULL OR julianday(m.valid_from) <= julianday('now')) AND (m.valid_until IS NULL OR julianday(m.valid_until) > julianday('now')) \
+               AND (m.expires_at IS NULL OR TRIM(m.expires_at) = '' OR julianday(m.expires_at) > julianday('now')) \
+               AND (m.valid_from IS NULL OR TRIM(m.valid_from) = '' OR julianday(m.valid_from) <= julianday('now')) AND (m.valid_until IS NULL OR TRIM(m.valid_until) = '' OR julianday(m.valid_until) > julianday('now')) \
                AND (m.version_id IS NULL OR m.version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) \
              ORDER BY m.id DESC LIMIT ?2",
         ) {

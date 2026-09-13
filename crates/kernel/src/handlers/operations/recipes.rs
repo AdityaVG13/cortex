@@ -45,22 +45,37 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
                 relation: "constraint".into(),
             }];
             let mut input = "rules".to_string();
+            let mut exception_input = "exceptions".to_string();
             if let Some(subject) = p("subject") {
                 steps.push(Step::Filter {
                     id: "on_subject".into(),
                     input: input.clone(),
                     field: "subject".into(),
-                    predicate: Predicate::Eq { value: subject },
+                    predicate: Predicate::Eq {
+                        value: subject.clone(),
+                    },
                 });
                 input = "on_subject".into();
+                steps.push(Step::Select {
+                    id: "exceptions".into(),
+                    relation: "exception".into(),
+                });
+                steps.push(Step::Filter {
+                    id: "exceptions_on_subject".into(),
+                    input: "exceptions".into(),
+                    field: "subject".into(),
+                    predicate: Predicate::Eq { value: subject },
+                });
+                exception_input = "exceptions_on_subject".into();
+            } else {
+                steps.push(Step::Select {
+                    id: "exceptions".into(),
+                    relation: "exception".into(),
+                });
             }
-            steps.push(Step::Select {
-                id: "exceptions".into(),
-                relation: "exception".into(),
-            });
             steps.push(Step::Exists {
                 id: "has_exceptions".into(),
-                input: "exceptions".into(),
+                input: exception_input,
             });
             steps.push(Step::Project {
                 id: "out".into(),

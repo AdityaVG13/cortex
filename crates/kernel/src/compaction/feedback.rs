@@ -97,7 +97,7 @@ pub fn purge_benchmark_artifacts_with_retention(
                  FROM decisions \
                  WHERE (LOWER(COALESCE(type, '')) = 'benchmark' \
                         OR LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1)) \
-                   AND created_at < datetime('now', ?2)",
+                   AND julianday(created_at) < julianday('now', ?2)",
                 params![benchmark_source_pattern.clone(), window],
             );
         }
@@ -186,7 +186,7 @@ pub fn purge_benchmark_artifacts_with_retention(
                 "DELETE FROM recall_feedback \
                  WHERE (LOWER(COALESCE(agent, '')) LIKE LOWER(?1) \
                         OR LOWER(COALESCE(result_source, '')) LIKE LOWER(?1)) \
-                   AND created_at < datetime('now', ?2)",
+                   AND julianday(created_at) < julianday('now', ?2)",
                 params![benchmark_source_pattern.clone(), window],
             );
             result.events_deleted += exec_counted(
@@ -198,7 +198,7 @@ pub fn purge_benchmark_artifacts_with_retention(
                         OR LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) LIKE LOWER(?1) \
                         OR LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE LOWER(?1) \
                         OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark') \
-                   AND created_at < datetime('now', ?2)",
+                   AND julianday(created_at) < julianday('now', ?2)",
                 params![benchmark_source_pattern.clone(), window],
             );
         }

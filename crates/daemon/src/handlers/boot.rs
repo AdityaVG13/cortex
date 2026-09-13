@@ -18,7 +18,10 @@ pub fn record_boot_audit_best_effort(
     let capsules_json = serde_json::to_string(&result.capsules).unwrap_or_else(|_| "[]".to_string());
     let retention_days = boot_audit_retention_days();
     if retention_days > 0 {
-        if let Err(e) = conn.execute(&format!("DELETE FROM boot_audits WHERE created_at < datetime('now', '-{retention_days} days')"), []) {
+        if let Err(e) = conn.execute(
+            "DELETE FROM boot_audits WHERE julianday(created_at) < julianday('now', ?1)",
+            rusqlite::params![format!("-{retention_days} days")],
+        ) {
             eprintln!("[boot_audits] prune failed: {e}");
         }
     }

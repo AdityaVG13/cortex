@@ -368,13 +368,13 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
     }
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
         "SELECT d.id, d.decision, d.disputes_id, d.confirmed_by,
-                COALESCE(d.valid_from, d.observed_at, d.created_at), d.valid_until
+                COALESCE(NULLIF(TRIM(d.valid_from), ''), NULLIF(TRIM(d.observed_at), ''), d.created_at), d.valid_until
          FROM decisions d
          WHERE d.status = 'disputed'{}
-           AND (d.valid_from IS NULL OR julianday(d.valid_from) <= julianday('now'))
-           AND (d.valid_until IS NULL OR julianday(d.valid_until) > julianday('now'))
+           AND (d.valid_from IS NULL OR TRIM(d.valid_from) = '' OR julianday(d.valid_from) <= julianday('now'))
+           AND (d.valid_until IS NULL OR TRIM(d.valid_until) = '' OR julianday(d.valid_until) > julianday('now'))
            AND EXISTS (SELECT 1 FROM decision_conflicts c WHERE c.source_decision_id = d.id AND c.status = 'open')
-         ORDER BY d.created_at DESC, d.id DESC LIMIT 6",
+         ORDER BY julianday(d.created_at) DESC, d.id DESC LIMIT 6",
         owner_clause(conn, "decisions", boot_owner()),
     )) {
         if let Ok(rows) = stmt.query_map([], |row| {
