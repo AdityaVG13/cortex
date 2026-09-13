@@ -46,6 +46,17 @@ fn stability_for_item(item: &ContextItem) -> u8 {
 /// then oldest first so long-standing rules are never displaced by churn),
 /// bounded to `BOOT_CONSTRAINTS_MAX` lines with an explicit omission count.
 pub const BOOT_CONSTRAINTS_MAX: usize = 40;
+
+/// SQL failure is not an empty constraint set. The agent must not treat a
+/// broken read as "there are no durable decisions".
+fn constraints_unavailable() -> (String, usize) {
+    (
+        "## Constraints\n- [unavailable] durable decisions could not be loaded; do not assume this set is empty"
+            .into(),
+        0,
+    )
+}
+
 pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
     // Cheap cache key: the durable set's cardinality, newest id and newest
     // update; the capsule is rebuilt only when that changes. Project paths
@@ -67,9 +78,9 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
             [],
             |r| r.get::<_, String>(0),
         ) else {
-        // A failed COUNT is not "no durable decisions"; skip the cache so a
-        // later boot can load the real capsule.
-        return build_constraints_capsule_uncached(conn).unwrap_or_default();
+        // A failed COUNT is not "no durable decisions"; skip the cache and
+        // load the real capsule, or say the set is unavailable.
+        return build_constraints_capsule_uncached(conn).unwrap_or_else(|_| constraints_unavailable());
     };
     let key = format!(
         "{key}|{}|{}",
@@ -86,7 +97,7 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
             super::cache::cache_set(conn, "constraints_capsule", &key, &pair.0, pair.1);
             pair
         }
-        Err(_) => (String::new(), 0),
+        Err(_) => constraints_unavailable(),
     }
 }
 fn build_constraints_capsule_uncached(conn: &Connection) -> Result<(String, usize), String> {

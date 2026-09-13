@@ -493,6 +493,24 @@ fn restore_reconciliation_refuses_oversize_erasure_ledger() {
 }
 
 #[test]
+fn restore_reconciliation_refuses_corrupt_erasure_ledger_line() {
+    let home = unique_temp_dir("erasure-ledger-corrupt");
+    fs::create_dir_all(&home).unwrap();
+    let db = home.join("cortex.db");
+    let conn = open_file_db(&db);
+    fs::write(
+        home.join(LEDGER_FILE),
+        "{\"erasure_id\":\"erasure:ok@1\",\"brain_id\":\"\",\"record_id\":\"r1\",\"authority\":\"a\",\"reason\":\"x\",\"sequence\":1,\"erased_at\":\"t\"}\nthis is not json\n",
+    )
+    .unwrap();
+    let err = reconcile_after_restore(&conn, &home).unwrap_err();
+    assert!(
+        err.starts_with("erasure_ledger_line_2:"),
+        "corrupt ledger line must fail closed, got {err}"
+    );
+}
+
+#[test]
 fn erasure_of_a_memory_does_not_rewrite_a_decision_row() {
     let home = unique_temp_dir("erase-memory");
     fs::create_dir_all(&home).unwrap();

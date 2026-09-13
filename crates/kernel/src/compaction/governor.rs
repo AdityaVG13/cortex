@@ -146,12 +146,14 @@ pub fn fts_segment_row_total(conn: &Connection) -> i64 {
         if !table_exists(conn, table) {
             continue;
         }
-        let n: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
-                row.get(0)
-            })
-            .unwrap_or(0);
-        total += n;
+        match conn.query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
+            row.get::<_, i64>(0)
+        }) {
+            Ok(n) => total += n,
+            // A failed COUNT is not "no FTS pressure": that would skip the
+            // governor while segment tables are unreadable or locked.
+            Err(_) => return FTS_SEGMENT_ROW_SOFT_LIMIT.saturating_add(1),
+        }
     }
     total
 }

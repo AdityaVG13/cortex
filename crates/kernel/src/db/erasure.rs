@@ -63,15 +63,24 @@ fn ledger_bytes(home: &Path) -> Result<Option<String>, String> {
     Ok(Some(raw))
 }
 
-fn parse_ledger(raw: &str) -> Vec<ErasureRecord> {
-    raw.lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect()
+fn parse_ledger(raw: &str) -> Result<Vec<ErasureRecord>, String> {
+    let mut out = Vec::new();
+    for (idx, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let rec = serde_json::from_str(line).map_err(|e| {
+            format!("erasure_ledger_line_{}: {e}", idx + 1)
+        })?;
+        out.push(rec);
+    }
+    Ok(out)
 }
 
 pub fn read_ledger(home: &Path) -> Vec<ErasureRecord> {
     match ledger_bytes(home) {
-        Ok(Some(raw)) => parse_ledger(&raw),
+        Ok(Some(raw)) => parse_ledger(&raw).unwrap_or_default(),
         Ok(None) | Err(_) => Vec::new(),
     }
 }
@@ -160,31 +169,38 @@ fn apply(
                 params![id],
             )
             .map_err(|e| e.to_string())?;
-        projections += conn
-            .execute(
-                "DELETE FROM clock_anchor_evidence WHERE target_type = ?1 AND target_id = ?2",
-                params![namespace, id],
-            )
-            .unwrap_or(0);
-        projections += conn
-            .execute("DELETE FROM clock_links WHERE (src_type = ?1 AND src_id = ?2) OR (dst_type = ?1 AND dst_id = ?2)", params![namespace, id])
-            .unwrap_or(0);
-        projections += conn
-            .execute(
-                "DELETE FROM entity_mentions WHERE target_type = ?1 AND target_id = ?2",
-                params![namespace, id],
-            )
-            .unwrap_or(0);
+        projections += delete_if_present(
+            conn,
+            "clock_anchor_evidence",
+            "DELETE FROM clock_anchor_evidence WHERE target_type = ?1 AND target_id = ?2",
+            params![namespace, id],
+        )?;
+        projections += delete_if_present(
+            conn,
+            "clock_links",
+            "DELETE FROM clock_links WHERE (src_type = ?1 AND src_id = ?2) OR (dst_type = ?1 AND dst_id = ?2)",
+            params![namespace, id],
+        )?;
+        projections += delete_if_present(
+            conn,
+            "entity_mentions",
+            "DELETE FROM entity_mentions WHERE target_type = ?1 AND target_id = ?2",
+            params![namespace, id],
+        )?;
         if table == "decisions" {
-            let _ = conn.execute(
+            fts_delete_if_present(
+                conn,
+                "decisions_fts",
                 "INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) SELECT 'delete', id, '[erased]', NULL FROM decisions WHERE id = ?1",
                 params![id],
-            );
+            )?;
         } else {
-            let _ = conn.execute(
+            fts_delete_if_present(
+                conn,
+                "memories_fts",
                 "INSERT INTO memories_fts(memories_fts, rowid, text, source, tags) SELECT 'delete', id, '[erased]', NULL, NULL FROM memories WHERE id = ?1",
                 params![id],
-            );
+            )?;
         }
     }
     // persist_receipt stores `{profile, cards: N}`, not the record id. LIKE on
@@ -214,10 +230,39 @@ fn apply(
             )
             .map_err(|e| e.to_string())?;
     }
-    let _ = conn.execute("DELETE FROM compiled_reads WHERE 1 = 1 AND EXISTS (SELECT 1 FROM records WHERE record_id = ?1)", params![record_id]);
+    delete_if_present(
+        conn,
+        "compiled_reads",
+        "DELETE FROM compiled_reads WHERE 1 = 1 AND EXISTS (SELECT 1 FROM records WHERE record_id = ?1)",
+        params![record_id],
+    )?;
     super::compiled::bump_guard(conn, super::records::DEFAULT_SCOPE, "*")
         .map_err(|e| e.to_string())?;
     Ok((revisions, sources, legacy_rows, projections, views, aliases))
+}
+
+fn delete_if_present(
+    conn: &Connection,
+    table: &str,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<usize, String> {
+    if !super::table_exists(conn, table) {
+        return Ok(0);
+    }
+    conn.execute(sql, params).map_err(|e| e.to_string())
+}
+
+fn fts_delete_if_present(
+    conn: &Connection,
+    table: &str,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<(), String> {
+    if !super::table_exists(conn, table) {
+        return Ok(());
+    }
+    conn.execute(sql, params).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Erase one record with authority. Appends the erasure to the ledger before
@@ -330,7 +375,7 @@ pub struct Reconciliation {
 pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconciliation, String> {
     super::records::ensure_authoritative_schema(conn).map_err(|e| e.to_string())?;
     let ledger = match ledger_bytes(home) {
-        Ok(Some(raw)) => parse_ledger(&raw),
+        Ok(Some(raw)) => parse_ledger(&raw)?,
         Ok(None) => Vec::new(),
         Err(err) => return Err(err),
     };

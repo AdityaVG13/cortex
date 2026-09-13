@@ -234,13 +234,16 @@ impl Debt {
 }
 
 pub fn debt(conn: &Connection) -> Debt {
+    // An unreadable COUNT is not "no jobs": that would let intake proceed
+    // while the outbox is at the hard bound. Treat a failed read as hard
+    // pressure so refuse_intake stays fail-closed.
     let count = |state: &str| -> i64 {
         conn.query_row(
             "SELECT COUNT(*) FROM outbox WHERE state = ?1",
             params![state],
             |r| r.get(0),
         )
-        .unwrap_or(0)
+        .unwrap_or(DEBT_HARD_LIMIT_JOBS)
     };
     Debt {
         pending_jobs: count("pending"),
