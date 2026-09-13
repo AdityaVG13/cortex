@@ -111,6 +111,52 @@ fn file_import_preserves_exact_registered_source_and_reports_sql_failure() {
     });
 }
 
+#[cfg(unix)]
+#[test]
+fn automatic_index_skips_planted_claude_dir_symlink() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(
+            outside.path().join("state.md"),
+            "PLANTED_SIDECAR_SECRET_pass10\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join(".claude")).unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        let mut conn = runtime.state().db.lock(&cx).await.unwrap();
+        let count = cortex_kernel::indexer::index_all(&mut conn, home.path(), None)
+            .expect("planted alias must skip, not fail the rest of index");
+        assert_eq!(count, 0);
+        let stored: i64 = conn
+            .query_row("SELECT count(*) FROM observation_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, 0, "must not ingest a file reached through a planted .claude alias");
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn automatic_index_skips_planted_state_file_symlink() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("state.md");
+        std::fs::write(&secret, "PLANTED_FILE_SECRET_pass10\n").unwrap();
+        std::fs::create_dir(home.path().join(".claude")).unwrap();
+        std::os::unix::fs::symlink(&secret, home.path().join(".claude").join("state.md")).unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        let mut conn = runtime.state().db.lock(&cx).await.unwrap();
+        let count = cortex_kernel::indexer::index_all(&mut conn, home.path(), None)
+            .expect("planted file alias must skip, not abort index");
+        assert_eq!(count, 0);
+        let stored: i64 = conn
+            .query_row("SELECT count(*) FROM observation_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, 0, "must not ingest a file reached through a planted state.md alias");
+    });
+}
+
 #[test]
 fn custom_sources_config_refuses_oversize_toml() {
     run_with_cx(|cx| async move {

@@ -304,6 +304,9 @@ fn collect_write_arm(
             build_fts_query(&groups)
         }
     };
+    if fts_query.is_empty() {
+        return Ok(());
+    }
     let rare_terms: Vec<&str> = frame
         .terms
         .iter()

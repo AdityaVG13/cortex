@@ -92,12 +92,10 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
                     let mut proc = child.0.take().expect("isolated contract child");
                     let _ = proc.kill();
                     let status = proc.wait().expect("reap isolated contract");
-                    let stdout = String::from_utf8_lossy(
-                        &stdout_thread.join().unwrap_or_else(|_| Vec::new()),
-                    );
-                    let stderr = String::from_utf8_lossy(
-                        &stderr_thread.join().unwrap_or_else(|_| Vec::new()),
-                    );
+                    let stdout_bytes = stdout_thread.join().unwrap_or_else(|_| Vec::new());
+                    let stderr_bytes = stderr_thread.join().unwrap_or_else(|_| Vec::new());
+                    let stdout = String::from_utf8_lossy(&stdout_bytes);
+                    let stderr = String::from_utf8_lossy(&stderr_bytes);
                     panic!(
                         "isolated contract {test} timed out ({status}):\n{stdout}\n{stderr}"
                     );
@@ -113,8 +111,10 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
         .expect("isolated contract child")
         .wait()
         .expect("collect isolated contract");
-    let stdout = String::from_utf8_lossy(&stdout_thread.join().unwrap_or_else(|_| Vec::new()));
-    let stderr = String::from_utf8_lossy(&stderr_thread.join().unwrap_or_else(|_| Vec::new()));
+    let stdout_bytes = stdout_thread.join().unwrap_or_else(|_| Vec::new());
+    let stderr_bytes = stderr_thread.join().unwrap_or_else(|_| Vec::new());
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
     assert!(
         status.success(),
         "isolated contract {test} failed ({status}):\n{stdout}\n{stderr}"

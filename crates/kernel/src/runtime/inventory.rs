@@ -11,7 +11,7 @@ use super::{
 use asupersync::Cx;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const MAX_INVENTORY_SOURCES: usize = 4096;
 pub const MAX_BOOTSTRAP_SOURCES: usize = 128;
@@ -116,11 +116,12 @@ fn snapshot(key: &str) -> Result<(u64, String), String> {
     if !path.is_absolute() {
         return Err("source_not_authorized".into());
     }
+    let file = crate::auth::open_nofollow(path).map_err(io_error)?;
     let canonical = path.canonicalize().map_err(io_error)?;
     if canonical != path {
         return Err("source_changed: canonical_path".into());
     }
-    let meta = std::fs::metadata(path).map_err(io_error)?;
+    let meta = file.metadata().map_err(io_error)?;
     if !meta.is_file() {
         return Err("source_unavailable: not_regular_file".into());
     }
@@ -324,10 +325,21 @@ impl CortexRuntime {
                 Err(error) => mark(entry, classify(&error), error),
                 Ok(bytes) => {
                     budget -= bytes;
-                    match self
-                        .observe_file(cx, Path::new(file_source_path(&entry.source_key)?))
-                        .await
-                    {
+                    let owner = if self.state().team_mode {
+                        self.state().default_owner_id
+                    } else {
+                        None
+                    };
+                    let path = PathBuf::from(file_source_path(&entry.source_key)?);
+                    match {
+                        let mut conn = self
+                            .state()
+                            .db
+                            .lock(cx)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        crate::indexer::index_file_nofollow(&mut conn, &path, owner)
+                    } {
                         Err(error) => mark(entry, classify(&error), error),
                         Ok(receipt) => {
                             entry.receipt = Some(receipt);

@@ -319,12 +319,22 @@ fn like_prefix(prefix: &str) -> String {
 }
 /// FTS5 MATCH is a second query language on bind `?1` (`*`, `^`, `NEAR`,
 /// `col:`, quotes). Doubling `"` is not enough: a quoted phrase still treats
-/// trailing `*` as prefix and a leading `^` as initial-token. Strip those
-/// before wrapping so user text cannot change MATCH operators.
+/// trailing `*` as prefix and a leading `^` as initial-token.
+///
+/// Replace those operators with whitespace instead of deleting them:
+/// deleting `^` from `2^n` concatenates to `2n` and misses the indexed
+/// tokens `2` / `n`. Quoted wrapping still blocks unquoted operators.
 fn quote_fts_match_term(term: &str) -> Option<String> {
-    let stripped: String = term.chars().filter(|c| *c != '*' && *c != '^').collect();
-    let t = stripped.trim();
-    if t.is_empty() {
+    let mut cleaned = String::with_capacity(term.len());
+    for ch in term.chars() {
+        if ch == '*' || ch == '^' {
+            cleaned.push(' ');
+        } else {
+            cleaned.push(ch);
+        }
+    }
+    let t = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.is_empty() || t.replace('"', "").is_empty() {
         return None;
     }
     Some(format!("\"{}\"", t.replace('"', "\"\"")))
@@ -2052,9 +2062,20 @@ fn search_table(
             &excerpt_focus_terms,
         );
     }
+    let fts_query = build_fts_query(&term_groups);
+    if fts_query.is_empty() {
+        return search_table_recency(
+            conn,
+            limit,
+            source_prefix,
+            source_like.as_deref(),
+            kind,
+            &excerpt_focus_terms,
+        );
+    }
     let fts_result = search_table_fts(
         conn,
-        &build_fts_query(&term_groups),
+        &fts_query,
         limit,
         source_like.as_deref(),
         source_prefix,

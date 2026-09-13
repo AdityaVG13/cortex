@@ -105,6 +105,9 @@ pub fn forget_keyword_scoped(
     keyword: &str,
     owner_id: Option<i64>,
 ) -> Result<usize, String> {
+    if keyword.trim().is_empty() {
+        return Ok(0);
+    }
     let pattern = like_contains(&keyword.to_lowercase());
     let updated = if let Some(owner_id) = owner_id {
         conn.execute(
