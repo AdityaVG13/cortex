@@ -142,11 +142,10 @@ pub fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
 pub fn fetch_sessions(conn: &Connection) -> Vec<Value> {
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT agent, project, description, files_json FROM sessions WHERE expires_at > ?1{} ORDER BY agent ASC, rowid ASC",
+        "SELECT agent, project, description, files_json FROM sessions WHERE expires_at IS NOT NULL AND TRIM(expires_at) != '' AND julianday(expires_at) > julianday('now'){} ORDER BY agent ASC, rowid ASC",
         owner_clause(conn, "sessions", boot_owner())
     )) {
-        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        if let Ok(rows) = stmt.query_map(params![now], |r| {
+        if let Ok(rows) = stmt.query_map([], |r| {
             let files_json: String = r.get(3)?;
             Ok(json!({
 "agent":r.get::<_,String>(0)?,"project":r.get::<_,Option<String>>(1)?,"description":r.get::<_,Option<String>>(2)?,"files":
@@ -161,12 +160,11 @@ serde_json::from_str::<Value>(&files_json).unwrap_or(json!([]))}))
 }
 pub fn fetch_locks(conn: &Connection) -> Vec<Value> {
     let mut out = Vec::new();
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT path, agent, expires_at FROM locks WHERE expires_at > ?1{} ORDER BY path ASC, rowid ASC",
+        "SELECT path, agent, expires_at FROM locks WHERE expires_at IS NOT NULL AND TRIM(expires_at) != '' AND julianday(expires_at) > julianday('now'){} ORDER BY path ASC, rowid ASC",
         owner_clause(conn, "locks", boot_owner())
     )) {
-        if let Ok(rows) = stmt.query_map(params![now], |r| {
+        if let Ok(rows) = stmt.query_map([], |r| {
             Ok(json!({"path":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"expiresAt":r.get::<_,String
 >(2)?}))
         }) {
@@ -447,7 +445,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
     }
     if let Some(ref lb) = last_boot {
         if let Ok(mut stmt) =
-            conn.prepare_cached(&format!("SELECT id, decision, context, source_agent FROM decisions WHERE status = 'active'{} AND julianday(created_at) >= julianday(?1) AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY julianday(created_at) DESC, rowid DESC LIMIT 20", owner_clause(conn, "decisions", boot_owner())))
+            conn.prepare_cached(&format!("SELECT id, decision, context, source_agent FROM decisions WHERE status = 'active'{} AND julianday(created_at) >= julianday(?1) AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY julianday(created_at) DESC, rowid DESC LIMIT 20", owner_clause(conn, "decisions", boot_owner())))
         {
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?))) {
                 let collected: Vec<(i64, String, Option<String>, String)> = rows.flatten().collect();
@@ -468,7 +466,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             }
         }
         if let Ok(mut stmt) =
-            conn.prepare_cached(&format!("SELECT text, type FROM memories WHERE status = 'active'{} AND julianday(updated_at) >= julianday(?1) AND type != 'state' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY julianday(updated_at) DESC, id DESC LIMIT 3", owner_clause(conn, "memories", boot_owner())))
+            conn.prepare_cached(&format!("SELECT text, type FROM memories WHERE status = 'active'{} AND julianday(updated_at) >= julianday(?1) AND type != 'state' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY julianday(updated_at) DESC, id DESC LIMIT 3", owner_clause(conn, "memories", boot_owner())))
         {
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
                 let lines: Vec<String> = rows
@@ -502,7 +500,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
     if !has_new_section {
         let already_has_recent = parts.iter().any(|p| p.starts_with("Recent decisions:"));
         if !already_has_recent {
-            if let Ok(mut stmt) = conn.prepare_cached(&format!("SELECT id, decision, context FROM decisions WHERE status = 'active'{} AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY julianday(created_at) DESC, id DESC LIMIT 20", owner_clause(conn, "decisions", boot_owner()))) {
+            if let Ok(mut stmt) = conn.prepare_cached(&format!("SELECT id, decision, context FROM decisions WHERE status = 'active'{} AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY julianday(created_at) DESC, id DESC LIMIT 20", owner_clause(conn, "decisions", boot_owner()))) {
             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))) {
                 let collected: Vec<(i64, String, Option<String>)> = rows.flatten().collect();
                 let ids: Vec<i64> = collected.iter().map(|row| row.0).collect();
@@ -537,11 +535,11 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
 pub fn estimate_raw_baseline(conn: &Connection, _home: &Path) -> usize {
     let mut total_chars: usize = 0;
     let mem_chars: i64 = conn
-        .query_row("SELECT COALESCE(SUM(LENGTH(text)), 0) FROM memories WHERE status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now'))", [], |r| r.get(0))
+        .query_row("SELECT COALESCE(SUM(LENGTH(text)), 0) FROM memories WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))", [], |r| r.get(0))
         .unwrap_or(0);
     total_chars += mem_chars as usize;
     let dec_chars: i64 = conn
-        .query_row("SELECT COALESCE(SUM(LENGTH(decision)), 0) FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now'))", [], |r| r.get(0))
+        .query_row("SELECT COALESCE(SUM(LENGTH(decision)), 0) FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))", [], |r| r.get(0))
         .unwrap_or(0);
     total_chars += dec_chars as usize;
     estimate_tokens_from_chars(total_chars)

@@ -167,7 +167,11 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
             )
         }
         "what_changed" => {
-            let since = p("since_seq").and_then(|v| v.as_i64()).unwrap_or(0);
+            let since = p("since_seq").and_then(|v| {
+                v.as_i64()
+                    .or_else(|| v.as_u64().and_then(|n| i64::try_from(n).ok()))
+                    .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+            }).unwrap_or(0);
             (
                 vec![
                     Step::Select {

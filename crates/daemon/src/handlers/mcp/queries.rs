@@ -42,14 +42,14 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
                      json_object('text', text, 'source', source, 'type', type) AS detail,
                      owner_id, visibility
               FROM memories
-              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
+              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))
               UNION ALL
               SELECT 'decision' AS kind, id, created_at, source_agent,
                      substr(decision, 1, 240) AS summary,
                      json_object('decision', decision, 'context', context, 'type', type) AS detail,
                      owner_id, visibility
               FROM decisions
-              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
+              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))
               UNION ALL
               SELECT 'event' AS kind, id, created_at, source_agent,
                      substr(COALESCE(data, type), 1, 240) AS summary,
@@ -70,14 +70,14 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
                      json_object('text', text, 'source', source, 'type', type) AS detail,
                      NULL AS owner_id, NULL AS visibility
               FROM memories
-              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
+              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))
               UNION ALL
               SELECT 'decision' AS kind, id, created_at, source_agent,
                      substr(decision, 1, 240) AS summary,
                      json_object('decision', decision, 'context', context, 'type', type) AS detail,
                      NULL AS owner_id, NULL AS visibility
               FROM decisions
-              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
+              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))
               UNION ALL
               SELECT 'event' AS kind, id, created_at, source_agent,
                      substr(COALESCE(data, type), 1, 240) AS summary,
@@ -96,7 +96,7 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
@@ -108,6 +108,9 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
     for row in rows {
         let (row_kind, id, created_at, source_agent, summary, detail, owner_id, visibility) =
             row.map_err(|err| err.to_string())?;
+        let Some(created_at) = created_at.filter(|value| !value.trim().is_empty()) else {
+            continue;
+        };
         if let Some(filter) = agent_filter.as_deref() {
             let current = source_agent.as_deref().map(str::to_lowercase).unwrap_or_default();
             if current != filter {

@@ -213,6 +213,8 @@ pub fn fetch_recent_decision_candidates(
                      WHERE owner_id = ?1 \
                      AND status = 'active' \
                      AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+                     AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+                     AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
                      ORDER BY id DESC \
                      LIMIT 50 \
                  ) \
@@ -224,6 +226,8 @@ pub fn fetch_recent_decision_candidates(
                      WHERE owner_id = ?1 \
                      AND status = 'active' \
                      AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+                     AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+                     AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
                      ORDER BY julianday(created_at) DESC \
                      LIMIT 50 \
                  ) \
@@ -242,6 +246,8 @@ pub fn fetch_recent_decision_candidates(
                      FROM decisions \
                      WHERE status = 'active' \
                      AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+                     AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+                     AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
                      ORDER BY id DESC \
                      LIMIT 50 \
                  ) \
@@ -252,6 +258,8 @@ pub fn fetch_recent_decision_candidates(
                      FROM decisions \
                      WHERE status = 'active' \
                      AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+                     AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+                     AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
                      ORDER BY julianday(created_at) DESC \
                      LIMIT 50 \
                  ) \
@@ -354,6 +362,8 @@ pub fn detect_conflict(
              WHERE owner_id = ?1 \
              AND status = 'active' \
              AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+             AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+             AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
              ORDER BY id DESC \
              LIMIT 50",
             true,
@@ -364,6 +374,8 @@ pub fn detect_conflict(
              FROM decisions \
              WHERE status = 'active' \
              AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+             AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+             AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
              ORDER BY id DESC \
              LIMIT 50",
             false,

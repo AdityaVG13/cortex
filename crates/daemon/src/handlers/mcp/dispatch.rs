@@ -89,7 +89,17 @@ pub(crate) async fn mcp_dispatch(
             let permission = require_arg(args, &["permission"], "permission")?;
             let scope = arg_str(args, &["scope"]).unwrap_or("*");
             let conn = state.db.lock(cx).await.map_err(|err| err.to_string())?;
-            revoke_permission(&conn, owner_id, &client, permission, scope).map(|revoked| json!({"revoked":revoked}))
+            // Lookup matches stored ids after normalize; revoke must delete
+            // the same set or a pre-normalize grant keeps working forever.
+            let listed = list_permissions(&conn, owner_id)?;
+            let mut revoked = revoke_permission(&conn, owner_id, &client, permission, scope)?;
+            for row in listed {
+                let stored = row["client"].as_str().unwrap_or("");
+                if stored != client && normalize_permission_client_id(stored) == client {
+                    revoked += revoke_permission(&conn, owner_id, stored, permission, scope)?;
+                }
+            }
+            Ok(json!({"revoked": revoked}))
         }
         "cortex_lastCall" => {
             let conn = state.db_read.lock(cx).await.map_err(|err| err.to_string())?;

@@ -116,16 +116,21 @@ impl View {
         let empty = Vec::new();
         let results = payload["results"].as_array().unwrap_or(&empty);
         let mut cards = Vec::new();
+        let mut hidden = 0usize;
         for (index, item) in results.iter().enumerate() {
             let statement = item["excerpt"].as_str().unwrap_or("").trim().to_string();
-            if statement.is_empty()
-                || !item["source"]
-                    .as_str()
-                    .map(|s| s.contains("::"))
-                    .unwrap_or(false)
-            {
-                // Family/merged rows without a canonical reference cannot be
-                // expanded or closed; they are not Cards.
+            let has_handle = item["source"]
+                .as_str()
+                .map(|s| s.contains("::"))
+                .unwrap_or(false);
+            if statement.is_empty() || !has_handle {
+                // Family/merged rows and context/source keys without a Card
+                // handle cannot be expanded; they are not Cards. Count
+                // non-empty ones as engine leads so a hidden cutoff cannot
+                // masquerade as no_match.
+                if !statement.is_empty() {
+                    hidden += 1;
+                }
                 continue;
             }
             let arms = item["why"]["clockVotes"]["admittedArms"]
@@ -201,7 +206,7 @@ impl View {
             profile: frame.profile.as_str().to_string(),
             cards: delivered,
             leads: Vec::new(),
-            engine_leads: payload["routes"]["leads"].as_u64().unwrap_or(0) as usize,
+            engine_leads: payload["routes"]["leads"].as_u64().unwrap_or(0) as usize + hidden,
             coverage: Coverage {
                 covered,
                 unmet,
