@@ -32,7 +32,8 @@ impl SupervisorControl {
     }
 
     fn join(&self) {
-        if let Some(handle) = self.handle.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        let handle = self.handle.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(handle) = handle {
             let _ = handle.join();
         }
     }

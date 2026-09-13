@@ -196,4 +196,27 @@ fn write_config_atomic_replaces_existing_file() {
     write_config_atomic(&path, "{\"keep\":\"new\"}").expect("atomic replace");
     assert_eq!(fs::read_to_string(&path).expect("reread"), "{\"keep\":\"new\"}");
     assert!(temp_root.0.join("mcp.json").exists(), "replace must not leave the destination missing");
+    let leftovers: Vec<_> = fs::read_dir(&temp_root.0)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.file_name().map(|name| name.to_string_lossy().contains(".tmp")).unwrap_or(false))
+        .collect();
+    assert!(leftovers.is_empty(), "atomic write must not leave tmp files: {leftovers:?}");
+}
+
+#[test]
+fn empty_and_bom_json_configs_register_as_objects() {
+    let temp_root = TestTempDir::new("cortex_control_center_editor_empty_json");
+    let home = &temp_root.0;
+    fs::create_dir_all(home.join(".cursor")).expect("cursor dir");
+    let config_path = home.join(".cursor").join("mcp.json");
+    fs::write(&config_path, "\u{feff}").expect("bom-only config");
+    let exe = if cfg!(windows) { r"C:\cortex-test\bin\cortex.exe" } else { "/opt/cortex/bin/cortex" };
+    let targets = editor_targets(home);
+    let cursor = targets.iter().find(|target| target.id == "cursor").unwrap();
+    let result = register_editor(cursor, exe).expect("register bom empty");
+    assert!(result.registered, "{}", result.message);
+    let after: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config_path).expect("reread")).expect("json");
+    assert!(after.get("mcpServers").and_then(|value| value.get("cortex")).is_some(), "{after}");
 }

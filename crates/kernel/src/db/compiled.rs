@@ -64,13 +64,10 @@ pub fn snapshot(conn: &Connection, environment: &str) -> rusqlite::Result<Snapsh
     })?;
     for row in rows {
         let (record, kind, revision, body, seq, valid_from, valid_until, epistemic) = row?;
-        let body: Value = serde_json::from_str(&body).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                3,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
-        })?;
+        // Corrupt body is omitted, not rewritten as {}. Sibling facts stay loadable.
+        let Ok(body) = serde_json::from_str::<Value>(&body) else {
+            continue;
+        };
         let mut fields: BTreeMap<String, Value> = body
             .as_object()
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())

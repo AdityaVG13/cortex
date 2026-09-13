@@ -57,9 +57,19 @@ pub fn focus_end(
         .ok();
     let (id, raw_json) =
         session.ok_or_else(|| format!("No open focus session with label '{label}'"))?;
-    let entries: Vec<String> = serde_json::from_str(&raw_json).map_err(|e| {
-        format!("focus session '{label}' raw_entries is not valid JSON: {e}")
-    })?;
+    let entries: Vec<String> = match serde_json::from_str(&raw_json) {
+        Ok(entries) => entries,
+        Err(e) => {
+            conn.execute(
+                "UPDATE focus_sessions SET status = 'closed', ended_at = datetime('now') WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|err| err.to_string())?;
+            return Err(format!(
+                "focus session '{label}' raw_entries is not valid JSON: {e}; session closed without a summary"
+            ));
+        }
+    };
     if entries.is_empty() {
         conn.execute(
             "UPDATE focus_sessions SET status = 'closed', ended_at = datetime('now') WHERE id = ?1",

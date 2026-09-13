@@ -6,10 +6,8 @@ pub fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
     let mut i = 0usize;
     while i < args.len() {
         if args[i] == flag {
-            if let Some(value) = args.get(i + 1) {
-                if !is_cli_option_token(value) && !value.trim().is_empty() {
-                    return Some(value.clone());
-                }
+            if let Some((value, _)) = take_flag_value(args, i) {
+                return Some(value);
             }
             i += 1;
             continue;
@@ -24,13 +22,13 @@ pub fn parse_flag_values(args: &[String], flag: &str) -> Vec<String> {
     let mut i = 0usize;
     while i < args.len() {
         if args[i] == flag {
-            if let Some(value) = args.get(i + 1) {
-                if !is_cli_option_token(value) && !value.trim().is_empty() {
-                    values.push(value.clone());
-                }
-                i += 2;
+            if let Some((value, next)) = take_flag_value(args, i) {
+                values.push(value);
+                i = next;
                 continue;
             }
+            i += 1;
+            continue;
         }
         i += 1;
     }
@@ -41,14 +39,34 @@ pub(crate) fn is_cli_option_token(value: &str) -> bool {
     value.starts_with("--")
 }
 
+/// Value after a flag. `--` quotes the next token so a path or name may start with `--`.
+/// Returns `(value, index_after_consumed_tokens)`.
+fn take_flag_value(args: &[String], flag_index: usize) -> Option<(String, usize)> {
+    let Some(value) = args.get(flag_index + 1) else {
+        return None;
+    };
+    if value == "--" {
+        let explicit = args.get(flag_index + 2)?;
+        if explicit.trim().is_empty() {
+            return None;
+        }
+        return Some((explicit.clone(), flag_index + 3));
+    }
+    if is_cli_option_token(value) || value.trim().is_empty() {
+        return None;
+    }
+    Some((value.clone(), flag_index + 2))
+}
+
 /// Drop `--home` / `--db` pairs so a nested subcommand is not eaten as a flag value.
 pub(crate) fn without_global_value_flags(args: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     let mut i = 0usize;
     while i < args.len() {
         if GLOBAL_VALUE_FLAGS.contains(&args[i].as_str()) {
-            i += 1;
-            if i < args.len() && !is_cli_option_token(&args[i]) {
+            if let Some((_, next)) = take_flag_value(args, i) {
+                i = next;
+            } else {
                 i += 1;
             }
             continue;
@@ -65,8 +83,9 @@ pub fn first_positional<'a>(args: &'a [String], value_flags: &[&str]) -> Option<
     while i < args.len() {
         let arg = args[i].as_str();
         if value_flags.contains(&arg) || GLOBAL_VALUE_FLAGS.contains(&arg) {
-            i += 1;
-            if i < args.len() && !args[i].starts_with('-') {
+            if let Some((_, next)) = take_flag_value(args, i) {
+                i = next;
+            } else {
                 i += 1;
             }
             continue;
@@ -87,13 +106,13 @@ pub fn validate_cli_options_allowing_one_positional_or_exit(args: &[String], val
     while i < args.len() {
         let arg = args[i].as_str();
         if value_flags.contains(&arg) || GLOBAL_VALUE_FLAGS.contains(&arg) {
-            flags.push(args[i].clone());
-            if let Some(value) = args.get(i + 1) {
-                flags.push(value.clone());
-                i += 2;
-                continue;
+            if let Some((_, next)) = take_flag_value(args, i) {
+                flags.extend(args[i..next].iter().cloned());
+                i = next;
+            } else {
+                flags.push(args[i].clone());
+                i += 1;
             }
-            i += 1;
             continue;
         }
         if boolean_flags.contains(&arg) || arg.starts_with('-') {
@@ -116,13 +135,10 @@ pub(crate) fn validate_cli_options(args: &[String], value_flags: &[&str], boolea
     while i < args.len() {
         let arg = args[i].as_str();
         if value_flags.contains(&arg) || GLOBAL_VALUE_FLAGS.contains(&arg) {
-            let Some(value) = args.get(i + 1) else {
+            let Some((_, next)) = take_flag_value(args, i) else {
                 return Err(format!("Missing value for {arg}"));
             };
-            if is_cli_option_token(value) {
-                return Err(format!("Missing value for {arg}"));
-            }
-            i += 2;
+            i = next;
             continue;
         }
         if boolean_flags.contains(&arg) {
@@ -147,10 +163,9 @@ pub fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, St
     let Some(idx) = args.iter().position(|a| a == flag) else {
         return Ok(None);
     };
-    let raw = args.get(idx + 1).ok_or_else(|| format!("missing value for {flag}"))?;
-    if is_cli_option_token(raw) {
+    let Some((raw, _)) = take_flag_value(args, idx) else {
         return Err(format!("missing value for {flag}"));
-    }
+    };
     let value = raw.parse::<usize>().map_err(|_| format!("invalid value for {flag}: '{raw}'"))?;
     if value == 0 {
         return Err(format!("{flag} must be >= 1"));

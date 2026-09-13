@@ -335,3 +335,56 @@ fn compare_rejects_quote_bearing_kind_instead_of_interpolating_sql() {
         );
     });
 }
+
+#[test]
+fn compare_accepts_ident_kinds_other_than_memory_and_decision() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let cx = &cx;
+        let state = solo_state();
+        let (note_ref, other) = {
+            let conn = state.db.lock(cx).await.unwrap();
+            conn.execute(
+                "INSERT INTO memories (text, source, type, source_agent, status) VALUES ('NOTE-1 compare ident kind row', 'pending', 'note', 'decomp', 'active')",
+                [],
+            )
+            .unwrap();
+            let id = conn.last_insert_rowid();
+            let note_ref = format!("note::{id}");
+            conn.execute(
+                "UPDATE memories SET source = ?1 WHERE id = ?2",
+                rusqlite::params![note_ref, id],
+            )
+            .unwrap();
+            drop(conn);
+            let stored = dispatch(
+                cx,
+                &state,
+                caller(),
+                Operation::Commit,
+                &json!({"entries": [{"kind": "decision", "text": "NOTE-1 partner: keep the ledger retry bound at three attempts"}]}),
+            )
+            .await
+            .unwrap();
+            let other = format!(
+                "decision::{}",
+                stored["receipt"]["entries"]["entry.decision"]["value"]
+                    .as_str()
+                    .unwrap()
+            );
+            (note_ref, other)
+        };
+        let cmp = dispatch(
+            cx,
+            &state,
+            caller(),
+            Operation::Query,
+            &json!({"need": "what changed", "profile": "compare", "compare": [note_ref, other]}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            cmp["status"], "invalid_request",
+            "ident kinds other than memory/decision must stay comparable: {cmp}"
+        );
+    });
+}

@@ -15,7 +15,8 @@ mod usage;
 pub use boot::run_boot_cli;
 pub use cleanup::{run_backup_cli, run_cleanup_cli, run_restore_cli};
 pub use common::{
-    first_positional, parse_flag_usize, parse_flag_value, validate_cli_options_allowing_one_positional_or_exit, validate_cli_options_or_exit,
+    first_positional, parse_flag_usize, parse_flag_value, parse_flag_values, validate_cli_options_allowing_one_positional_or_exit,
+    validate_cli_options_or_exit,
 };
 pub use daemon::run_daemon;
 pub use doctor::run_doctor_cli;

@@ -2,6 +2,8 @@ use crate::daemon::paths::{cortex_home, find_cortex_binary, installed_plugin_bin
 use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize)]
@@ -178,19 +180,42 @@ pub(crate) fn write_config_atomic(path: &Path, contents: &str) -> Result<(), Str
     fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("config");
     let temp_path = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
-    fs::write(&temp_path, contents).map_err(|e| format!("write {}: {e}", temp_path.display()))?;
+    let write_tmp = (|| {
+        let mut file = File::create(&temp_path).map_err(|e| format!("write {}: {e}", temp_path.display()))?;
+        file.write_all(contents.as_bytes()).map_err(|e| format!("write {}: {e}", temp_path.display()))?;
+        file.sync_all().map_err(|e| format!("flush {}: {e}", temp_path.display()))?;
+        Ok::<(), String>(())
+    })();
+    if let Err(err) = write_tmp {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
     // Unix rename replaces atomically. Unlinking first opens a crash window that
     // wipes the live editor config if rename never completes.
     #[cfg(windows)]
     {
         if path.exists() {
-            fs::remove_file(path).map_err(|e| format!("replace {}: {e}", path.display()))?;
+            if let Err(e) = fs::remove_file(path) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(format!("replace {}: {e}", path.display()));
+            }
         }
     }
-    fs::rename(&temp_path, path).map_err(|err| {
-        let _ = fs::remove_file(&temp_path);
-        format!("Failed to save {}: {err}", path.display())
-    })?;
+    if let Err(err) = fs::rename(&temp_path, path) {
+        #[cfg(windows)]
+        {
+            if !path.exists() {
+                let _ = fs::rename(&temp_path, path);
+            } else {
+                let _ = fs::remove_file(&temp_path);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = fs::remove_file(&temp_path);
+        }
+        return Err(format!("Failed to save {}: {err}", path.display()));
+    }
     Ok(())
 }
 
@@ -210,11 +235,18 @@ fn json_registration_for(target: &EditorTarget, cortex_exe: &str) -> serde_json:
     registration
 }
 
+fn parse_object_json(content: &str, config_path: &Path) -> Result<serde_json::Value, String> {
+    let trimmed = content.trim_start_matches('\u{feff}').trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(trimmed).map_err(|e| format!("Invalid JSON in {}: {e}", config_path.display()))
+}
+
 fn read_json_config(config_path: &Path) -> Result<serde_json::Value, String> {
     if config_path.exists() {
         let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid JSON in {}: {e}", config_path.display()))
+        parse_object_json(&content, config_path)
     } else {
         Ok(serde_json::json!({}))
     }
@@ -223,8 +255,11 @@ fn read_json_config(config_path: &Path) -> Result<serde_json::Value, String> {
 fn read_toml_config(config_path: &Path) -> Result<toml::Value, String> {
     if config_path.exists() {
         let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
-        toml::from_str(&content)
-            .map_err(|e| format!("Invalid TOML in {}: {e}", config_path.display()))
+        let trimmed = content.trim_start_matches('\u{feff}');
+        if trimmed.trim().is_empty() {
+            return Ok(toml::Value::Table(Default::default()));
+        }
+        toml::from_str(trimmed).map_err(|e| format!("Invalid TOML in {}: {e}", config_path.display()))
     } else {
         Ok(toml::Value::Table(Default::default()))
     }

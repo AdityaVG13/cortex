@@ -121,27 +121,26 @@ impl DaemonState {
     }
 
     pub fn abort_managed_child(&self) -> Result<(), String> {
-        let mut child = self.child_lock();
-        if let Some(managed_child) = child.as_mut() {
-            match managed_child.try_wait() {
-                Ok(Some(_)) => {
-                    let _ = child.take();
+        let Some(mut managed) = self.child.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            return Ok(());
+        };
+        match managed.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => {
+                if let Err(err) = managed.kill() {
+                    let _ = managed.wait();
+                    return Err(format!("Failed to stop managed daemon process: {err}"));
                 }
-                Ok(None) => {
-                    if let Err(err) = managed_child.kill() {
-                        Self::reap_managed_child(&mut child);
-                        return Err(format!("Failed to stop managed daemon process: {err}"));
-                    }
-                    let _ = managed_child.wait();
-                    let _ = child.take();
-                }
-                Err(err) => {
-                    eprintln!("[cortex-control-center] failed to poll managed daemon process during stop; reaping stale handle: {err}");
-                    Self::reap_managed_child(&mut child);
-                }
+                let _ = managed.wait();
+                Ok(())
+            }
+            Err(err) => {
+                eprintln!("[cortex-control-center] failed to poll managed daemon process during stop; reaping stale handle: {err}");
+                let _ = managed.kill();
+                let _ = managed.wait();
+                Ok(())
             }
         }
-        Ok(())
     }
 
     pub fn stop(&self) -> Result<(), String> {
@@ -152,7 +151,7 @@ impl DaemonState {
 
 impl Drop for DaemonState {
     fn drop(&mut self) {
-        let mut child = self.child_lock();
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner()).take();
         Self::reap_managed_child(&mut child);
     }
 }

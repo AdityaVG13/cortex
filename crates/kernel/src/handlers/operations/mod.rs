@@ -832,6 +832,12 @@ async fn run_recipe(
     }
 }
 
+fn compare_kind_is_ident(kind: &str) -> bool {
+    let mut chars = kind.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// `compare`: typed alignment of two records — fields, validity, status,
 /// revision heads, conflict relations and a token-level text delta. No
 /// prose semantics are manufactured; what differs is listed, not judged.
@@ -861,24 +867,24 @@ async fn compare(cx: &asupersync::Cx, state: &RuntimeState, caller: &Caller<'_>,
                 json!({"status": ResponseStatus::NoMatch.as_str(), "error": format!("`{reference}` is not readable in your scope")}),
             );
         };
-        let (table, default_kind) = match kind {
-            "decision" => ("decisions", "decision"),
-            "memory" => ("memories", "memory"),
-            _ => {
-                return Ok(
-                    json!({"status": ResponseStatus::InvalidRequest.as_str(), "error": format!("`{reference}` is not a logical reference"), "field": "compare"}),
-                );
-            }
+        let (table, address_ns) = if kind == "decision" {
+            ("decisions", "decision")
+        } else if compare_kind_is_ident(kind) {
+            ("memories", "memory")
+        } else {
+            return Ok(
+                json!({"status": ResponseStatus::InvalidRequest.as_str(), "error": format!("`{reference}` is not a logical reference"), "field": "compare"}),
+            );
         };
         let (kind_col, status, retention, created, valid_from, valid_until) = conn
             .query_row(
                 &format!("SELECT COALESCE(type, ?2), status, COALESCE(retention_class,'operational'), created_at, valid_from, valid_until FROM {table} WHERE id = ?1"),
-                rusqlite::params![id_num, default_kind],
+                rusqlite::params![id_num, kind],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?)),
             )
             .map_err(|e| e.to_string())?;
         let record_id =
-            records::record_for_legacy(&conn, default_kind, id_num).map_err(|e| e.to_string())?;
+            records::record_for_legacy(&conn, address_ns, id_num).map_err(|e| e.to_string())?;
         let heads = record_id
             .as_ref()
             .map(|r| records::heads(&conn, r))

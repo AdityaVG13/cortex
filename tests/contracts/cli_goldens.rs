@@ -294,3 +294,34 @@ fn assert_golden(name: &str, actual: &str) {
         path.display()
     );
 }
+
+#[test]
+fn parse_flag_values_does_not_eat_the_next_option() {
+    let args = vec![
+        "--path".into(),
+        "--scope".into(),
+        "proj".into(),
+        "--path".into(),
+        "/tmp/ok".into(),
+    ];
+    assert_eq!(
+        cortex_daemon::cli::parse_flag_values(&args, "--path"),
+        vec!["/tmp/ok"]
+    );
+}
+
+#[test]
+fn parse_flag_value_quotes_values_that_start_with_dashes() {
+    let quoted = vec!["--home".into(), "--".into(), "--odd-home".into()];
+    assert_eq!(
+        cortex_daemon::cli::parse_flag_value(&quoted, "--home").as_deref(),
+        Some("--odd-home")
+    );
+    let skipped = vec!["--home".into(), "--db".into(), "/tmp/x".into()];
+    assert_eq!(cortex_daemon::cli::parse_flag_value(&skipped, "--home"), None);
+    let paths = vec!["--path".into(), "--".into(), "--odd-dir".into()];
+    assert_eq!(
+        cortex_daemon::cli::parse_flag_values(&paths, "--path"),
+        vec!["--odd-dir"]
+    );
+}

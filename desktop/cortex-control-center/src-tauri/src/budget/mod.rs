@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -301,26 +301,7 @@ pub fn validate_budget_draft(draft: BudgetConfigDraft) -> Result<BudgetTomlFile,
 }
 
 pub fn write_budget_config_file(path: &Path, contents: &str) -> Result<(), String> {
-    let parent = path.parent().ok_or_else(|| format!("Invalid budget config path: {}", path.display()))?;
-    fs::create_dir_all(parent).map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
-    let temp_path = parent.join(format!(".{}.{}.tmp", BUDGETS_FILE_NAME, std::process::id()));
-    {
-        let mut file = File::create(&temp_path).map_err(|err| format!("Failed to create {}: {err}", temp_path.display()))?;
-        file.write_all(contents.as_bytes()).map_err(|err| format!("Failed to write {}: {err}", temp_path.display()))?;
-        file.sync_all().map_err(|err| format!("Failed to flush {}: {err}", temp_path.display()))?;
-    }
-
-    #[cfg(windows)]
-    {
-        if path.exists() {
-            fs::remove_file(path).map_err(|err| format!("Failed to replace {}: {err}", path.display()))?;
-        }
-    }
-    fs::rename(&temp_path, path).map_err(|err| {
-        let _ = fs::remove_file(&temp_path);
-        format!("Failed to save {}: {err}", path.display())
-    })?;
-    Ok(())
+    crate::editor::write_config_atomic(path, contents)
 }
 
 pub fn save_budget_from_draft(draft: BudgetConfigDraft) -> Result<BudgetConfigSnapshot, String> {

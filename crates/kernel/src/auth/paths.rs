@@ -66,19 +66,24 @@ impl CortexPaths {
         Self::resolve_with_overrides(home.as_deref(), db.as_deref())
     }
     /// `--home --db /tmp/x` must not treat `--db` as the home path.
+    /// `--home -- --odd` keeps a home whose name starts with `--`.
     fn find_flag(args: &[String], flag: &str) -> Option<String> {
         let mut i = 0usize;
         while i < args.len() {
             if args[i] == flag {
-                match args.get(i + 1) {
-                    Some(value) if !is_flag_token(value) && !value.trim().is_empty() => {
+                if let Some(value) = args.get(i + 1) {
+                    if value == "--" {
+                        if let Some(explicit) = args.get(i + 2) {
+                            if !explicit.trim().is_empty() {
+                                return Some(explicit.clone());
+                            }
+                        }
+                    } else if !is_flag_token(value) && !value.trim().is_empty() {
                         return Some(value.clone());
                     }
-                    _ => {
-                        i += 1;
-                        continue;
-                    }
                 }
+                i += 1;
+                continue;
             }
             i += 1;
         }
