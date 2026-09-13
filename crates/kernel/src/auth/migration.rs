@@ -2,7 +2,13 @@ use super::paths::CortexPaths;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+fn remove_incomplete_dest(db: &Path) {
+    let _ = fs::remove_file(db);
+    let _ = fs::remove_file(db.with_extension("db-wal"));
+    let _ = fs::remove_file(db.with_extension("db-shm"));
+}
 pub fn legacy_db_path() -> PathBuf {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -28,26 +34,43 @@ pub fn migrate_legacy_db(paths: &CortexPaths) -> Result<bool, String> {
         Err(err) => return Err(format!("create dest db: {err}")),
     }
     if let Err(err) = fs::copy(&legacy, &paths.db) {
-        let _ = fs::remove_file(&paths.db);
+        remove_incomplete_dest(&paths.db);
         return Err(format!("copy db: {err}"));
     }
     for ext in ["db-wal", "db-shm"] {
         let src = legacy.with_extension(ext);
         if src.exists() {
             let dst = paths.db.with_extension(ext);
-            fs::copy(&src, &dst).map_err(|e| format!("copy {ext}: {e}"))?;
+            if let Err(e) = fs::copy(&src, &dst) {
+                remove_incomplete_dest(&paths.db);
+                return Err(format!("copy {ext}: {e}"));
+            }
         }
     }
-    let conn =
-        rusqlite::Connection::open(&paths.db).map_err(|e| format!("open migrated db: {e}"))?;
+    let conn = match rusqlite::Connection::open(&paths.db) {
+        Ok(conn) => conn,
+        Err(e) => {
+            remove_incomplete_dest(&paths.db);
+            return Err(format!("open migrated db: {e}"));
+        }
+    };
     let busy_timeout_ms = crate::db::SQLITE_BUSY_TIMEOUT_MS;
-    conn.execute_batch(&format!("PRAGMA busy_timeout = {busy_timeout_ms};"))
-        .map_err(|e| format!("configure migrated db busy timeout: {e}"))?;
-    let check: String = conn
-        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
-        .map_err(|e| format!("integrity check: {e}"))?;
+    if let Err(e) = conn.execute_batch(&format!("PRAGMA busy_timeout = {busy_timeout_ms};")) {
+        drop(conn);
+        remove_incomplete_dest(&paths.db);
+        return Err(format!("configure migrated db busy timeout: {e}"));
+    }
+    let check: String = match conn.query_row("PRAGMA integrity_check", [], |row| row.get(0)) {
+        Ok(check) => check,
+        Err(e) => {
+            drop(conn);
+            remove_incomplete_dest(&paths.db);
+            return Err(format!("integrity check: {e}"));
+        }
+    };
     if check != "ok" {
-        let _ = fs::remove_file(&paths.db);
+        drop(conn);
+        remove_incomplete_dest(&paths.db);
         return Err(format!("integrity check failed on migrated db: {check}"));
     }
     eprintln!(

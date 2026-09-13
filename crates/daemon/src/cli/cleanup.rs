@@ -193,7 +193,7 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
     let _ = auth::cleanup_stale_pid_file(paths);
     match db::backup::restore_from(Path::new(restore_file), &paths.db, &paths.home) {
         Ok(report) => {
-            let verified = report.integrity_ok && report.sample_reads_ok;
+            let verified = report.to_json()["verified"].as_bool().unwrap_or(false);
             println!(
                 "Restore complete: epoch {} (was {}); integrity={} sample_reads={} records={} decisions={} memories={} aliases_expired={} projections_rebuilt={}",
                 report.new_restore_epoch, report.previous_restore_epoch, report.integrity_ok, report.sample_reads_ok, report.records, report.decisions, report.memories, report.aliases_expired, report.projections_rebuilt

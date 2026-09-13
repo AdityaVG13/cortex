@@ -100,6 +100,7 @@ pub struct RestoreReport {
     pub erasure_ledger_present: bool,
     pub erasures_reapplied: usize,
     pub quarantined: bool,
+    pub projections_ok: bool,
     pub report_path: PathBuf,
 }
 
@@ -117,7 +118,11 @@ impl RestoreReport {
             "erasure_ledger_present": self.erasure_ledger_present,
             "erasures_reapplied": self.erasures_reapplied,
             "quarantined": self.quarantined,
-            "verified": self.integrity_ok && self.sample_reads_ok && !self.quarantined,
+            "projections_ok": self.projections_ok,
+            "verified": self.integrity_ok
+                && self.sample_reads_ok
+                && !self.quarantined
+                && self.projections_ok,
         })
     }
 }
@@ -156,18 +161,19 @@ pub fn restore_from(
         .flatten()
         .unwrap_or_else(|| "0".into());
     // Copy in through the backup API so WAL sidecars of the old file never
-    // replay over the restored pages.
+    // replay over the restored pages. Do not hold a second connection to
+    // `db_path` during the copy: dropping it later can checkpoint the old
+    // WAL onto the restored pages.
     let source = open_configured(backup_file)?;
-    let target = open_configured(db_path)?;
     {
-        let mut target_mut = Connection::open(db_path).map_err(|e| e.to_string())?;
-        let backup = rusqlite::backup::Backup::new(&source, &mut target_mut)
+        let mut dest = Connection::open(db_path).map_err(|e| e.to_string())?;
+        let backup = rusqlite::backup::Backup::new(&source, &mut dest)
             .map_err(|e| format!("restore init: {e}"))?;
         backup
             .run_to_completion(128, std::time::Duration::from_millis(5), None)
             .map_err(|e| format!("restore run: {e}"))?;
     }
-    drop(target);
+    drop(source);
     let mut conn = open_configured(db_path)?;
     super::initialize_schema(&conn).map_err(|e| e.to_string())?;
     super::run_pending_migrations_quiet(&mut conn);
@@ -194,13 +200,17 @@ pub fn restore_from(
     let erasure_ledger_present =
         count(&conn, "SELECT COUNT(*) FROM erasures") > 0 || reconciliation.ledger_entries == 0;
     // Disposable projections are rebuilt, never trusted from the backup.
+    // `rebuild_fts` is INSERT OR IGNORE (keeps backup FTS rows); wipe first.
     let mut projections_rebuilt = 0usize;
-    if super::rebuild_fts(&conn).is_ok() {
+    let fts_ok = super::reindex_fts(&conn).is_ok();
+    if fts_ok {
         projections_rebuilt += 1;
     }
-    if crate::clockwork::rebuild_clock_projections(&conn, 256).is_ok() {
+    let clock_ok = crate::clockwork::rebuild_clock_projections(&conn, 256).is_ok();
+    if clock_ok {
         projections_rebuilt += 1;
     }
+    let projections_ok = fts_ok && clock_ok;
     let integrity_ok = super::verify_integrity(&conn).unwrap_or(false);
     let records = count(&conn, "SELECT COUNT(*) FROM records");
     let decisions = count(&conn, "SELECT COUNT(*) FROM decisions");
@@ -236,6 +246,7 @@ pub fn restore_from(
         erasure_ledger_present,
         erasures_reapplied: reconciliation.reapplied,
         quarantined: reconciliation.quarantined,
+        projections_ok,
         report_path: home.join(LAST_VERIFIED_RESTORE),
     };
     let report_json = serde_json::to_string_pretty(&report.to_json())

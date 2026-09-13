@@ -170,13 +170,17 @@ pub fn verify_obligation(
     passed: bool,
     authority: Option<&str>,
 ) -> Result<String, String> {
-    let (state, registered): (String, String) = conn
-        .query_row(
-            "SELECT state, predicate_json FROM obligations WHERE record_id = ?1",
-            params![record_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(|_| format!("unknown obligation {record_id}"))?;
+    let (state, registered): (String, String) = match conn.query_row(
+        "SELECT state, predicate_json FROM obligations WHERE record_id = ?1",
+        params![record_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ) {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return Err(format!("unknown obligation {record_id}"));
+        }
+        Err(err) => return Err(err.to_string()),
+    };
     let registered: Value = serde_json::from_str(&registered).map_err(|e| {
         format!("obligation {record_id} predicate_json is not valid JSON: {e}")
     })?;

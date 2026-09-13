@@ -32,6 +32,13 @@ pub fn aggregate_old_feedback_with_window(
     }
     let mut aggregated = 0usize;
     for (source, net_signal, _count) in &sources {
+        let Ok(sp) = crate::db::SqliteSavepoint::enter(conn, "agg_fb") else {
+            failures.push(MaintenanceFailure {
+                op: "aggregate_old_feedback SAVEPOINT".into(),
+                error: "failed to enter savepoint".into(),
+            });
+            continue;
+        };
         let deleted = exec_counted(
             conn,
             failures,
@@ -41,17 +48,28 @@ pub fn aggregate_old_feedback_with_window(
              AND julianday('now') - julianday(created_at) > ?2",
             params![source, aggregation_days],
         );
-        if deleted > 0 {
-            exec_counted(
-                conn,
-                failures,
-                "aggregate_old_feedback INSERT aggregated recall_feedback",
-                "INSERT INTO recall_feedback (query_text, result_source, result_type, signal, agent, created_at) \
-                 VALUES ('[aggregated]', ?1, 'aggregated', ?2, 'compaction', datetime('now'))",
-                params![source, net_signal],
-            );
-            aggregated += deleted;
+        if deleted == 0 {
+            continue;
         }
+        let inserted = exec_counted(
+            conn,
+            failures,
+            "aggregate_old_feedback INSERT aggregated recall_feedback",
+            "INSERT INTO recall_feedback (query_text, result_source, result_type, signal, agent, created_at) \
+             VALUES ('[aggregated]', ?1, 'aggregated', ?2, 'compaction', datetime('now'))",
+            params![source, net_signal],
+        );
+        if inserted == 0 {
+            continue;
+        }
+        if let Err(err) = sp.release() {
+            failures.push(MaintenanceFailure {
+                op: "aggregate_old_feedback RELEASE".into(),
+                error: err.to_string(),
+            });
+            continue;
+        }
+        aggregated += deleted;
     }
     aggregated
 }
