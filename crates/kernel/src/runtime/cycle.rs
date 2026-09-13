@@ -72,9 +72,45 @@ fn ensure(conn: &Connection) -> Result<(), String> {
 
 fn cues(text: &str) -> BTreeSet<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|s| !s.is_empty())
+        .filter(|s| s.len() >= 3 && s.len() <= 64)
         .map(str::to_lowercase)
+        .filter(|s| !is_observation_stop(s))
         .collect()
+}
+
+fn is_observation_stop(token: &str) -> bool {
+    matches!(
+        token,
+        "the"
+            | "and"
+            | "that"
+            | "this"
+            | "with"
+            | "from"
+            | "for"
+            | "are"
+            | "was"
+            | "were"
+            | "not"
+            | "has"
+            | "have"
+            | "had"
+            | "been"
+            | "but"
+            | "its"
+            | "into"
+            | "than"
+            | "then"
+            | "they"
+            | "them"
+            | "their"
+            | "you"
+            | "your"
+            | "our"
+            | "use"
+            | "using"
+            | "used"
+    )
 }
 
 fn validate(spec: &NeedSpec) -> Result<BTreeSet<String>, String> {
@@ -530,37 +566,37 @@ fn merge_prepared(views: Vec<PreparedView>, max_results: usize, max_bytes: usize
     let mut pending = 0usize;
     let mut restore = String::new();
     let mut policy = String::new();
-    let mut saw_ready = false;
     let mut blocking = String::new();
-    for view in views {
+    for view in &views {
         pending += view.projection_pending;
         if restore.is_empty() {
-            restore = view.restore_epoch;
+            restore = view.restore_epoch.clone();
         }
         if policy.is_empty() {
-            policy = view.policy_epoch;
+            policy = view.policy_epoch.clone();
         }
-        if view.status == "ready" {
-            saw_ready = true;
+        if view.status != "ready" && blocking.is_empty() {
+            blocking = view.status.clone();
+        }
+    }
+    // Incomplete scopes keep the merge unready. One ready sibling must not
+    // report a complete answer while another root is still pending, denied,
+    // or exception-incomplete — that would omit the blocked root's evidence
+    // while claiming `ready`.
+    let status = if !blocking.is_empty() {
+        blocking
+    } else {
+        "ready".to_string()
+    };
+    if status == "ready" {
+        for view in views {
             for item in view.evidence {
                 if seen.insert(item.source_id.clone()) {
                     evidence.push(item);
                 }
             }
-        } else if blocking.is_empty() {
-            blocking = view.status;
         }
     }
-    // Incomplete scopes keep their status. Their evidence must not upgrade the
-    // merge to `ready` — materialize already refuses to treat a partial bundle
-    // as absence/exception-complete.
-    let status = if saw_ready {
-        "ready".to_string()
-    } else if !blocking.is_empty() {
-        blocking
-    } else {
-        "ready".to_string()
-    };
     evidence.truncate(max_results);
     let mut payload = String::new();
     if status == "ready" {

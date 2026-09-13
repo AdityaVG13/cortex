@@ -128,8 +128,21 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
             .filter(|c| c.source_kind == "memory")
             .map(|c| c.source_id)
             .collect();
-        let dec_allow = super::capsules::boot_scope_allowlist(conn, "decision", &decision_ids);
-        let mem_allow = super::capsules::boot_scope_allowlist(conn, "memory", &memory_ids);
+        let dec_allow = match super::capsules::boot_scope_allowlist(conn, "decision", &decision_ids)
+        {
+            Ok(allow) => allow,
+            Err(_) => {
+                candidates.clear();
+                return;
+            }
+        };
+        let mem_allow = match super::capsules::boot_scope_allowlist(conn, "memory", &memory_ids) {
+            Ok(allow) => allow,
+            Err(_) => {
+                candidates.clear();
+                return;
+            }
+        };
         candidates.retain(|c| match c.source_kind {
             "decision" => super::capsules::keep_boot_id(&dec_allow, c.source_id),
             "memory" => super::capsules::keep_boot_id(&mem_allow, c.source_id),

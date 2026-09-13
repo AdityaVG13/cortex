@@ -81,25 +81,22 @@ pub fn set_boot_paths(paths: &[String]) {
 pub fn with_boot_paths<R>(f: impl FnOnce(&[String]) -> R) -> R {
     BOOT_PATHS.with(|cell| f(&cell.borrow()))
 }
-/// `None` means the boot is unscoped and every id stays eligible.
-/// `Some(empty)` means the boot is path-scoped but no id survived: a failed
-/// path lookup is not "no paths" (read law would treat that as visible and
-/// leak every foreign project into constraints / recent / identity).
+/// `Ok(None)` means the boot is unscoped and every id stays eligible.
+/// `Ok(Some(empty))` means the boot is path-scoped and no id survived.
+/// `Err` is a failed path lookup: not "no paths" (read law would treat that
+/// as visible and leak every foreign project into constraints / recent / identity).
 pub(crate) fn boot_scope_allowlist(
     conn: &Connection,
     target_type: &str,
     ids: &[i64],
-) -> Option<HashSet<i64>> {
+) -> Result<Option<HashSet<i64>>, String> {
     with_boot_paths(|paths| {
         if paths.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let Ok(path_map) =
-            crate::handlers::recall::explicit_paths_by_target(conn, target_type, ids)
-        else {
-            return Some(HashSet::new());
-        };
-        Some(
+        let path_map =
+            crate::handlers::recall::explicit_paths_by_target(conn, target_type, ids)?;
+        Ok(Some(
             ids.iter()
                 .copied()
                 .filter(|id| {
@@ -109,7 +106,7 @@ pub(crate) fn boot_scope_allowlist(
                     )
                 })
                 .collect(),
-        )
+        ))
     })
 }
 pub(crate) fn keep_boot_id(allow: &Option<HashSet<i64>>, id: i64) -> bool {
@@ -476,7 +473,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?))) {
                 let collected: Vec<(i64, String, Option<String>, String)> = rows.flatten().collect();
                 let ids: Vec<i64> = collected.iter().map(|row| row.0).collect();
-                let allow = boot_scope_allowlist(conn, "decision", &ids);
+                if let Ok(allow) = boot_scope_allowlist(conn, "decision", &ids) {
                 let lines: Vec<String> = collected
                     .into_iter()
                     .filter(|(id, ..)| keep_boot_id(&allow, *id))
@@ -489,6 +486,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
                 if !lines.is_empty() {
                     parts.push(format!("New decisions:\n{}", lines.join("\n")));
                 }
+                }
             }
         }
         if let Ok(mut stmt) =
@@ -497,7 +495,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
                 let collected: Vec<(i64, String, String)> = rows.flatten().collect();
                 let ids: Vec<i64> = collected.iter().map(|row| row.0).collect();
-                let allow = boot_scope_allowlist(conn, "memory", &ids);
+                if let Ok(allow) = boot_scope_allowlist(conn, "memory", &ids) {
                 let lines: Vec<String> = collected
                     .into_iter()
                     .filter(|(id, ..)| keep_boot_id(&allow, *id))
@@ -509,6 +507,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
                     .collect();
                 if !lines.is_empty() {
                     parts.push(format!("New knowledge:\n{}", lines.join("\n")));
+                }
                 }
             }
         }
@@ -535,7 +534,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))) {
                 let collected: Vec<(i64, String, Option<String>)> = rows.flatten().collect();
                 let ids: Vec<i64> = collected.iter().map(|row| row.0).collect();
-                let allow = boot_scope_allowlist(conn, "decision", &ids);
+                if let Ok(allow) = boot_scope_allowlist(conn, "decision", &ids) {
                 let lines: Vec<String> = collected
                     .into_iter()
                     .filter(|(id, ..)| keep_boot_id(&allow, *id))
@@ -547,6 +546,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
                     .collect();
                 if !lines.is_empty() {
                     parts.push(format!("Recent decisions:\n{}", lines.join("\n")));
+                }
                 }
             }
         }

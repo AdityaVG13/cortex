@@ -104,7 +104,7 @@ pub fn set_state(
 
 pub fn inspect(conn: &Connection) -> Value {
     if ensure(conn).is_err() {
-        return json!({"global": "active", "scopes": []});
+        return json!({"global": "stopped", "scopes": []});
     }
     let mut scopes = Vec::new();
     if let Ok(mut stmt) =

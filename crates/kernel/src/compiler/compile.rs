@@ -55,8 +55,7 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
         "decisions",
         super::capsules::boot_owner(),
     );
-    let key: String = conn
-        .query_row(
+    let Ok(key) = conn.query_row(
             &format!(
                 "SELECT COUNT(*) || ':' || COALESCE(MAX(id),0) || ':' || COALESCE(MAX(julianday(updated_at)),'') \
                  FROM decisions WHERE status = 'active' AND COALESCE(retention_class,'operational') = 'durable' \
@@ -66,9 +65,12 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
                  AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){scope}"
             ),
             [],
-            |r| r.get(0),
-        )
-        .unwrap_or_default();
+            |r| r.get::<_, String>(0),
+        ) else {
+        // A failed COUNT is not "no durable decisions"; skip the cache so a
+        // later boot can load the real capsule.
+        return build_constraints_capsule_uncached(conn).unwrap_or_default();
+    };
     let key = format!(
         "{key}|{}|{}",
         super::capsules::with_boot_paths(|paths| paths.join("\u{1f}")),
@@ -79,34 +81,37 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
     if let Some((cached, omitted)) = super::cache::cache_get(conn, "constraints_capsule", &key) {
         return (cached, omitted);
     }
-    let (text, omitted) = build_constraints_capsule_uncached(conn);
-    super::cache::cache_set(conn, "constraints_capsule", &key, &text, omitted);
-    (text, omitted)
+    match build_constraints_capsule_uncached(conn) {
+        Ok(pair) => {
+            super::cache::cache_set(conn, "constraints_capsule", &key, &pair.0, pair.1);
+            pair
+        }
+        Err(_) => (String::new(), 0),
+    }
 }
-fn build_constraints_capsule_uncached(conn: &Connection) -> (String, usize) {
+fn build_constraints_capsule_uncached(conn: &Connection) -> Result<(String, usize), String> {
     let scope = super::capsules::owner_clause(conn, "decisions", super::capsules::boot_owner());
-    let Ok(mut stmt) = conn.prepare_cached(
+    let mut stmt = conn.prepare_cached(
         &format!(
             "SELECT id, decision, COALESCE(type,'decision') FROM decisions WHERE status = 'active' AND COALESCE(retention_class,'operational') = 'durable' \
              AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
              AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){scope} \
              ORDER BY CASE WHEN type IN ('constraint','policy','rule','convention','contract','preference') THEN 0 ELSE 1 END, julianday(created_at) ASC, id ASC"
         ),
-    ) else {
-        return (String::new(), 0);
-    };
+    ).map_err(|err| err.to_string())?;
     let rows: Vec<(i64, String, String)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map(|rows| rows.flatten().collect())
-        .unwrap_or_default();
+        .map_err(|err| err.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|err| err.to_string())?;
     let ids: Vec<i64> = rows.iter().map(|row| row.0).collect();
-    let allow = super::capsules::boot_scope_allowlist(conn, "decision", &ids);
+    let allow = super::capsules::boot_scope_allowlist(conn, "decision", &ids)?;
     let rows: Vec<(i64, String, String)> = rows
         .into_iter()
         .filter(|(id, ..)| super::capsules::keep_boot_id(&allow, *id))
         .collect();
     if rows.is_empty() {
-        return (String::new(), 0);
+        return Ok((String::new(), 0));
     }
     let total = rows.len();
     let omitted = total.saturating_sub(BOOT_CONSTRAINTS_MAX);
@@ -120,7 +125,7 @@ fn build_constraints_capsule_uncached(conn: &Connection) -> (String, usize) {
             "- ({omitted} more durable decisions not shown; query profile=map for the full set)"
         ));
     }
-    (format!("## Constraints\n{}", lines.join("\n")), omitted)
+    Ok((format!("## Constraints\n{}", lines.join("\n")), omitted))
 }
 struct BootCompileGuard;
 impl Drop for BootCompileGuard {

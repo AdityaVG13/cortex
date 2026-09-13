@@ -75,7 +75,10 @@ fn identity_feedback_texts(conn: &Connection) -> Vec<(i64, String)> {
         .map(|rows| rows.flatten().collect())
         .unwrap_or_default();
     let ids: Vec<i64> = rows.iter().map(|row| row.0).collect();
-    let allow = super::capsules::boot_scope_allowlist(conn, "memory", &ids);
+    let allow = match super::capsules::boot_scope_allowlist(conn, "memory", &ids) {
+        Ok(allow) => allow,
+        Err(_) => return Vec::new(),
+    };
     rows.into_iter()
         .filter(|(id, _)| super::capsules::keep_boot_id(&allow, *id))
         .collect()
