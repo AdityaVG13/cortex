@@ -194,7 +194,23 @@ pub fn run_compiled(
             && policy == snap.policy_epoch
             && env == snap.environment
             && stored_ops == cortex_logic::recipe::OPERATOR_VERSIONS;
+        let cached_value = serde_json::from_str::<Value>(&result_json).ok();
         if valid {
+            // INSERT OR REPLACE on compiled_reads CASCADE-deletes compiled_guards.
+            // A crash between that replace and the new guard rows leaves a
+            // reusable cache with empty guards — mutations would never invalidate.
+            let expected_neg = cached_value
+                .as_ref()
+                .and_then(|v| v.get("guards"))
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            let expected_pos = cached_value
+                .as_ref()
+                .and_then(|v| v.get("positive"))
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
             let mut stmt = conn
                 .prepare("SELECT scope_id, guard_key, expected_generation, kind FROM compiled_guards WHERE compiled_id = ?1")
                 .map_err(|e| e.to_string())?;
@@ -211,27 +227,34 @@ pub fn run_compiled(
                     Vec::new()
                 }
             };
-            for (scope, key, expected, kind) in guards {
-                let now = if kind == "positive" {
-                    if snap.facts.contains_key(&key) {
-                        expected
+            let got_pos = guards.iter().filter(|(_, _, _, kind)| kind == "positive").count();
+            let got_neg = guards.len().saturating_sub(got_pos);
+            if cached_value.is_none() || got_neg != expected_neg || got_pos != expected_pos {
+                valid = false;
+            }
+            if valid {
+                for (scope, key, expected, kind) in guards {
+                    let now = if kind == "positive" {
+                        if snap.facts.contains_key(&key) {
+                            expected
+                        } else {
+                            -1
+                        }
                     } else {
-                        -1
+                        snap.epochs
+                            .get(&(scope.clone(), key.clone()))
+                            .copied()
+                            .unwrap_or(0)
+                    };
+                    if now != expected {
+                        valid = false;
+                        break;
                     }
-                } else {
-                    snap.epochs
-                        .get(&(scope.clone(), key.clone()))
-                        .copied()
-                        .unwrap_or(0)
-                };
-                if now != expected {
-                    valid = false;
-                    break;
                 }
             }
         }
         if valid {
-            if let Ok(cached_value) = serde_json::from_str(&result_json) {
+            if let Some(cached_value) = cached_value {
                 if let Some(result) = recipe_result_from_cached(&cached_value, &snap) {
                     return Ok((cached_value, true, result));
                 }
@@ -251,11 +274,12 @@ pub fn run_compiled(
     let result =
         evaluate(&snap, DEFAULT_SCOPE, steps, outputs, limits).map_err(|e| e.to_string())?;
     let value = json!({"values": result.values, "work": result.work, "operator_versions": result.operator_versions, "positive": result.positive, "guards": result.guards.iter().map(|((s, k), g)| json!({"scope": s, "relation": k, "epoch": g})).collect::<Vec<_>>()});
+    let sp = crate::db::SqliteSavepoint::enter(conn, "compiled_write").map_err(|e| e.to_string())?;
     let through: i64 = conn
         .query_row("SELECT COALESCE(MAX(sequence),0) FROM commits", [], |r| {
             r.get(0)
         })
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO compiled_reads (compiled_id, recipe_id, operator_versions, scope_id, principal_id, brain_epoch, policy_epoch, parameters_json, environment_ref, through_sequence, result_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![id, recipe_id, result.operator_versions, DEFAULT_SCOPE, principal, result.brain_epoch, result.policy_epoch, params_json, environment, through, value.to_string()],
@@ -277,5 +301,6 @@ pub fn run_compiled(
         )
         .map_err(|e| e.to_string())?;
     }
+    sp.release().map_err(|e| e.to_string())?;
     Ok((value, false, result))
 }

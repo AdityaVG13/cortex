@@ -8,12 +8,11 @@ pub fn rollup_old_boot_savings_with_retention(
     failures: &mut Vec<MaintenanceFailure>,
     retention_days: i64,
 ) -> usize {
-    // Read-only aggregate SELECTs stay fail-safe-swallowed: a failed read
-    // yields zeros and the early-return below skips every destructive op.
+    // A failed aggregate is not zero work: DELETE still ran and would drop
+    // uncounted boot_savings or every existing rollup. Skip the whole pass.
     let retention_window = format!("-{retention_days} days");
     let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
-    let (old_saved, old_served, old_baseline, old_boots): (i64, i64, i64, i64) = conn
-        .query_row(
+    let (old_saved, old_served, old_baseline, old_boots): (i64, i64, i64, i64) = match conn.query_row(
             "SELECT \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
@@ -27,15 +26,23 @@ pub fn rollup_old_boot_savings_with_retention(
                AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
             params![retention_window.clone(), benchmark_source_pattern.clone()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap_or((0, 0, 0, 0));
+        ) {
+        Ok(row) => row,
+        Err(err) => {
+            failures.push(MaintenanceFailure {
+                op: "rollup_old_boot_savings SELECT events (boot_savings)".into(),
+                error: err.to_string(),
+            });
+            return 0;
+        }
+    };
     let (rollup_saved, rollup_served, rollup_baseline, rollup_boots, rollup_rows): (
         i64,
         i64,
         i64,
         i64,
         i64,
-    ) = conn
+    ) = match conn
         .query_row(
             "SELECT \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
@@ -55,8 +62,16 @@ pub fn rollup_old_boot_savings_with_retention(
                     row.get(4)?,
                 ))
             },
-        )
-        .unwrap_or((0, 0, 0, 0, 0));
+        ) {
+        Ok(row) => row,
+        Err(err) => {
+            failures.push(MaintenanceFailure {
+                op: "rollup_old_boot_savings SELECT events (boot_savings_rollup)".into(),
+                error: err.to_string(),
+            });
+            return 0;
+        }
+    };
     if old_boots <= 0 && rollup_rows <= 1 {
         return 0;
     }
@@ -64,10 +79,14 @@ pub fn rollup_old_boot_savings_with_retention(
     let merged_served = old_served + rollup_served;
     let merged_baseline = old_baseline + rollup_baseline;
     let merged_boots = old_boots + rollup_boots;
-    let deleted_old = exec_counted(
-        conn,
-        failures,
-        "rollup_old_boot_savings DELETE events (boot_savings)",
+    let Ok(sp) = crate::db::SqliteSavepoint::enter(conn, "boot_rollup") else {
+        failures.push(MaintenanceFailure {
+            op: "rollup_old_boot_savings SAVEPOINT".into(),
+            error: "failed to enter savepoint".into(),
+        });
+        return 0;
+    };
+    let deleted_old = match conn.execute(
         "DELETE FROM events \
          WHERE type = 'boot_savings' \
            AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?1) \
@@ -75,29 +94,60 @@ pub fn rollup_old_boot_savings_with_retention(
            AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
            AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
         params![retention_window, benchmark_source_pattern],
-    );
-    let deleted_rollups = exec_counted(
-        conn,
-        failures,
-        "rollup_old_boot_savings DELETE events (boot_savings_rollup)",
+    ) {
+        Ok(n) => n,
+        Err(err) => {
+            failures.push(MaintenanceFailure {
+                op: "rollup_old_boot_savings DELETE events (boot_savings)".into(),
+                error: err.to_string(),
+            });
+            return 0;
+        }
+    };
+    let deleted_rollups = match conn.execute(
         "DELETE FROM events WHERE type = 'boot_savings_rollup'",
         [],
-    );
+    ) {
+        Ok(n) => n,
+        Err(err) => {
+            failures.push(MaintenanceFailure {
+                op: "rollup_old_boot_savings DELETE events (boot_savings_rollup)".into(),
+                error: err.to_string(),
+            });
+            return 0;
+        }
+    };
     if merged_boots > 0 {
         let payload = serde_json::json!({"saved":
 merged_saved,"served":merged_served,"baseline":merged_baseline,"boots":merged_boots,"retention_days":retention_days,"rolled_up_at"
 :chrono::Utc::now().to_rfc3339(),})
         .to_string();
-        exec_counted(
-            conn,
-            failures,
-            "rollup_old_boot_savings INSERT boot_savings_rollup",
+        if let Err(err) = conn.execute(
             "INSERT INTO events (type, data, source_agent, created_at) \
              VALUES ('boot_savings_rollup', ?1, 'compaction', datetime('now'))",
             params![payload],
-        );
+        ) {
+            failures.push(MaintenanceFailure {
+                op: "rollup_old_boot_savings INSERT boot_savings_rollup".into(),
+                error: err.to_string(),
+            });
+            return 0;
+        }
+        if let Err(err) = sp.release() {
+            failures.push(MaintenanceFailure {
+                op: "rollup_old_boot_savings RELEASE".into(),
+                error: err.to_string(),
+            });
+            return 0;
+        }
         let consolidated_rollups = deleted_rollups.saturating_sub(1);
         deleted_old + consolidated_rollups
+    } else if let Err(err) = sp.release() {
+        failures.push(MaintenanceFailure {
+            op: "rollup_old_boot_savings RELEASE".into(),
+            error: err.to_string(),
+        });
+        0
     } else {
         deleted_old + deleted_rollups
     }
@@ -157,11 +207,17 @@ row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,i64>(8)?,))})?;rows.collec
     if rollup_rows.is_empty() {
         return 0;
     }
+    // INSERT + add-on-conflict then DELETE must be atomic: a failed delete
+    // would leave the source events, and the next pass would add them twice.
+    let Ok(sp) = crate::db::SqliteSavepoint::enter(conn, "savings_rollup") else {
+        failures.push(MaintenanceFailure {
+            op: "rollup_old_savings_events SAVEPOINT".into(),
+            error: "failed to enter savepoint".into(),
+        });
+        return 0;
+    };
     for (day, hour, operation, saved, served, baseline, events, hits, misses) in rollup_rows {
-        exec_counted(
-            conn,
-            failures,
-            "rollup_old_savings_events INSERT event_savings_rollups",
+        if let Err(err) = conn.execute(
             "INSERT INTO event_savings_rollups \
                  (day, hour, operation, saved, served, baseline, events, hits, misses, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now')) \
@@ -174,12 +230,15 @@ row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,i64>(8)?,))})?;rows.collec
                  misses = event_savings_rollups.misses + excluded.misses, \
                  updated_at = datetime('now')",
             params![day, hour, operation, saved, served, baseline, events, hits, misses],
-        );
+        ) {
+            failures.push(MaintenanceFailure {
+                op: "rollup_old_savings_events INSERT event_savings_rollups".into(),
+                error: err.to_string(),
+            });
+            return 0;
+        }
     }
-    exec_counted(
-        conn,
-        failures,
-        "rollup_old_savings_events DELETE events (savings)",
+    let deleted = match conn.execute(
         "DELETE FROM events \
          WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
            AND created_at IS NOT NULL \
@@ -188,7 +247,24 @@ row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,i64>(8)?,))})?;rows.collec
            AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
            AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
         params![retention_window, benchmark_source_pattern],
-    )
+    ) {
+        Ok(n) => n,
+        Err(err) => {
+            failures.push(MaintenanceFailure {
+                op: "rollup_old_savings_events DELETE events (savings)".into(),
+                error: err.to_string(),
+            });
+            return 0;
+        }
+    };
+    if let Err(err) = sp.release() {
+        failures.push(MaintenanceFailure {
+            op: "rollup_old_savings_events RELEASE".into(),
+            error: err.to_string(),
+        });
+        return 0;
+    }
+    deleted
 }
 pub fn prune_old_event_savings_rollups(
     conn: &Connection,
