@@ -59,56 +59,68 @@ pub fn cache_set(conn: &Connection, key: &str, hash: &str, compressed: &str, tok
         let _ = stmt.execute(params![key, hash, compressed, tokens as i64]);
     }
 }
-pub fn build_identity_capsule(conn: &Connection) -> (String, usize) {
-    // Cache key over exactly the rows the capsule renders (top 20 by score),
-    // computed in SQL: O(20 rows), not O(all feedback bytes) per boot.
+fn identity_feedback_texts(conn: &Connection) -> Vec<(i64, String)> {
     let mem_scope = super::owner_clause(conn, "memories", super::boot_owner());
+    let Ok(mut stmt) = conn.prepare_cached(&format!(
+        "SELECT id, text FROM memories WHERE type = 'feedback' AND status = 'active' \
+         AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+         AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+         AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')){mem_scope} \
+         ORDER BY score DESC, id ASC LIMIT 20"
+    )) else {
+        return Vec::new();
+    };
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default();
+    let ids: Vec<i64> = rows.iter().map(|row| row.0).collect();
+    let allow = super::capsules::boot_scope_allowlist(conn, "memory", &ids);
+    rows.into_iter()
+        .filter(|(id, _)| super::capsules::keep_boot_id(&allow, *id))
+        .collect()
+}
+
+pub fn build_identity_capsule(conn: &Connection) -> (String, usize) {
+    // Cache key over exactly the rows the capsule renders (top 20 by score,
+    // then path-filtered), not O(all feedback bytes) per boot. Paths belong
+    // in the key so a scoped boot cannot reuse an unscoped identity cache.
+    let rows = identity_feedback_texts(conn);
     let owner_tag = super::boot_owner()
         .map(|id| id.to_string())
         .unwrap_or_default();
-    let feedback_hash = {
-        let digest: String = conn
-            .query_row(
-                &format!(
-                    "SELECT COALESCE(group_concat(id || ':' || length(text) || ':' || score || ':' || COALESCE(updated_at,''), ','), '') FROM (SELECT id, text, score, updated_at FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')){mem_scope} ORDER BY score DESC, id ASC LIMIT 20)"
-                ),
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or_default();
-        content_hash(&format!("{digest}|{owner_tag}"))
-    };
+    let path_tag = super::with_boot_paths(|paths| paths.join("\u{1f}"));
+    let digest: String = rows
+        .iter()
+        .map(|(id, text)| format!("{id}:{}", text.len()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let feedback_hash = content_hash(&format!("{digest}|{owner_tag}|{path_tag}"));
     if let Some((cached, tokens)) = cache_get(conn, "identity_capsule", &feedback_hash) {
         return (cached, tokens);
     }
     let mut parts = vec![detect_identity()];
     let constraint_re = identity_constraint_re();
-    if let Ok(mut stmt) = conn.prepare_cached(&format!("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')){mem_scope} ORDER BY score DESC, id ASC LIMIT 20")) {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            let constraints: Vec<String> = rows
-                .filter_map(|r| r.ok())
-                .filter(|t| constraint_re.is_match(t))
-                .take(5)
-                .map(|t| t.chars().take(120).collect::<String>())
-                .collect();
-            if !constraints.is_empty() {
-                parts.push(format!("Rules: {}", constraints.join(" | ")));
-            }
-        }
+    let constraints: Vec<String> = rows
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .filter(|t| constraint_re.is_match(t))
+        .take(5)
+        .map(|t| t.chars().take(120).collect::<String>())
+        .collect();
+    if !constraints.is_empty() {
+        parts.push(format!("Rules: {}", constraints.join(" | ")));
     }
     let edge_re = identity_edge_re();
-    if let Ok(mut stmt) = conn.prepare_cached(&format!("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')){mem_scope} ORDER BY score DESC, id ASC LIMIT 20")) {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            let edges: Vec<String> = rows
-                .filter_map(|r| r.ok())
-                .filter(|t| edge_re.is_match(t))
-                .take(3)
-                .map(|t| t.chars().take(100).collect::<String>())
-                .collect();
-            if !edges.is_empty() {
-                parts.push(format!("Sharp edges: {}", edges.join(" | ")));
-            }
-        }
+    let edges: Vec<String> = rows
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .filter(|t| edge_re.is_match(t))
+        .take(3)
+        .map(|t| t.chars().take(100).collect::<String>())
+        .collect();
+    if !edges.is_empty() {
+        parts.push(format!("Sharp edges: {}", edges.join(" | ")));
     }
     let text = parts.join("\n");
     let tokens = estimate_tokens(&text);

@@ -122,9 +122,10 @@ pub fn focus_end(
 "entries":entries.len(),"tokensBefore":tokens_before,"tokensAfter":tokens_after,"savings":format!("{savings}%"),"summary":summary,
 "message":format!("Focus '{label}' consolidated: {} entries → {} tokens ({}% reduction)",entries.len(),tokens_after,savings)}))
 }
-pub fn focus_current(conn: &Connection, agent: &str) -> Option<Value> {
+pub fn focus_current(conn: &Connection, agent: &str, owner: Option<i64>) -> Option<Value> {
+    let scope = crate::db::owner_and_clause(conn, "focus_sessions", owner);
     conn.query_row(
-        "SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY started_at DESC LIMIT 1",
+        &format!("SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE agent = ?1 AND status = 'open'{scope} ORDER BY started_at DESC LIMIT 1"),
         params![agent],
         |row| {
             let raw: String = row.get(2)?;

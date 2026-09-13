@@ -62,13 +62,7 @@ pub fn get_last_boot_time(conn: &Connection, agent: &str) -> Option<String> {
 /// known; empty otherwise. Team-mode boot must not leak another owner's
 /// messages, tasks, locks, feed or decisions into a caller's capsule.
 pub fn owner_clause(conn: &Connection, table: &str, owner: Option<i64>) -> String {
-    // Solo mode (the common case) never touches PRAGMA table_info.
-    match owner {
-        Some(id) if crate::db::table_has_column(conn, table, "owner_id") => {
-            format!(" AND owner_id = {id}")
-        }
-        _ => String::new(),
-    }
+    crate::db::owner_and_clause(conn, table, owner)
 }
 thread_local! {
     static BOOT_OWNER: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
@@ -88,6 +82,9 @@ pub fn with_boot_paths<R>(f: impl FnOnce(&[String]) -> R) -> R {
     BOOT_PATHS.with(|cell| f(&cell.borrow()))
 }
 /// `None` means the boot is unscoped and every id stays eligible.
+/// `Some(empty)` means the boot is path-scoped but no id survived: a failed
+/// path lookup is not "no paths" (read law would treat that as visible and
+/// leak every foreign project into constraints / recent / identity).
 pub(crate) fn boot_scope_allowlist(
     conn: &Connection,
     target_type: &str,
@@ -97,8 +94,11 @@ pub(crate) fn boot_scope_allowlist(
         if paths.is_empty() {
             return None;
         }
-        let path_map = crate::handlers::recall::explicit_paths_by_target(conn, target_type, ids)
-            .unwrap_or_default();
+        let Ok(path_map) =
+            crate::handlers::recall::explicit_paths_by_target(conn, target_type, ids)
+        else {
+            return Some(HashSet::new());
+        };
         Some(
             ids.iter()
                 .copied()
@@ -173,6 +173,15 @@ pub fn fetch_locks(conn: &Connection) -> Vec<Value> {
             }
         }
     }
+    with_boot_paths(|paths| {
+        if paths.is_empty() {
+            return;
+        }
+        out.retain(|lock| {
+            let path = lock.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            crate::handlers::recall::read_path_sets(paths, &[path.to_string()])
+        });
+    });
     out
 }
 pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
@@ -185,7 +194,10 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
     const FEED_CAPSULE_LINES: i64 = 10;
     let ack: Option<String> = conn
         .query_row(
-            "SELECT last_seen_id FROM feed_acks WHERE agent = ?1",
+            &format!(
+                "SELECT last_seen_id FROM feed_acks WHERE agent = ?1{}",
+                owner_clause(conn, "feed_acks", boot_owner())
+            ),
             params![agent],
             |row| row.get(0),
         )
@@ -195,7 +207,10 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
     if let Some(ack_id) = &ack {
         let anchor: Option<String> = conn
             .query_row(
-                "SELECT timestamp FROM feed WHERE id = ?1",
+                &format!(
+                    "SELECT timestamp FROM feed WHERE id = ?1{}",
+                    owner_clause(conn, "feed", boot_owner())
+                ),
                 params![ack_id],
                 |row| row.get(0),
             )
@@ -407,7 +422,10 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
                 );
                 if let Some(disputed_id) = disputes_id {
                     if let Ok((partner_decision, partner_status, partner_confirmed_by, partner_valid_from, partner_valid_until)) = conn.query_row(
-                        "SELECT decision, status, confirmed_by, COALESCE(valid_from, observed_at, created_at), valid_until FROM decisions WHERE id = ?1",
+                        &format!(
+                            "SELECT decision, status, confirmed_by, COALESCE(NULLIF(TRIM(valid_from), ''), NULLIF(TRIM(observed_at), ''), created_at), valid_until FROM decisions WHERE id = ?1{}",
+                            owner_clause(conn, "decisions", boot_owner())
+                        ),
                         params![disputed_id],
                         |row| {
                             Ok((
@@ -438,7 +456,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             }
         }
     }
-    if let Some(focus) = crate::focus::focus_current(conn, agent) {
+    if let Some(focus) = crate::focus::focus_current(conn, agent, boot_owner()) {
         let label = focus.get("label").and_then(|v| v.as_str()).unwrap_or("?");
         let entries = focus.get("entries").and_then(|v| v.as_u64()).unwrap_or(0);
         parts.push(format!("## Active Focus\n- {label} ({entries} entries)"));
@@ -466,12 +484,17 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             }
         }
         if let Ok(mut stmt) =
-            conn.prepare_cached(&format!("SELECT text, type FROM memories WHERE status = 'active'{} AND julianday(updated_at) >= julianday(?1) AND type != 'state' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY julianday(updated_at) DESC, id DESC LIMIT 3", owner_clause(conn, "memories", boot_owner())))
+            conn.prepare_cached(&format!("SELECT id, text, type FROM memories WHERE status = 'active'{} AND julianday(updated_at) >= julianday(?1) AND type != 'state' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY julianday(updated_at) DESC, id DESC LIMIT 20", owner_clause(conn, "memories", boot_owner())))
         {
-            if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-                let lines: Vec<String> = rows
-                    .flatten()
-                    .map(|(text, mtype)| {
+            if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
+                let collected: Vec<(i64, String, String)> = rows.flatten().collect();
+                let ids: Vec<i64> = collected.iter().map(|row| row.0).collect();
+                let allow = boot_scope_allowlist(conn, "memory", &ids);
+                let lines: Vec<String> = collected
+                    .into_iter()
+                    .filter(|(id, ..)| keep_boot_id(&allow, *id))
+                    .take(3)
+                    .map(|(_, text, mtype)| {
                         let truncated: String = text.chars().take(100).collect();
                         format!("- [{mtype}] {truncated}")
                     })
@@ -534,12 +557,14 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
 }
 pub fn estimate_raw_baseline(conn: &Connection, _home: &Path) -> usize {
     let mut total_chars: usize = 0;
+    let mem_scope = owner_clause(conn, "memories", boot_owner());
+    let dec_scope = owner_clause(conn, "decisions", boot_owner());
     let mem_chars: i64 = conn
-        .query_row("SELECT COALESCE(SUM(LENGTH(text)), 0) FROM memories WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))", [], |r| r.get(0))
+        .query_row(&format!("SELECT COALESCE(SUM(LENGTH(text)), 0) FROM memories WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')){mem_scope}"), [], |r| r.get(0))
         .unwrap_or(0);
     total_chars += mem_chars as usize;
     let dec_chars: i64 = conn
-        .query_row("SELECT COALESCE(SUM(LENGTH(decision)), 0) FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))", [], |r| r.get(0))
+        .query_row(&format!("SELECT COALESCE(SUM(LENGTH(decision)), 0) FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')){dec_scope}"), [], |r| r.get(0))
         .unwrap_or(0);
     total_chars += dec_chars as usize;
     estimate_tokens_from_chars(total_chars)

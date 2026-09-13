@@ -366,3 +366,16 @@ pub fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
     }
     false
 }
+
+/// `AND owner_id = N` when the table carries owner scoping and a caller is
+/// known. A team caller with a missing or unreadable `owner_id` column must
+/// not fall open: `AND 0` matches nothing instead of every row.
+pub fn owner_and_clause(conn: &Connection, table: &str, owner: Option<i64>) -> String {
+    match owner {
+        Some(id) if table_has_column(conn, table, "owner_id") => {
+            format!(" AND owner_id = {id}")
+        }
+        Some(_) => " AND 0".to_string(),
+        None => String::new(),
+    }
+}

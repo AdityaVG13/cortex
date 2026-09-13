@@ -114,6 +114,28 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
             candidates.extend(rows.flatten());
         }
     }
+    super::with_boot_paths(|paths| {
+        if paths.is_empty() {
+            return;
+        }
+        let decision_ids: Vec<i64> = candidates
+            .iter()
+            .filter(|c| c.source_kind == "decision")
+            .map(|c| c.source_id)
+            .collect();
+        let memory_ids: Vec<i64> = candidates
+            .iter()
+            .filter(|c| c.source_kind == "memory")
+            .map(|c| c.source_id)
+            .collect();
+        let dec_allow = super::capsules::boot_scope_allowlist(conn, "decision", &decision_ids);
+        let mem_allow = super::capsules::boot_scope_allowlist(conn, "memory", &memory_ids);
+        candidates.retain(|c| match c.source_kind {
+            "decision" => super::capsules::keep_boot_id(&dec_allow, c.source_id),
+            "memory" => super::capsules::keep_boot_id(&mem_allow, c.source_id),
+            _ => true,
+        });
+    });
     candidates
 }
 pub fn score_signal_is_flat(items: &[ContextItem]) -> bool {
