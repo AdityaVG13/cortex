@@ -33,6 +33,45 @@ fn cold_codec_roundtrips_exact_bytes_including_unicode_and_binaryish_text() {
 }
 
 #[test]
+fn unreadable_cold_payload_is_not_an_empty_success() {
+    let conn = test_conn();
+    cortex_kernel::db::cold::ensure_cold_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO decisions (decision, type, source_agent, status, retention_class, score, pinned, last_accessed, created_at) VALUES ('[cold:1] preview', 'constraint', 'a', 'active', 'durable', 0.5, 0, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    let id: i64 = conn
+        .query_row(
+            "SELECT id FROM decisions WHERE decision LIKE '[cold:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO cold_sources (namespace, address, codec, byte_length, payload, digest) VALUES ('decision', ?1, 'deflate/1', 64, x'ffff', 'not-a-digest')",
+        [id.to_string()],
+    )
+    .unwrap();
+    assert!(
+        hydrate(&conn, "decision", id).unwrap().is_none(),
+        "corrupt inflate must not hydrate as empty text"
+    );
+    let expanded = unfold_source(&conn, &format!("decision::{id}"), &RecallContext::solo()).unwrap();
+    assert_eq!(expanded["physical_state"], "unavailable");
+    assert!(expanded["text"].is_null(), "{expanded}");
+    conn.execute(
+        "UPDATE cold_sources SET byte_length = 3000000, payload = x'00' WHERE namespace = 'decision' AND address = ?1",
+        [id.to_string()],
+    )
+    .unwrap();
+    assert!(
+        hydrate(&conn, "decision", id).unwrap().is_none(),
+        "oversize declared length must not hydrate as empty text"
+    );
+}
+
+#[test]
 fn durable_low_score_rows_are_never_archived_by_the_aging_gc() {
     let conn = test_conn();
     conn.execute("INSERT INTO decisions (decision, type, source_agent, status, retention_class, score, pinned, last_accessed, created_at) VALUES ('rare old durable constraint', 'constraint', 'a', 'active', 'durable', 0.01, 0, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')", []).unwrap();

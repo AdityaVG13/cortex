@@ -3,6 +3,7 @@ use asupersync::{
     sync::{LockError, Mutex, MutexGuard},
 };
 use std::ffi::OsStr;
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
@@ -64,6 +65,23 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
         }
     }
     let mut child = KillChildOnDrop(Some(cmd.spawn().expect("run isolated contract")));
+    let stdout_thread;
+    let stderr_thread;
+    {
+        let proc = child.0.as_mut().expect("isolated contract child");
+        let mut stdout_pipe = proc.stdout.take().expect("stdout pipe");
+        let mut stderr_pipe = proc.stderr.take().expect("stderr pipe");
+        stdout_thread = thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout_pipe.read_to_end(&mut buf);
+            buf
+        });
+        stderr_thread = thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr_pipe.read_to_end(&mut buf);
+            buf
+        });
+    }
     let deadline = Instant::now() + WAIT;
     loop {
         let proc = child.0.as_mut().expect("isolated contract child");
@@ -73,12 +91,15 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
                 if Instant::now() >= deadline {
                     let mut proc = child.0.take().expect("isolated contract child");
                     let _ = proc.kill();
-                    let output = proc.wait_with_output().expect("reap isolated contract");
+                    let status = proc.wait().expect("reap isolated contract");
+                    let stdout = String::from_utf8_lossy(
+                        &stdout_thread.join().unwrap_or_else(|_| Vec::new()),
+                    );
+                    let stderr = String::from_utf8_lossy(
+                        &stderr_thread.join().unwrap_or_else(|_| Vec::new()),
+                    );
                     panic!(
-                        "isolated contract {test} timed out ({}):\n{}\n{}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
+                        "isolated contract {test} timed out ({status}):\n{stdout}\n{stderr}"
                     );
                 }
                 thread::sleep(Duration::from_millis(20));
@@ -86,18 +107,17 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
             Err(err) => panic!("isolated contract {test} wait failed: {err}"),
         }
     }
-    let output = child
+    let status = child
         .0
         .take()
         .expect("isolated contract child")
-        .wait_with_output()
+        .wait()
         .expect("collect isolated contract");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&stdout_thread.join().unwrap_or_else(|_| Vec::new()));
+    let stderr = String::from_utf8_lossy(&stderr_thread.join().unwrap_or_else(|_| Vec::new()));
     assert!(
-        output.status.success(),
-        "isolated contract {test} failed ({}):\n{stdout}\n{stderr}",
-        output.status
+        status.success(),
+        "isolated contract {test} failed ({status}):\n{stdout}\n{stderr}"
     );
     // libtest exits 0 for `--exact` with zero matches; that would hide the contract.
     assert!(

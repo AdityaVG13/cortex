@@ -108,6 +108,41 @@ fn partial_response_timeout_only_applies_when_bytes_exist() {
 }
 
 #[test]
+fn oversized_event_stream_prefix_is_not_rejected() {
+    use super::request::{send_cortex_request_with_port, RequestTimeouts};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let server = std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("accept client");
+        let mut req = [0u8; 512];
+        let _ = sock.read(&mut req);
+        let mut out = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".to_vec();
+        out.extend(std::iter::repeat(b'x').take(2 * 1024 * 1024));
+        let _ = sock.write_all(&out);
+    });
+    let result = send_cortex_request_with_port(
+        addr.port(),
+        "GET",
+        "/events/stream",
+        "",
+        None,
+        RequestTimeouts {
+            connect: Duration::from_secs(2),
+            read: Duration::from_secs(5),
+            write: Duration::from_secs(2),
+        },
+    );
+    let _ = server.join();
+    let resp = result.expect("valid SSE prefix must not be rejected as oversize");
+    assert_eq!(resp.status, 200);
+    assert!(resp.body.starts_with('x'), "body starts with stream bytes: {}", resp.body.chars().take(32).collect::<String>());
+}
+
+#[test]
 fn extract_error_detail_prefers_json_error_field() {
     let detail = extract_error_detail("{\"error\":\"Unauthorized\"}").unwrap();
     assert_eq!(detail, "Unauthorized");

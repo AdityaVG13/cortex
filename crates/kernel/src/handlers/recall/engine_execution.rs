@@ -735,10 +735,14 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
         if is_visible(owner_id, visibility.as_deref(), ctx) {
             if crate::db::cold::is_cold_marker(&text) {
                 if let Some(id) = source.strip_prefix("memory::").and_then(|s| s.parse::<i64>().ok()) {
-                    if let Ok(Some((cold_text, _, intact))) = crate::db::cold::hydrate(conn, "memory", id) {
-                        return Some(json!({"text":cold_text,"type":ty,"physical_state":"cold_segment","intact":intact}));
-                    }
+                    return match crate::db::cold::hydrate(conn, "memory", id) {
+                        Ok(Some((cold_text, _, intact))) => {
+                            Some(json!({"text":cold_text,"type":ty,"physical_state":"cold_segment","intact":intact}))
+                        }
+                        _ => Some(json!({"text":Value::Null,"type":ty,"physical_state":"unavailable","error":"cold block unreadable"})),
+                    };
                 }
+                return Some(json!({"text":Value::Null,"type":ty,"physical_state":"unavailable","error":"cold block unreadable"}));
             }
             return Some(json!({"text":text,"type":ty}));
         }

@@ -8,53 +8,17 @@ use std::path::{Path, PathBuf};
 pub const MAX_PID_FILE_BYTES: u64 = 64;
 
 fn open_pid_nofollow(path: &Path, write: bool) -> io::Result<fs::File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut opts = fs::OpenOptions::new();
-        if write {
-            opts.write(true).create(true).truncate(true);
-        } else {
-            opts.read(true);
-        }
-        opts.custom_flags(libc::O_NOFOLLOW).open(path)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-        };
-        let mut opts = fs::OpenOptions::new();
+    let file = super::paths::open_configured_nofollow(path, |opts| {
         if write {
             opts.write(true).create(true).truncate(false);
         } else {
             opts.read(true);
         }
-        let file = opts.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
-        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to use pid file through a reparse point",
-            ));
-        }
-        if write {
-            file.set_len(0)?;
-        }
-        Ok(file)
+    })?;
+    if write {
+        file.set_len(0)?;
     }
-    #[cfg(not(any(unix, windows)))]
-    {
-        if write {
-            fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(path)
-        } else {
-            fs::File::open(path)
-        }
-    }
+    Ok(file)
 }
 
 fn read_pid_file(path: &Path) -> Option<String> {
@@ -77,18 +41,51 @@ pub fn write_pid_file(paths: &CortexPaths) -> Result<(), String> {
         .map_err(|e| format!("write {}: {e}", paths.pid.display()))
 }
 
+/// Remove `path` only when it still records `expected`.
+///
+/// The flock on `paths.lock` is the exclusion for serve/restore. Cleanup
+/// must take that lock before unlink; otherwise a new worker can write its
+/// pid between the stale check and `remove_file`, and Drop/cleanup would
+/// delete the live occupant.
+fn unlink_recorded_pid(path: &Path, expected: u32) -> bool {
+    let Some(raw) = read_pid_file(path) else {
+        return false;
+    };
+    if raw.trim().parse::<u32>().ok() != Some(expected) {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(file) = open_pid_nofollow(path, false) else {
+            return false;
+        };
+        let Ok(fd_meta) = file.metadata() else {
+            return false;
+        };
+        let Ok(path_meta) = fs::symlink_metadata(path) else {
+            return false;
+        };
+        if path_meta.file_type().is_symlink()
+            || fd_meta.dev() != path_meta.dev()
+            || fd_meta.ino() != path_meta.ino()
+        {
+            return false;
+        }
+    }
+    fs::remove_file(path).is_ok()
+}
+
 /// Remove `paths.pid` only when it still names this process.
 pub fn remove_own_pid_file(paths: &CortexPaths) {
-    let Some(recorded) = read_pid_file(&paths.pid) else {
-        return;
-    };
-    if recorded.trim().parse::<u32>().ok() == Some(std::process::id()) {
-        let _ = fs::remove_file(&paths.pid);
-    }
+    let _ = unlink_recorded_pid(&paths.pid, std::process::id());
 }
 pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
+    let _lock = super::locks::acquire_daemon_lock(paths).ok()?;
     let pid = stale_pid_candidate(paths)?;
-    let _ = fs::remove_file(&paths.pid);
+    if !unlink_recorded_pid(&paths.pid, pid) {
+        return None;
+    }
     eprintln!("[cortex] Cleaned stale PID file (process {pid} not running)");
     Some(pid)
 }

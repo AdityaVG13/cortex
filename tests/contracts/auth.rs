@@ -1,4 +1,6 @@
-use cortex_kernel::auth::{pid_file_live_pid, CortexPaths, MAX_PID_FILE_BYTES};
+use cortex_kernel::auth::{
+    cleanup_stale_pid_lock, pid_file_live_pid, CortexPaths, MAX_PID_FILE_BYTES,
+};
 use cortex_tests::in_subprocess;
 use serde_json::Value;
 
@@ -76,5 +78,41 @@ fn pid_file_reads_refuse_an_oversize_replacement() {
     assert!(
         pid_file_live_pid(&paths).is_none(),
         "oversize pid must not parse as live pid 1"
+    );
+}
+
+#[test]
+fn cleanup_stale_pid_lock_does_not_remove_this_process() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path();
+    let db = home.join("cortex.db");
+    let paths = CortexPaths::resolve_with_overrides(
+        Some(&home.to_string_lossy()),
+        Some(&db.to_string_lossy()),
+    );
+    std::fs::write(&paths.pid, format!("{}\n", std::process::id())).expect("write live pid");
+    assert!(
+        cleanup_stale_pid_lock(&paths).is_none(),
+        "cleanup must not unlink a pid that is still running"
+    );
+    let recorded = std::fs::read_to_string(&paths.pid).expect("pid still present");
+    assert_eq!(recorded.trim(), std::process::id().to_string());
+}
+
+#[test]
+fn cleanup_stale_pid_lock_removes_a_dead_occupant_under_the_lock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path();
+    let db = home.join("cortex.db");
+    let paths = CortexPaths::resolve_with_overrides(
+        Some(&home.to_string_lossy()),
+        Some(&db.to_string_lossy()),
+    );
+    // Pid 0 is never a recorded daemon; process_is_running rejects it.
+    std::fs::write(&paths.pid, "0\n").expect("write dead pid");
+    assert_eq!(cleanup_stale_pid_lock(&paths), Some(0));
+    assert!(
+        !paths.pid.exists(),
+        "stale pid 0 must be unlinked after the cleanup lock is held"
     );
 }

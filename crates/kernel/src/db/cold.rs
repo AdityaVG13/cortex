@@ -46,7 +46,7 @@ fn decode_limited(bytes: &[u8], max_len: usize) -> Option<Vec<u8>> {
     let decoder = flate2::read::DeflateDecoder::new(bytes);
     let mut out = Vec::new();
     decoder
-        .take(max_len as u64 + 1)
+        .take((max_len as u64).saturating_add(1))
         .read_to_end(&mut out)
         .ok()?;
     (out.len() <= max_len).then_some(out)
@@ -149,14 +149,17 @@ pub fn hydrate(
         return Ok(None);
     };
     let Ok(expected) = usize::try_from(byte_length) else {
-        return Ok(Some((String::new(), None, false)));
+        return Ok(None);
     };
     if expected > COLD_MAX_DECODE_BYTES {
-        return Ok(Some((String::new(), None, false)));
+        return Ok(None);
     }
     let Some(bytes) = decode_limited(&payload, expected) else {
-        return Ok(Some((String::new(), None, false)));
+        return Ok(None);
     };
+    if bytes.is_empty() && expected > 0 {
+        return Ok(None);
+    }
     let text = String::from_utf8_lossy(&bytes).to_string();
     let intact =
         bytes.len() as i64 == byte_length && cortex_logic::traces::content_hash(&text) == digest;

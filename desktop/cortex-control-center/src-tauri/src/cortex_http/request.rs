@@ -145,7 +145,18 @@ pub fn send_cortex_request_with_port(
         }
     }
     if response.len() > MAX_HTTP_RESPONSE_BYTES {
-        return Err("HTTP response exceeds 2 MiB".to_string());
+        // SSE never ends; Take stopping at the cap must not turn a valid
+        // event-stream prefix into a hard error. JSON/HTTP bodies still fail closed.
+        let oversize_is_sse = find_bytes(&response, b"\r\n\r\n").is_some_and(|pos| {
+            headers_indicate_event_stream(&String::from_utf8_lossy(&response[..pos]))
+        });
+        if !oversize_is_sse {
+            return Err("HTTP response exceeds 2 MiB".to_string());
+        }
+        response.truncate(MAX_HTTP_RESPONSE_BYTES);
+        while !response.is_empty() && std::str::from_utf8(&response).is_err() {
+            response.pop();
+        }
     }
 
     if let Some(pos) = find_bytes(&response, b"\r\n\r\n") {
@@ -171,6 +182,13 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     haystack.windows(needle.len()).position(|window| window == needle)
+}
+
+fn headers_indicate_event_stream(headers: &str) -> bool {
+    headers.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.starts_with("content-type:") && lower.contains("text/event-stream")
+    })
 }
 
 fn parse_status_code(headers: &str) -> Result<u16, String> {

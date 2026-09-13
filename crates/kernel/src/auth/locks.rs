@@ -8,44 +8,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 fn open_lock_nofollow(path: &Path) -> io::Result<fs::File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-        };
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to lock through a reparse point",
-            ));
-        }
-        Ok(file)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(path)
-    }
+    super::paths::open_configured_nofollow(path, |opts| {
+        opts.create(true).write(true).truncate(false);
+    })
 }
 
 pub fn acquire_daemon_lock(paths: &CortexPaths) -> Result<fs::File, String> {

@@ -561,78 +561,79 @@ pub fn restrict_file_to_owner(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 /// Open a home-local automatic file without following a planted symlink
-/// (Unix `O_NOFOLLOW`) or Windows reparse point. Operator `--file` paths
-/// may still follow; this is for files Cortex opens on its own.
+/// (Unix `O_NOFOLLOW`) or Windows name-surrogate reparse point. Operator
+/// `--file` paths may still follow; this is for files Cortex opens on its own.
 pub fn open_nofollow(path: &Path) -> io::Result<fs::File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-        };
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to follow a reparse point",
-            ));
-        }
-        Ok(file)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        fs::File::open(path)
-    }
+    open_configured_nofollow(path, |opts| {
+        opts.read(true);
+    })
 }
 
 /// Append to a home-local ledger without following a planted symlink.
 pub fn open_append_nofollow(path: &Path) -> io::Result<fs::File> {
+    open_configured_nofollow(path, |opts| {
+        opts.create(true).append(true);
+    })
+}
+
+/// Open `path` with caller flags, without following a planted symlink.
+///
+/// Windows OneDrive/dedup files are reparse points but not name surrogates;
+/// refusing every reparse attribute made those homes unreadable. Inspect
+/// with `FILE_FLAG_OPEN_REPARSE_POINT`, reject symlink/junction tags, then
+/// reopen without the flag so cloud/dedup content is the file bytes.
+pub(crate) fn open_configured_nofollow(
+    path: &Path,
+    configure: impl Fn(&mut fs::OpenOptions),
+) -> io::Result<fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
+        let mut opts = fs::OpenOptions::new();
+        configure(&mut opts);
+        opts.custom_flags(libc::O_NOFOLLOW).open(path)
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-        };
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to append through a reparse point",
-            ));
-        }
-        Ok(file)
+        open_windows_rejecting_name_surrogate(path, configure)
     }
     #[cfg(not(any(unix, windows)))]
     {
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
+        let mut opts = fs::OpenOptions::new();
+        configure(&mut opts);
+        opts.open(path)
     }
+}
+
+#[cfg(windows)]
+fn open_windows_rejecting_name_surrogate(
+    path: &Path,
+    configure: impl Fn(&mut fs::OpenOptions),
+) -> io::Result<fs::File> {
+    use std::os::windows::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    let mut inspect = fs::OpenOptions::new();
+    configure(&mut inspect);
+    let file = inspect
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let meta = file.metadata()?;
+    let file_type = meta.file_type();
+    if file_type.is_symlink() || file_type.is_symlink_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to follow a name-surrogate reparse point",
+        ));
+    }
+    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return Ok(file);
+    }
+    drop(file);
+    let mut follow = fs::OpenOptions::new();
+    configure(&mut follow);
+    follow.open(path)
 }
 
 /// Read a secret without following a planted symlink/reparse and without
@@ -679,26 +680,12 @@ pub fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         use std::io::Write as _;
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-        };
-        // FILE_FLAG_OPEN_REPARSE_POINT is the O_NOFOLLOW analog: a planted
-        // symlink must not redirect the secret. Apply the owner DACL before
-        // truncate so a SetNamedSecurityInfo failure cannot wipe an existing
-        // token (Unix fchmod-before-set_len).
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to write secret through a reparse point",
-            ));
-        }
+        // Name-surrogate reparse is the O_NOFOLLOW analog. Apply the owner
+        // DACL before truncate so a SetNamedSecurityInfo failure cannot wipe
+        // an existing token (Unix fchmod-before-set_len).
+        let mut file = open_configured_nofollow(path, |opts| {
+            opts.create(true).write(true).truncate(false);
+        })?;
         restrict_file_to_owner(path)?;
         file.set_len(0)?;
         file.write_all(contents)?;

@@ -39,9 +39,9 @@ impl SlidingWindow {
     }
     fn prune(&mut self, now: Instant, window: Duration) {
         while let Some(oldest) = self.timestamps.front().copied() {
-            // cleanup() snapshots Instant once, then locks maps one at a
-            // time. A concurrent check_* can insert a later Instant while
-            // that snapshot is still in use; duration_since panics on that.
+            // duration_since panics if `oldest` is after `now`. Callers
+            // sample Instant under the map lock; saturate so a stale
+            // snapshot cannot abort the process.
             if now.saturating_duration_since(oldest) < window {
                 break;
             }
@@ -256,9 +256,9 @@ impl RateLimiter {
         self.total_budget_denials.load(Ordering::Relaxed)
     }
     pub async fn cleanup(&self, cx: &Cx) -> Result<(), LockError> {
-        let now = Instant::now();
         {
             let mut map = self.auth_failures.lock(cx).await?;
+            let now = Instant::now();
             map.retain(|_, w| {
                 w.prune(now, WINDOW);
                 !w.timestamps.is_empty()
@@ -266,6 +266,7 @@ impl RateLimiter {
         }
         {
             let mut map = self.requests.lock(cx).await?;
+            let now = Instant::now();
             map.retain(|_, w| {
                 w.prune(now, WINDOW);
                 !w.timestamps.is_empty()
@@ -274,6 +275,7 @@ impl RateLimiter {
         {
             let budget_status = self.budget_status();
             let mut map = self.budget_requests.lock(cx).await?;
+            let now = Instant::now();
             map.retain(|(_, endpoint), w| {
                 let window = budget_status
                     .budget_for(*endpoint)

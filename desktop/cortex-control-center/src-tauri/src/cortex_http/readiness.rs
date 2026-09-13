@@ -146,25 +146,42 @@ fn open_nofollow(path: &Path) -> io::Result<File> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "refusing to follow a reparse point",
-            ));
-        }
-        Ok(file)
+        open_windows_rejecting_name_surrogate(path, |opts| {
+            opts.read(true);
+        })
     }
     #[cfg(not(any(unix, windows)))]
     {
         File::open(path)
     }
+}
+
+#[cfg(windows)]
+fn open_windows_rejecting_name_surrogate(
+    path: &Path,
+    configure: impl Fn(&mut fs::OpenOptions),
+) -> io::Result<File> {
+    use std::os::windows::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let mut inspect = fs::OpenOptions::new();
+    configure(&mut inspect);
+    let file = inspect.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
+    let meta = file.metadata()?;
+    let file_type = meta.file_type();
+    if file_type.is_symlink() || file_type.is_symlink_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to follow a name-surrogate reparse point",
+        ));
+    }
+    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return Ok(file);
+    }
+    drop(file);
+    let mut follow = fs::OpenOptions::new();
+    configure(&mut follow);
+    follow.open(path)
 }
 
 pub fn read_auth_token_once() -> Result<String, String> {
