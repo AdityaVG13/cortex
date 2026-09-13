@@ -144,6 +144,33 @@ fn interpreter_is_bounded_and_rejects_cycles_unknown_inputs_and_overwork() {
         .unwrap_err(),
         RecipeError::UnknownOutput("missing".into())
     );
+    snap.put(fact("ok", "item", json!({"status": "ok"})));
+    snap.put(fact("nameless", "item", json!({"name": "x"})));
+    snap.put(fact("failed", "item", json!({"status": "failed"})));
+    let ne = vec![
+        Step::Select {
+            id: "all".into(),
+            relation: "item".into(),
+        },
+        Step::Filter {
+            id: "not_failed".into(),
+            input: "all".into(),
+            field: "status".into(),
+            predicate: Predicate::Ne {
+                value: json!("failed"),
+            },
+        },
+        Step::Count {
+            id: "n".into(),
+            input: "not_failed".into(),
+        },
+    ];
+    let counted = evaluate(&snap, "default", &ne, &["n".into()], Limits::default()).unwrap();
+    assert_eq!(
+        counted.values["n"],
+        json!(1),
+        "Ne must not treat a missing field as not-equal: {counted:?}"
+    );
     let dup = vec![
         Step::Select {
             id: "x".into(),

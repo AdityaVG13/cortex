@@ -53,16 +53,17 @@ pub fn compute_boosts(
 fn query_similarity_weight(_current_query: Option<&[f32]>, _stored_blob: Option<&[u8]>) -> f64 {
     1.0
 }
-pub fn has_retrieval_immunity(conn: &Connection, source: &str) -> bool {
-    conn.query_row(
-        "SELECT COUNT(*) FROM recall_feedback \
+pub fn has_retrieval_immunity(conn: &Connection, source: &str) -> Result<bool, String> {
+    let hits: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM recall_feedback \
          WHERE result_source = ?1 AND signal > 0 \
          AND julianday('now') - julianday(created_at) <= ?2",
-        params![source, IMMUNITY_WINDOW_DAYS],
-        |row| row.get::<_, i64>(0),
-    )
-    .unwrap_or(0)
-        >= IMMUNITY_THRESHOLD
+            params![source, IMMUNITY_WINDOW_DAYS],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(hits >= IMMUNITY_THRESHOLD)
 }
 pub fn parse_source(source: &str) -> (String, Option<i64>) {
     if let Some(rest) = source.strip_prefix("decision::") {

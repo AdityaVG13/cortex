@@ -22,16 +22,16 @@ pub const OBLIGATION_STATES: [&str; 8] = [
 ];
 
 pub fn thread_id_for(label: &str) -> String {
-    if label.starts_with("thread:") {
-        return label.to_string();
-    }
-    format!(
-        "thread:{}",
-        label
-            .trim()
-            .to_ascii_lowercase()
-            .replace(char::is_whitespace, "-")
-    )
+    let normalized = label
+        .trim()
+        .to_ascii_lowercase()
+        .replace(char::is_whitespace, "-");
+    let body = normalized.strip_prefix("thread:").unwrap_or(&normalized);
+    format!("thread:{body}")
+}
+
+fn thread_slug(thread_id: &str) -> &str {
+    thread_id.strip_prefix("thread:").unwrap_or(thread_id)
 }
 
 pub fn ensure_thread(conn: &Connection, sequence: i64, label: &str) -> rusqlite::Result<String> {
@@ -74,11 +74,7 @@ pub fn create_obligation(
         params![thread_id],
         |r| r.get(0),
     )?;
-    let record_id = format!(
-        "obligation:{}#{}",
-        thread_id.trim_start_matches("thread:"),
-        count + 1
-    );
+    let record_id = format!("obligation:{}#{}", thread_slug(&thread_id), count + 1);
     append_revision(
         conn,
         sequence,
@@ -184,8 +180,13 @@ pub fn verify_obligation(
     let registered: Value = serde_json::from_str(&registered).map_err(|e| {
         format!("obligation {record_id} predicate_json is not valid JSON: {e}")
     })?;
-    let expected = registered["predicate"].as_str().unwrap_or("");
-    if !expected.is_empty() && expected != predicate {
+    let expected = registered
+        .get("predicate")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("obligation {record_id} has no registered predicate"))?;
+    if expected != predicate {
         return Err(format!(
             "checker predicate `{predicate}` does not match the registered predicate `{expected}`"
         ));
@@ -267,11 +268,7 @@ pub fn record_attempt(
         params![thread_id],
         |r| r.get(0),
     )?;
-    let record_id = format!(
-        "attempt:{}#{}",
-        thread_id.trim_start_matches("thread:"),
-        count + 1
-    );
+    let record_id = format!("attempt:{}#{}", thread_slug(&thread_id), count + 1);
     let mut attempt = json!({"agent": agent, "obligation": obligation});
     for key in [
         "inputs",

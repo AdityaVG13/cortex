@@ -200,6 +200,11 @@ fn is_error_code(t: &str) -> bool {
         || (u.starts_with("TS") && u.len() >= 5 && u[2..].chars().all(|c| c.is_ascii_digit()))
 }
 
+fn cmd_has_token(cmd: &str, token: &str) -> bool {
+    cmd.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
+        .any(|part| part == token)
+}
+
 fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<TypedCheck> {
     let cmd = command.to_ascii_lowercase();
     let out = output.to_ascii_lowercase();
@@ -252,7 +257,7 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
     if cmd.contains("cargo build")
         || cmd.contains("npm run build")
         || cmd.contains("bun run build")
-        || cmd.contains("make")
+        || cmd_has_token(&cmd, "make")
     {
         checks.push(TypedCheck {
             kind: CheckKind::Build,
@@ -350,6 +355,18 @@ mod tests {
         assert!(
             !explained.statement().contains("because"),
             "explanations are never captured as facts"
+        );
+        let cmake = parse_tool_result("Bash", Some("cmake -S . -B build"), "Configuring done", Some(0));
+        assert!(
+            cmake.checks.iter().all(|c| c.kind != CheckKind::Build),
+            "cmake is not a make invocation: {:?}",
+            cmake.checks
+        );
+        let make = parse_tool_result("Bash", Some("make -j4"), "error: *** missing separator", Some(2));
+        assert!(
+            make.checks.iter().any(|c| c.kind == CheckKind::Build && !c.passed),
+            "{:?}",
+            make.checks
         );
     }
 }

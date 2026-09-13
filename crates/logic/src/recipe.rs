@@ -197,7 +197,9 @@ impl Predicate {
     fn matches(&self, v: Option<&Value>) -> bool {
         match self {
             Predicate::Eq { value } => v == Some(value),
-            Predicate::Ne { value } => v != Some(value),
+            // Missing fields are not "not equal": they failed to present a
+            // comparable value, same as Lt/Gt/In on an absent field.
+            Predicate::Ne { value } => v.is_some_and(|got| got != value),
             Predicate::Lt { value } => v
                 .and_then(Value::as_f64)
                 .map(|x| x < *value)

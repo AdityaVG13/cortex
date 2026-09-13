@@ -3,7 +3,7 @@
 //! failure query without a transcript, and a Thread survives a fresh
 //! process opening the same database.
 
-use cortex_kernel::db::threads::{OBLIGATION_STATES, transition_allowed};
+use cortex_kernel::db::threads::{thread_id_for, OBLIGATION_STATES, transition_allowed};
 use cortex_kernel::handlers::operations::{Caller, Operation, dispatch};
 use cortex_kernel::runtime::CortexRuntime;
 use cortex_tests::support::solo_state;
@@ -15,6 +15,59 @@ fn caller() -> Caller<'static> {
         agent: "thread-agent",
         principal: "solo".into(),
     }
+}
+
+#[test]
+fn thread_labels_normalize_a_single_thread_prefix() {
+    assert_eq!(thread_id_for("planning"), "thread:planning");
+    assert_eq!(thread_id_for("Thread:planning"), "thread:planning");
+    assert_eq!(thread_id_for("THREAD:planning"), "thread:planning");
+    assert_eq!(thread_id_for("thread:planning"), "thread:planning");
+    assert_eq!(thread_id_for("  Payments Retry  "), "thread:payments-retry");
+    assert_ne!(thread_id_for("planning"), thread_id_for("payments"));
+}
+
+#[test]
+fn verification_fails_closed_without_a_registered_predicate() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let created = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Checkpoint,
+            &json!({"thread": "predicate-gap", "action": "obligation", "title": "needs a named predicate", "predicate": {}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created["status"], "ok", "{created}");
+        let obligation = created["obligation"].as_str().unwrap().to_string();
+        assert_eq!(
+            dispatch(
+                &cx,
+                &state,
+                caller(),
+                Operation::Checkpoint,
+                &json!({"thread": "predicate-gap", "action": "transition", "obligation": &obligation, "to": "in_progress"})
+            )
+            .await
+            .unwrap()["status"],
+            "ok"
+        );
+        let unregistered = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Checkpoint,
+            &json!({"thread": "predicate-gap", "action": "verify", "obligation": &obligation, "predicate": "tests_passed", "artifact": "a7", "checker": "cargo", "passed": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            unregistered["status"], "invalid_request",
+            "an empty registered predicate is not a wildcard: {unregistered}"
+        );
+    });
 }
 
 #[test]

@@ -12,6 +12,28 @@ const OLD_DAYS: i64 = 60;
 const GC_SCORE_THRESHOLD: f64 = 0.15;
 const GC_MIN_DAYS: i64 = 3;
 
+fn skip_immune(
+    conn: &Connection,
+    failures: &mut Vec<MaintenanceFailure>,
+    op: &str,
+    source: Option<&str>,
+) -> bool {
+    let Some(src) = source else {
+        return false;
+    };
+    match feedback::has_retrieval_immunity(conn, src) {
+        Ok(true) => true,
+        Ok(false) => false,
+        Err(err) => {
+            failures.push(MaintenanceFailure {
+                op: op.to_string(),
+                error: err,
+            });
+            true
+        }
+    }
+}
+
 /// Outcome of one aging pass: only mutations that actually committed count as
 /// work. Every destructive op that failed is reported in `failures` (op names
 /// the operation and target table); empty `failures` means the pass did
@@ -119,10 +141,13 @@ fn age_memories_to_recent(conn: &Connection, failures: &mut Vec<MaintenanceFailu
     );
     let mut count = 0;
     for (id, text, source) in rows {
-        if let Some(ref src) = source {
-            if feedback::has_retrieval_immunity(conn, src) {
-                continue;
-            }
+        if skip_immune(
+            conn,
+            failures,
+            "age_memories_to_recent retrieval immunity",
+            source.as_deref(),
+        ) {
+            continue;
         }
         let compressed = compress_to_key_points(&text);
         count += exec_counted(
@@ -155,10 +180,13 @@ fn age_memories_to_old(conn: &Connection, failures: &mut Vec<MaintenanceFailure>
     );
     let mut count = 0;
     for (id, text, source) in rows {
-        if let Some(ref src) = source {
-            if feedback::has_retrieval_immunity(conn, src) {
-                continue;
-            }
+        if skip_immune(
+            conn,
+            failures,
+            "age_memories_to_old retrieval immunity",
+            source.as_deref(),
+        ) {
+            continue;
         }
         let compressed = compress_to_one_liner(&text);
         count += exec_counted(
