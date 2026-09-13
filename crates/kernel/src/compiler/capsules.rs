@@ -126,8 +126,8 @@ pub fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
         "SELECT sender, message FROM ( \
              SELECT sender, message, timestamp, id FROM messages \
              WHERE recipient = ?1{scope} \
-             ORDER BY timestamp DESC, id DESC LIMIT 10 \
-         ) ORDER BY timestamp ASC, id ASC"
+             ORDER BY julianday(timestamp) DESC, id DESC LIMIT 10 \
+         ) ORDER BY julianday(timestamp) ASC, id ASC"
     )) {
         if let Ok(rows) = stmt.query_map(params![agent], |r| {
             Ok(json!({"from":r.get::<_,String>(0)?,"message":r.get::<_,String>(1)?}))
@@ -188,42 +188,50 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
     // The feed table has no retention pruner, so the previous whole-table scan
     // made every boot O(feed rows ever posted) in time and memory even though
     // the capsule renders at most the last 10 unread entries. Bound the scan
-    // to the newest entries; (timestamp, id) tuple ordering matches the
-    // previous positional scan, and an ack row that no longer exists still
+    // to the newest entries. Instant order (julianday) plus rowid matches
+    // insertion among equal stamps; an ack whose feed row is gone still
     // yields no unread entries (it marked a position, not a filter).
     const FEED_CAPSULE_LINES: i64 = 10;
-    let ack: Option<String> = conn
+    // SQL error is not "never acked": swallowing it showed the newest 10 as
+    // unread. Missing ack still means unread-from-start.
+    let ack = match conn
         .query_row(
             &format!(
                 "SELECT last_seen_id FROM feed_acks WHERE agent = ?1{}",
                 owner_clause(conn, "feed_acks", boot_owner())
             ),
             params![agent],
-            |row| row.get(0),
+            |row| row.get::<_, String>(0),
         )
         .optional()
-        .ok()
-        .flatten();
+    {
+        Ok(ack) => ack,
+        Err(_) => return Vec::new(),
+    };
     if let Some(ack_id) = &ack {
-        let anchor: Option<String> = conn
+        let anchor = match conn
             .query_row(
                 &format!(
                     "SELECT timestamp FROM feed WHERE id = ?1{}",
                     owner_clause(conn, "feed", boot_owner())
                 ),
                 params![ack_id],
-                |row| row.get(0),
+                |row| row.get::<_, String>(0),
             )
             .optional()
-            .ok()
-            .flatten();
+        {
+            Ok(anchor) => anchor,
+            Err(_) => return Vec::new(),
+        };
         let Some(anchor_ts) = anchor else {
             return Vec::new();
         };
+        // `timestamp` mixes RFC3339 (`T`) and SQLite `datetime('now')` (space).
+        // Lexicographic `>` skips a later space-format row after an RFC3339 ack.
         if let Ok(mut stmt) = conn.prepare_cached(&format!(
             "SELECT agent, kind, summary FROM feed \
-             WHERE agent != ?1 AND (timestamp > ?2 OR (timestamp = ?2 AND rowid > (SELECT rowid FROM feed WHERE id = ?3))){} \
-             ORDER BY timestamp DESC, rowid DESC LIMIT ?4",
+             WHERE agent != ?1 AND (julianday(timestamp) > julianday(?2) OR (julianday(timestamp) = julianday(?2) AND rowid > (SELECT rowid FROM feed WHERE id = ?3))){} \
+             ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?4",
             owner_clause(conn, "feed", boot_owner())
         )) {
             if let Ok(rows) = stmt.query_map(params![agent, anchor_ts, ack_id, FEED_CAPSULE_LINES], |r| {
@@ -241,7 +249,7 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
     }
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT agent, kind, summary FROM feed WHERE agent != ?1{} ORDER BY timestamp DESC, rowid DESC LIMIT ?2",
+        "SELECT agent, kind, summary FROM feed WHERE agent != ?1{} ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?2",
         owner_clause(conn, "feed", boot_owner())
     )) {
         if let Ok(rows) = stmt.query_map(params![agent, FEED_CAPSULE_LINES], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
@@ -257,7 +265,7 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
 pub fn fetch_pending_tasks(conn: &Connection) -> Vec<Value> {
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT task_id, title, priority, project, files_json FROM tasks WHERE status = 'pending'{} ORDER BY created_at ASC, task_id ASC LIMIT 5",
+        "SELECT task_id, title, priority, project, files_json FROM tasks WHERE status = 'pending'{} ORDER BY julianday(created_at) ASC, task_id ASC LIMIT 5",
         owner_clause(conn, "tasks", boot_owner())
     )) {
         if let Ok(rows) = stmt.query_map([], |r| {
@@ -276,7 +284,7 @@ unwrap_or(json!([]))}))
 pub fn fetch_claimed_tasks_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT task_id, title, priority, claimed_at FROM tasks WHERE status = 'claimed' AND claimed_by = ?1{} ORDER BY claimed_at ASC, task_id ASC",
+        "SELECT task_id, title, priority, claimed_at FROM tasks WHERE status = 'claimed' AND claimed_by = ?1{} ORDER BY julianday(claimed_at) ASC, task_id ASC",
         owner_clause(conn, "tasks", boot_owner())
     )) {
         if let Ok(rows) = stmt.query_map(params![agent], |r| {

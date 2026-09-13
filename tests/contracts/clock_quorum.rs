@@ -3,6 +3,7 @@
 use cortex_logic::clockwork::{
     parse_query_frame, project_target, rebuild_clock_projections, record_used_with,
     reject_used_with, traverse_hops, AnchorKind, ClockOrigin, ClockTarget, QueryAnchor,
+    TemporalMode,
 };
 
 use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
@@ -1031,4 +1032,54 @@ fn contract_25_quoted_path_does_not_admit_sibling_file() {
             "quoted path must not reverse-LIKE sibling src/pkg/beta.rs, got {texts:?}"
         );
     });
+}
+
+#[test]
+fn bare_iso_date_is_not_as_of() {
+    let dated = parse_query_frame(
+        "the 2024-01-15 outage postmortem in src/pay",
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    );
+    assert_eq!(
+        dated.temporal_mode,
+        TemporalMode::Current,
+        "a date inside ordinary task language is not as-of"
+    );
+    assert!(dated.as_of.is_none(), "got {:?}", dated.as_of);
+
+    let as_of = parse_query_frame(
+        "payments gateway as of 2024-01-15",
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    );
+    assert_eq!(as_of.temporal_mode, TemporalMode::ExplicitAsOf);
+    assert_eq!(as_of.as_of.as_deref(), Some("2024-01-15"));
+
+    let phrase_only = parse_query_frame(
+        "payments gateway as of last Tuesday",
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    );
+    assert_eq!(
+        phrase_only.temporal_mode,
+        TemporalMode::Current,
+        "as-of without an ISO date must not open history"
+    );
+    assert!(phrase_only.as_of.is_none());
 }

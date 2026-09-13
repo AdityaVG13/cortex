@@ -207,11 +207,17 @@ fn infer_temporal(raw: &str, explicit: Option<&str>) -> (TemporalMode, Option<St
         return (TemporalMode::ExplicitAsOf, Some(value.to_string()));
     }
     let lower = raw.to_ascii_lowercase();
-    if let Some(iso) = extract_iso_date(&lower) {
-        return (TemporalMode::ExplicitAsOf, Some(iso));
-    }
+    // A bare YYYY-MM-DD is ordinary task language ("the 2024-01-15 outage",
+    // a dated folder). Substring dates are not a temporal cue, matching the
+    // "before"/"after" rule below: only an explicit as-of phrase (or the
+    // caller-supplied timestamp) switches Current recall into as-of.
     if lower.contains("as of") || lower.contains("as-of") {
-        return (TemporalMode::ExplicitAsOf, None);
+        // Phrase without a YYYY-MM-DD still must stay Current: ExplicitAsOf
+        // with a missing timestamp opens archived/superseded and the history
+        // arm the same way a real as-of query does.
+        if let Some(date) = extract_iso_date(&lower) {
+            return (TemporalMode::ExplicitAsOf, Some(date));
+        }
     }
     // Substring "before"/"after" is not a temporal cue: they fire inside
     // ordinary task language ("before merging", "after login") and would

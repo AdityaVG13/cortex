@@ -562,16 +562,19 @@ fn matches_glob(path: &Path, pattern: &str) -> bool {
     name == pattern
 }
 pub fn decay_pass(conn: &Connection) -> usize {
+    // Blank `''` is not NULL; `julianday('')` is NULL and the age predicate
+    // never matches, so those rows skipped every decay. Fall through with
+    // NULLIF(TRIM(...)) the same way aging/gc does.
     let mem_result = conn.execute(
         "UPDATE memories SET score = MAX(0.05, score * POWER(
             MIN(1.0, 0.95 + 0.005 * MIN(retrievals, 10)),
             CAST((julianday('now') - julianday(
-                COALESCE(last_accessed, updated_at, created_at)
+                COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))
             )) AS REAL)
          ))
          WHERE status = 'active' AND score > 0.05 AND pinned = 0
            AND (julianday('now') - julianday(
-                COALESCE(last_accessed, updated_at, created_at)
+                COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))
            )) > 1",
         [],
     );
@@ -579,12 +582,12 @@ pub fn decay_pass(conn: &Connection) -> usize {
         "UPDATE decisions SET score = MAX(0.05, score * POWER(
             MIN(1.0, 0.95 + 0.005 * MIN(retrievals, 10)),
             CAST((julianday('now') - julianday(
-                COALESCE(last_accessed, updated_at, created_at)
+                COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))
             )) AS REAL)
          ))
          WHERE status = 'active' AND score > 0.05 AND pinned = 0
            AND (julianday('now') - julianday(
-                COALESCE(last_accessed, updated_at, created_at)
+                COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))
            )) > 1",
         [],
     );
