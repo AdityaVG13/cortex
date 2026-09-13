@@ -34,13 +34,13 @@ pub fn empty_rank_components() -> RankComponents {
         total_score: 0.0,
     }
 }
-pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
+pub fn fetch_rank_candidates(conn: &Connection) -> Result<Vec<RankedCandidate>, String> {
     let mut candidates = Vec::new();
     let mem_scope = super::owner_clause(conn, "memories", super::boot_owner());
     let dec_scope = super::owner_clause(conn, "decisions", super::boot_owner());
-    if let Ok(mut stmt) = conn.prepare_cached(
-        &format!(
-        "SELECT id, text, retention_class, score, retrievals, last_accessed, updated_at, created_at, status, confirmed_by,
+    let mut mem_stmt = conn
+        .prepare_cached(&format!(
+            "SELECT id, text, retention_class, score, retrievals, last_accessed, updated_at, created_at, status, confirmed_by,
                 COALESCE(NULLIF(TRIM(valid_from), ''), NULLIF(TRIM(observed_at), ''), created_at), valid_until
          FROM memories
          WHERE status = 'active' AND type != 'state'
@@ -50,9 +50,10 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
            AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){mem_scope}
          ORDER BY julianday(updated_at) DESC, id DESC
          LIMIT 80"
-        ),
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
+        ))
+        .map_err(|err| err.to_string())?;
+    let mem_rows = mem_stmt
+        .query_map([], |row| {
             Ok(RankedCandidate {
                 source_kind: "memory",
                 source_id: row.get::<_, i64>(0)?,
@@ -69,13 +70,16 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
                 valid_until: row.get(11)?,
                 components: empty_rank_components(),
             })
-        }) {
-            candidates.extend(rows.flatten());
-        }
-    }
-    if let Ok(mut stmt) = conn.prepare_cached(
-        &format!(
-        "SELECT id, decision, context, retention_class, score, retrievals, last_accessed, updated_at, created_at, status, confirmed_by,
+        })
+        .map_err(|err| err.to_string())?;
+    candidates.extend(
+        mem_rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?,
+    );
+    let mut dec_stmt = conn
+        .prepare_cached(&format!(
+            "SELECT id, decision, context, retention_class, score, retrievals, last_accessed, updated_at, created_at, status, confirmed_by,
                 COALESCE(NULLIF(TRIM(valid_from), ''), NULLIF(TRIM(observed_at), ''), created_at), valid_until
          FROM decisions
          WHERE status = 'active'
@@ -85,9 +89,10 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
            AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){dec_scope}
          ORDER BY julianday(updated_at) DESC, id DESC
          LIMIT 80"
-        ),
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
+        ))
+        .map_err(|err| err.to_string())?;
+    let dec_rows = dec_stmt
+        .query_map([], |row| {
             let decision: String = row.get(1)?;
             let context: Option<String> = row.get(2)?;
             let body = match context {
@@ -110,10 +115,14 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
                 valid_until: row.get(12)?,
                 components: empty_rank_components(),
             })
-        }) {
-            candidates.extend(rows.flatten());
-        }
-    }
+        })
+        .map_err(|err| err.to_string())?;
+    candidates.extend(
+        dec_rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?,
+    );
+    let mut scope_err = None;
     super::with_boot_paths(|paths| {
         if paths.is_empty() {
             return;
@@ -131,15 +140,15 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
         let dec_allow = match super::capsules::boot_scope_allowlist(conn, "decision", &decision_ids)
         {
             Ok(allow) => allow,
-            Err(_) => {
-                candidates.clear();
+            Err(err) => {
+                scope_err = Some(err);
                 return;
             }
         };
         let mem_allow = match super::capsules::boot_scope_allowlist(conn, "memory", &memory_ids) {
             Ok(allow) => allow,
-            Err(_) => {
-                candidates.clear();
+            Err(err) => {
+                scope_err = Some(err);
                 return;
             }
         };
@@ -149,7 +158,10 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
             _ => true,
         });
     });
-    candidates
+    if let Some(err) = scope_err {
+        return Err(err);
+    }
+    Ok(candidates)
 }
 pub fn score_signal_is_flat(items: &[ContextItem]) -> bool {
     let mut count = 0usize;

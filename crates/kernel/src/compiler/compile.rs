@@ -57,6 +57,16 @@ fn constraints_unavailable() -> (String, usize) {
     )
 }
 
+/// Same law as constraints: a failed ranked-fact read is not "no facts".
+fn ranked_facts_unavailable() -> ContextItem {
+    ContextItem::new(
+        "## TRUTH",
+        "## TRUTH\n- [unavailable] ranked facts could not be loaded; do not assume this set is empty"
+            .into(),
+        0.95,
+    )
+}
+
 pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
     // Cheap cache key: the durable set's cardinality, newest id and newest
     // update; the capsule is rebuilt only when that changes. Project paths
@@ -223,13 +233,16 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
             ));
         }
     }
-    let mut truth_candidates = rank_candidates(
-        fetch_rank_candidates(conn),
-        40,
-        deterministic_now(conn),
-    );
+    let mut truth_candidates = match fetch_rank_candidates(conn) {
+        Ok(candidates) => rank_candidates(candidates, 40, deterministic_now(conn)),
+        Err(_) => {
+            items.push(ranked_facts_unavailable());
+            Vec::new()
+        }
+    };
+    let mut truth_scope_failed = false;
     super::capsules::with_boot_paths(|paths| {
-        if paths.is_empty() {
+        if paths.is_empty() || truth_candidates.is_empty() {
             return;
         }
         let mut decision_ids = Vec::new();
@@ -245,10 +258,12 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
         // lookup is not "no paths": it would admit every foreign project
         // into a path-scoped boot, the same leak store already fail-closes.
         let Ok(decisions) = crate::handlers::recall::explicit_paths_by_target(conn, "decision", &decision_ids) else {
+            truth_scope_failed = true;
             truth_candidates.clear();
             return;
         };
         let Ok(memories) = crate::handlers::recall::explicit_paths_by_target(conn, "memory", &memory_ids) else {
+            truth_scope_failed = true;
             truth_candidates.clear();
             return;
         };
@@ -266,16 +281,20 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
             )
         });
     });
-    truth_candidates.truncate(boot_rank_top_n());
-    if !truth_candidates.is_empty() {
-        items.push(ContextItem::new(
-            "## TRUTH",
-            "## TRUTH\nSigils: FACT! confirmed; FACT? unconfirmed; FACT~ disputed.".to_string(),
-            0.95,
-        ));
-    }
-    for candidate in truth_candidates {
-        items.push(ContextItem::from_ranked_candidate(candidate));
+    if truth_scope_failed {
+        items.push(ranked_facts_unavailable());
+    } else {
+        truth_candidates.truncate(boot_rank_top_n());
+        if !truth_candidates.is_empty() {
+            items.push(ContextItem::new(
+                "## TRUTH",
+                "## TRUTH\nSigils: FACT! confirmed; FACT? unconfirmed; FACT~ disputed.".to_string(),
+                0.95,
+            ));
+        }
+        for candidate in truth_candidates {
+            items.push(ContextItem::from_ranked_candidate(candidate));
+        }
     }
     record_boot(conn, agent);
     items.sort_by(|a, b| {

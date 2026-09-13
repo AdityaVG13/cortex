@@ -205,15 +205,19 @@ fn initialize_with_conn(
 }
 
 fn maybe_rebuild_clock_projections(conn: &Connection) {
-    let decisions: i64 = conn
-        .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
-        .unwrap_or(0);
-    let memories: i64 = conn
-        .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
-        .unwrap_or(0);
-    let anchors: i64 = conn
-        .query_row("SELECT COUNT(*) FROM clock_anchors", [], |row| row.get(0))
-        .unwrap_or(0);
+    // Rebuild wipes clock_* then reprojects. A failed COUNT is not 0: treating
+    // an unreadable `clock_anchors` census as empty would delete a live graph,
+    // and treating unreadable content counts as empty would skip a needed
+    // rebuild with no log. Only act on a complete census.
+    let count = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, i64>(0));
+    let (Ok(decisions), Ok(memories), Ok(anchors)) = (
+        count("SELECT COUNT(*) FROM decisions"),
+        count("SELECT COUNT(*) FROM memories"),
+        count("SELECT COUNT(*) FROM clock_anchors"),
+    ) else {
+        eprintln!("[cortex] WARNING: clock projection census failed; skipping rebuild");
+        return;
+    };
     if (decisions + memories) > 0 && anchors == 0 {
         match crate::clockwork::rebuild_clock_projections(conn, 256) {
             Ok(n) => eprintln!("[cortex] Clock projections rebuilt ({n} targets)"),
