@@ -61,24 +61,21 @@ pub enum Ingest {
     Duplicate,
 }
 
-fn have(conn: &Connection, r: &CausalRef) -> bool {
+fn have(conn: &Connection, r: &CausalRef) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT COUNT(*) FROM commits WHERE origin_id = ?1 AND origin_counter = ?2",
         params![r.origin_id, r.origin_counter],
         |row| row.get::<_, i64>(0),
     )
     .map(|n| n > 0)
-    .unwrap_or(false)
 }
 
-fn last_counter(conn: &Connection, origin: &str) -> Option<i64> {
+fn last_counter(conn: &Connection, origin: &str) -> rusqlite::Result<Option<i64>> {
     conn.query_row(
         "SELECT MAX(origin_counter) FROM commits WHERE origin_id = ?1",
         [origin],
         |r| r.get::<_, Option<i64>>(0),
     )
-    .ok()
-    .flatten()
 }
 
 /// Ingest a peer commit. Per-origin order is total: counter n needs n-1 (or
@@ -92,23 +89,23 @@ pub fn ingest(conn: &Connection, commit: &ReplicatedCommit) -> Result<Ingest, St
         origin_id: commit.origin_id.clone(),
         origin_counter: commit.origin_counter,
     };
-    if have(conn, &me) {
+    if have(conn, &me).map_err(|e| e.to_string())? {
         return Ok(Ingest::Duplicate);
     }
-    let mut missing: Vec<CausalRef> = commit
-        .parents
-        .iter()
-        .filter(|p| !have(conn, p))
-        .cloned()
-        .collect();
-    let expected_prev = last_counter(conn, &commit.origin_id)
-        .map(|c| c + 1)
-        .unwrap_or(commit.origin_counter.min(0).max(commit.origin_counter));
-    if last_counter(conn, &commit.origin_id).is_some() && commit.origin_counter != expected_prev {
-        missing.push(CausalRef {
-            origin_id: commit.origin_id.clone(),
-            origin_counter: expected_prev,
-        });
+    let mut missing: Vec<CausalRef> = Vec::new();
+    for parent in &commit.parents {
+        if !have(conn, parent).map_err(|e| e.to_string())? {
+            missing.push(parent.clone());
+        }
+    }
+    let last = last_counter(conn, &commit.origin_id).map_err(|e| e.to_string())?;
+    if let Some(counter) = last {
+        if commit.origin_counter != counter + 1 {
+            missing.push(CausalRef {
+                origin_id: commit.origin_id.clone(),
+                origin_counter: counter + 1,
+            });
+        }
     }
     if !missing.is_empty() {
         conn.execute(
@@ -181,17 +178,24 @@ pub fn drain_pending(conn: &Connection) -> Result<usize, String> {
         let rows: Vec<(String, i64, String)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(|e| e.to_string())?
-            .flatten()
-            .collect();
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
         let mut applied = 0usize;
         for (origin, counter, payload) in rows {
             let Ok(commit) = serde_json::from_str::<ReplicatedCommit>(&payload) else {
                 continue;
             };
-            let parents_ok = commit.parents.iter().all(|p| have(conn, p));
-            let order_ok = last_counter(conn, &origin)
-                .map(|c| c + 1 == counter)
-                .unwrap_or(true);
+            let mut parents_ok = true;
+            for parent in &commit.parents {
+                if !have(conn, parent).map_err(|e| e.to_string())? {
+                    parents_ok = false;
+                    break;
+                }
+            }
+            let order_ok = match last_counter(conn, &origin).map_err(|e| e.to_string())? {
+                Some(c) => c + 1 == counter,
+                None => true,
+            };
             if parents_ok && order_ok {
                 apply(conn, &commit)?;
                 conn.execute(

@@ -54,7 +54,7 @@ fn select_tier_candidates<T>(
 ) -> Vec<T> {
     let mapped = conn.prepare(sql).and_then(|mut stmt| {
         let rows = stmt.query_map(params![threshold], map_row)?;
-        Ok(rows.flatten().collect::<Vec<T>>())
+        Ok(rows.collect::<Result<Vec<T>, _>>()?)
     });
     match mapped {
         Ok(rows) => rows,

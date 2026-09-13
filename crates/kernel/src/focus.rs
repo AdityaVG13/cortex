@@ -1,5 +1,5 @@
 use crate::handlers::estimate_tokens;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {
     let existing: Option<(i64, String)> = conn
@@ -8,7 +8,8 @@ pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value,
             params![agent],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .ok();
+        .optional()
+        .map_err(|e| format!("Failed to look up focus: {e}"))?;
     if let Some((id, open_label)) = existing {
         return Ok(
             json!({"id":id,"label":open_label,"status":"already_open","message":

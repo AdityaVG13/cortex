@@ -56,7 +56,7 @@ pub fn resolve(
     let rows = stmt.query_map(params![record_id, namespace], |r| {
         Ok((r.get(0)?, r.get(1)?))
     })?;
-    Ok(rows.flatten().collect())
+    Ok(rows.collect::<Result<_, _>>()?)
 }
 
 pub fn record_for(
@@ -97,8 +97,7 @@ pub fn resolve_short(
     )?;
     let ids: Vec<String> = stmt
         .query_map(params![scheme, namespace, like_prefix(prefix)], |r| r.get(0))?
-        .flatten()
-        .collect();
+        .collect::<Result<_, _>>()?;
     Ok(match ids.len() {
         0 => ShortAddress::Unknown,
         1 => ShortAddress::Unique(ids.into_iter().next().unwrap()),
@@ -119,8 +118,7 @@ pub fn minimum_unique_prefix(
     )?;
     let locators: Vec<String> = stmt
         .query_map(params![scheme, namespace], |r| r.get(0))?
-        .flatten()
-        .collect();
+        .collect::<Result<_, _>>()?;
     let longest = locators
         .iter()
         .map(|l| l.chars().count())
@@ -153,8 +151,7 @@ pub fn rebase(
         .query_map(params![old_scheme, namespace], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?
-        .flatten()
-        .collect();
+        .collect::<Result<_, _>>()?;
     for (id, old) in &rows {
         assign(conn, id, namespace, new_scheme, &locate(id, old))?;
     }

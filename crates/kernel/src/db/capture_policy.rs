@@ -53,28 +53,33 @@ pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// Effective state for a scope: the exact scope row wins, then the global
-/// row, then `active`.
+/// row, then `active`. DDL on a query-only connection is best-effort; a
+/// failed SELECT fails closed (`stopped`) so a hook cannot treat an
+/// unreadable policy as permission to retain.
 pub fn state_for(conn: &Connection, scope: &str) -> CaptureState {
-    if ensure(conn).is_err() {
-        return CaptureState::Active;
-    }
-    let lookup = |s: &str| -> Option<CaptureState> {
-        conn.query_row(
-            "SELECT state FROM capture_policy WHERE scope = ?1",
-            params![s],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-        .and_then(|v| CaptureState::parse(&v))
+    let _ = ensure(conn);
+    let lookup = |s: &str| -> rusqlite::Result<Option<CaptureState>> {
+        let raw = conn
+            .query_row(
+                "SELECT state FROM capture_policy WHERE scope = ?1",
+                params![s],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(raw.and_then(|v| CaptureState::parse(&v)))
     };
     if !scope.is_empty() && scope != DEFAULT_SCOPE {
-        if let Some(s) = lookup(scope) {
-            return s;
+        match lookup(scope) {
+            Ok(Some(s)) => return s,
+            Ok(None) => {}
+            Err(_) => return CaptureState::Stopped,
         }
     }
-    lookup(DEFAULT_SCOPE).unwrap_or(CaptureState::Active)
+    match lookup(DEFAULT_SCOPE) {
+        Ok(Some(s)) => s,
+        Ok(None) => CaptureState::Active,
+        Err(_) => CaptureState::Stopped,
+    }
 }
 
 pub fn set_state(

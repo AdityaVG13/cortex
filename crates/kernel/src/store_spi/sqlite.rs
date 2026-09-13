@@ -665,10 +665,12 @@ impl WriteTransaction for SqliteTx<'_> {
         };
         if let Some(key) = &self.intent.idempotency_key {
             let hash = cortex_logic::traces::content_hash(&self.canonical.join("\n"));
+            let receipt_json = serde_json::to_string(&receipt)
+                .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
             self.conn
                 .execute(
                     "INSERT INTO operation_ledger (principal, idempotency_key, request_id, canonical_hash, receipt_json) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![self.intent.principal, key, self.intent.request_id, hash, serde_json::to_string(&receipt).unwrap_or_default()],
+                    params![self.intent.principal, key, self.intent.request_id, hash, receipt_json],
                 )
                 .map_err(|e| StoreSpiError::Unavailable(e.to_string()))?;
         }

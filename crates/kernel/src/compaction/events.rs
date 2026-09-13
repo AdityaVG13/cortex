@@ -153,7 +153,7 @@ pub fn rollup_old_savings_events(
               GROUP BY day, hour, operation"
 ,).and_then(|mut stmt|{let rows=stmt.query_map(params![retention_window.clone(),benchmark_source_pattern.clone()],|row|{Ok((row.
 get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,String>(2)?,row.get::<_,i64>(3)?,row.get::<_,i64>(4)?,row.get::<_,i64>(5)?,
-row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,i64>(8)?,))})?;Ok(rows.flatten().collect())}).unwrap_or_default();
+row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,i64>(8)?,))})?;rows.collect::<Result<Vec<_>,_>>()}).unwrap_or_default();
     if rollup_rows.is_empty() {
         return 0;
     }

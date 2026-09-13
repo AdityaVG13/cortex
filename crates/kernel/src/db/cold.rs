@@ -32,10 +32,10 @@ pub fn ensure_cold_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(COLD_DDL)
 }
 
-pub fn encode(bytes: &[u8]) -> Vec<u8> {
+pub fn encode(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
     let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
-    let _ = e.write_all(bytes);
-    e.finish().unwrap_or_default()
+    e.write_all(bytes)?;
+    e.finish()
 }
 
 pub fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
@@ -93,6 +93,13 @@ pub fn move_to_cold(conn: &Connection, namespace: &str, id: i64) -> rusqlite::Re
         return Ok(None);
     }
     let digest = cortex_logic::traces::content_hash(&text);
+    let payload = encode(text.as_bytes())
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    let context_payload = context
+        .as_deref()
+        .map(|c| encode(c.as_bytes()))
+        .transpose()
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     conn.execute(
         "INSERT OR REPLACE INTO cold_sources (namespace, address, codec, byte_length, payload, context_payload, digest) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
@@ -100,8 +107,8 @@ pub fn move_to_cold(conn: &Connection, namespace: &str, id: i64) -> rusqlite::Re
             id.to_string(),
             COLD_CODEC,
             text.len() as i64,
-            encode(text.as_bytes()),
-            context.as_deref().map(|c| encode(c.as_bytes())),
+            payload,
+            context_payload,
             digest
         ],
     )?;

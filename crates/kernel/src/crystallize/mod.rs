@@ -150,15 +150,21 @@ pub fn run_crystallize_pass_with_brain(
         );
         if insert.is_ok() {
             let cluster_id = conn.last_insert_rowid();
+            let mut inserted = 0usize;
             for &idx in member_indices {
                 let cand = &candidates[idx];
-                let _ = conn.execute(
-                    "INSERT INTO cluster_members (cluster_id, source, target_type, target_id) VALUES (?1, ?2, ?3, ?4)",
-                    params![cluster_id, cand.text, cand.target_type, cand.id],
-                );
+                if conn
+                    .execute(
+                        "INSERT INTO cluster_members (cluster_id, source, target_type, target_id) VALUES (?1, ?2, ?3, ?4)",
+                        params![cluster_id, cand.text, cand.target_type, cand.id],
+                    )
+                    .is_ok()
+                {
+                    inserted += 1;
+                }
             }
             crystals_created += 1;
-            entries_consolidated += member_indices.len();
+            entries_consolidated += inserted;
         }
     }
 

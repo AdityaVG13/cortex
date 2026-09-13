@@ -27,7 +27,7 @@ fn cold_codec_roundtrips_exact_bytes_including_unicode_and_binaryish_text() {
         "\u{0}\u{1}\u{2} nulls",
         &"x".repeat(200_000),
     ] {
-        let blob = encode(text.as_bytes());
+        let blob = encode(text.as_bytes()).expect("deflate encode");
         assert_eq!(decode(&blob).unwrap(), text.as_bytes(), "exact roundtrip");
     }
 }

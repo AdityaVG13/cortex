@@ -369,9 +369,10 @@ pub fn thread_summary(conn: &Connection, thread_label: &str) -> rusqlite::Result
         }
     }
     let checkpoint_record = format!("checkpoint:{thread_id}");
-    let checkpoint = heads(conn, &checkpoint_record)?
-        .first()
-        .and_then(|h| revision_body(conn, h).ok().flatten());
+    let checkpoint = match heads(conn, &checkpoint_record)?.first() {
+        Some(h) => revision_body(conn, h)?,
+        None => None,
+    };
     Ok(
         json!({"thread": thread_id, "exists": true, "obligations": obligations, "attempts": attempts, "checkpoint": checkpoint}),
     )

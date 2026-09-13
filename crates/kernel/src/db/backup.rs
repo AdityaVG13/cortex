@@ -79,11 +79,10 @@ pub fn backup_to(db_path: &Path, destination: &Path) -> Result<(PathBuf, PathBuf
     }
     let manifest = manifest_for(&verify, destination);
     let manifest_path = PathBuf::from(format!("{}{MANIFEST_SUFFIX}", destination.display()));
-    std::fs::write(
-        &manifest_path,
-        serde_json::to_string_pretty(&manifest).unwrap_or_default(),
-    )
-    .map_err(|e| format!("write manifest: {e}"))?;
+    let manifest_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("serialize manifest: {e}"))?;
+    std::fs::write(&manifest_path, manifest_json)
+        .map_err(|e| format!("write manifest: {e}"))?;
     Ok((destination.to_path_buf(), manifest_path))
 }
 
@@ -185,9 +184,9 @@ pub fn restore_from(
         "INSERT OR REPLACE INTO config (key, value) VALUES ('restore_epoch', ?1)",
         params![new_epoch],
     )
-    .ok();
-    let aliases_expired = conn.execute("DELETE FROM view_aliases", []).unwrap_or(0) as i64
-        + conn.execute("DELETE FROM view_receipts", []).unwrap_or(0) as i64;
+    .map_err(|e| e.to_string())?;
+    let aliases_expired = conn.execute("DELETE FROM view_aliases", []).map_err(|e| e.to_string())? as i64
+        + conn.execute("DELETE FROM view_receipts", []).map_err(|e| e.to_string())? as i64;
     // Erasure floor first: the home ledger re-applies every erasure the
     // backup predates, so a restore can never resurrect an erased record. A
     // backup without the ledger while the home has one is quarantined.
@@ -239,11 +238,10 @@ pub fn restore_from(
         quarantined: reconciliation.quarantined,
         report_path: home.join(LAST_VERIFIED_RESTORE),
     };
-    std::fs::write(
-        &report.report_path,
-        serde_json::to_string_pretty(&report.to_json()).unwrap_or_default(),
-    )
-    .map_err(|e| format!("write report: {e}"))?;
+    let report_json = serde_json::to_string_pretty(&report.to_json())
+        .map_err(|e| format!("serialize restore report: {e}"))?;
+    std::fs::write(&report.report_path, report_json)
+        .map_err(|e| format!("write report: {e}"))?;
     Ok(report)
 }
 
