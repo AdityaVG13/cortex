@@ -5,6 +5,33 @@ use crate::db::checkpoint_wal_best_effort;
 use crate::handlers::log_event;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
+
+fn require_supersede(
+    tx: &Connection,
+    ts: &str,
+    target_id: i64,
+    owner_id: Option<i64>,
+) -> Result<(), StoreError> {
+    let updated = if let Some(owner_id) = owner_id {
+        tx.execute(
+            "UPDATE decisions SET status = 'superseded', valid_until = ?1, updated_at = ?1 WHERE id = ?2 AND owner_id = ?3",
+            params![ts, target_id, owner_id],
+        )
+    } else {
+        tx.execute(
+            "UPDATE decisions SET status = 'superseded', valid_until = ?1, updated_at = ?1 WHERE id = ?2",
+            params![ts, target_id],
+        )
+    }
+    .map_err(|e| StoreError::Internal(e.to_string()))?;
+    if updated == 0 {
+        return Err(StoreError::Internal(format!(
+            "conflict target {target_id} was not updated"
+        )));
+    }
+    Ok(())
+}
+
 pub fn handle_contradiction_policy(
     conn: &mut Connection,
     decision: &str,
@@ -35,16 +62,7 @@ pub fn handle_contradiction_policy(
         .savepoint()
         .map_err(|e| StoreError::Internal(e.to_string()))?;
     if incoming_wins {
-        if let Some(owner_id) = owner_id {
-            tx.execute(
-                "UPDATE decisions SET status = 'superseded', valid_until = ?1, updated_at = ?1 WHERE id = ?2 AND owner_id = ?3",
-                params![ts, existing_id, owner_id],
-            )
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
-        } else {
-            tx.execute("UPDATE decisions SET status = 'superseded', valid_until = ?1, updated_at = ?1 WHERE id = ?2", params![ts, existing_id])
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
-        }
+        require_supersede(&tx, ts, existing_id, owner_id)?;
     }
     let new_id = insert_decision_with_state(
         &tx,
@@ -237,16 +255,7 @@ pub fn handle_refinement_policy(
         .savepoint()
         .map_err(|e| StoreError::Internal(e.to_string()))?;
     if should_supersede {
-        if let Some(owner_id) = owner_id {
-            tx.execute(
-                "UPDATE decisions SET status = 'superseded', valid_until = ?1, updated_at = ?1 WHERE id = ?2 AND owner_id = ?3",
-                params![ts, target_id, owner_id],
-            )
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
-        } else {
-            tx.execute("UPDATE decisions SET status = 'superseded', valid_until = ?1, updated_at = ?1 WHERE id = ?2", params![ts, target_id])
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
-        }
+        require_supersede(&tx, ts, target_id, owner_id)?;
     }
     let new_id = insert_decision_with_state(
         &tx,

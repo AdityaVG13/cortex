@@ -8,11 +8,12 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 pub fn parse_conflict_id(raw: &str) -> Option<(i64, i64)> {
-    let payload = raw
-        .trim()
-        .strip_prefix("decision:")
-        .or_else(|| raw.trim().strip_prefix("decision_pair:"))
-        .unwrap_or(raw.trim());
+    let trimmed = raw.trim();
+    // Longer prefix first: `decision:` is a prefix of `decision_pair:`.
+    let payload = trimmed
+        .strip_prefix("decision_pair:")
+        .or_else(|| trimmed.strip_prefix("decision:"))
+        .unwrap_or(trimmed);
     let mut parts = payload.split(':');
     let a = parts.next()?.trim().parse::<i64>().ok()?;
     let b = parts.next()?.trim().parse::<i64>().ok()?;
@@ -129,21 +130,41 @@ pub fn resolve_decision_with_metadata(
     if !matches!(action, "keep" | "merge" | "archive") {
         return Err("Invalid action. Expected keep, merge, or archive.".to_string());
     }
+    if superseded_id == Some(keep_id) {
+        return Err("keep and superseded ids must differ".to_string());
+    }
     let status = if action == "archive" {
         "archived"
     } else {
         "active"
     };
-    conn.execute("UPDATE decisions SET status = ?2, disputes_id = NULL, updated_at = datetime('now') WHERE id = ?1", params![keep_id, status])
+    let tx = conn.savepoint().map_err(|err| err.to_string())?;
+    let kept = tx
+        .execute(
+            "UPDATE decisions SET status = ?2, disputes_id = NULL, updated_at = datetime('now') WHERE id = ?1",
+            params![keep_id, status],
+        )
         .map_err(|err| err.to_string())?;
+    if kept == 0 {
+        return Err(format!("decision `{keep_id}` was not found"));
+    }
     if let Some(other) = superseded_id {
         let other_status = if action == "keep" {
             "superseded"
         } else {
             status
         };
-        let _ = conn.execute("UPDATE decisions SET status = ?2, disputes_id = NULL, updated_at = datetime('now') WHERE id = ?1", params![other, other_status]);
+        let other_updated = tx
+            .execute(
+                "UPDATE decisions SET status = ?2, disputes_id = NULL, updated_at = datetime('now') WHERE id = ?1",
+                params![other, other_status],
+            )
+            .map_err(|err| err.to_string())?;
+        if other_updated == 0 {
+            return Err(format!("decision `{other}` was not found"));
+        }
     }
+    tx.commit().map_err(|err| err.to_string())?;
     Ok(
         json!({"resolved":true,"keepId":keep_id,"winnerId":keep_id,"supersededId":superseded_id,"action":action}),
     )

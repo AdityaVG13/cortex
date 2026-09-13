@@ -144,10 +144,10 @@ pub fn close_revision(
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![decision_id], |r| Ok(json!({"conflict": r.get::<_, i64>(0)?, "classification": r.get::<_, String>(1)?, "status": r.get::<_, String>(2)?, "other": format!("decision::{}", r.get::<_, i64>(3)?), "text": r.get::<_, String>(4)?})))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        for row in rows.flatten() {
-            contrary.push(row);
-        }
+        contrary.extend(rows);
     }
     Ok((items, contrary))
 }

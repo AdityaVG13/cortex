@@ -154,7 +154,9 @@ fn project(conn: &Connection, principal: &str, scope: &str, limit: usize) -> Res
 }
 
 fn register(conn: &Connection, principal: &str, spec: &NeedSpec) -> Result<(), String> {
-    let normalized = validate(spec)?;
+    let mut spec = spec.clone();
+    spec.scope = observation::normalize_scope(&spec.scope);
+    let normalized = validate(&spec)?;
     let now = chrono::Utc::now().timestamp();
     conn.execute("DELETE FROM observation_need_cues WHERE principal=?1 AND need_id IN (SELECT need_id FROM observation_needs WHERE principal=?1 AND expires<=?2)",params![principal,now]).map_err(|e|e.to_string())?;
     conn.execute("DELETE FROM observation_matches WHERE principal=?1 AND need_id IN (SELECT need_id FROM observation_needs WHERE principal=?1 AND expires<=?2)",params![principal,now]).map_err(|e|e.to_string())?;
@@ -183,7 +185,7 @@ fn register(conn: &Connection, principal: &str, spec: &NeedSpec) -> Result<(), S
         params![principal, spec.id],
     )
     .map_err(|e| e.to_string())?;
-    conn.execute("INSERT INTO observation_needs VALUES(?1,?2,?3,?4,?5) ON CONFLICT(principal,need_id) DO UPDATE SET scope=excluded.scope,spec_json=excluded.spec_json,expires=excluded.expires",params![principal,spec.id,spec.scope,serde_json::to_string(spec).map_err(|e|e.to_string())?,now+spec.ttl_seconds as i64]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO observation_needs VALUES(?1,?2,?3,?4,?5) ON CONFLICT(principal,need_id) DO UPDATE SET scope=excluded.scope,spec_json=excluded.spec_json,expires=excluded.expires",params![principal,spec.id,spec.scope,serde_json::to_string(&spec).map_err(|e|e.to_string())?,now+spec.ttl_seconds as i64]).map_err(|e|e.to_string())?;
     for cue in normalized {
         conn.execute(
             "INSERT INTO observation_need_cues VALUES(?1,?2,?3,?4)",
@@ -204,7 +206,7 @@ fn load_evidence(
 ) -> Result<Option<Evidence>, String> {
     let row = conn
         .query_row(
-            "SELECT e.source_id,e.revision_id,e.source_key,g.role,s.inline_payload FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key JOIN sources s ON s.source_id=e.source_id JOIN revisions v ON v.revision_id=e.revision_id WHERE e.principal=?1 AND e.source_id=?2 AND g.scope_label=?3 AND g.enabled=1 AND EXISTS(SELECT 1 FROM record_heads h WHERE h.revision_id=e.revision_id) AND NOT EXISTS(SELECT 1 FROM observation_retractions t WHERE t.source_id=e.source_id) AND s.availability='owned_inline'",
+            "SELECT e.source_id,e.revision_id,e.source_key,g.role,s.inline_payload FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key JOIN sources s ON s.source_id=e.source_id JOIN revisions v ON v.revision_id=e.revision_id WHERE e.principal=?1 AND e.source_id=?2 AND g.scope_label=?3 AND g.enabled=1 AND g.policy_epoch=(SELECT policy_epoch FROM brain_meta WHERE singleton=1) AND g.role!='delivery_only' AND EXISTS(SELECT 1 FROM record_heads h WHERE h.revision_id=e.revision_id) AND NOT EXISTS(SELECT 1 FROM observation_retractions t WHERE t.source_id=e.source_id) AND s.availability='owned_inline'",
             params![principal, source_id, scope],
             |r| {
                 Ok((
@@ -338,15 +340,15 @@ fn materialize(
             if evidence.iter().any(|e| e.source_id == source_id) {
                 continue;
             }
-            let (revision_id,source_key,role,bytes):(String,String,String,Vec<u8>)=conn.query_row("SELECT e.revision_id,e.source_key,g.role,s.inline_payload FROM observation_events e JOIN observation_sources g ON g.principal=e.principal AND g.source_key=e.source_key JOIN sources s ON s.source_id=e.source_id WHERE e.principal=?1 AND e.source_id=?2 AND g.scope_label=?3",params![principal,source_id,spec.scope],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e|e.to_string())?;
-            evidence.push(Evidence {
-                source_id,
-                revision_id,
-                source_key,
-                role,
-                text: String::from_utf8(bytes).map_err(|_| "source_not_utf8")?,
-                route: "learned_local_association".into(),
-            });
+            if let Some(item) = load_evidence(
+                conn,
+                principal,
+                &spec.scope,
+                &source_id,
+                "learned_local_association",
+            )? {
+                evidence.push(item);
+            }
         }
         for (source_id, _assembly, member_role) in super::assembly::suggest_authorized_members(
             conn,

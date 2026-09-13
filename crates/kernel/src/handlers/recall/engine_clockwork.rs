@@ -669,14 +669,21 @@ fn caller_acl_param(ctx: &RecallContext) -> Option<i64> {
     }
 }
 
-fn qualified_current_gates(alias: &str) -> String {
+fn qualified_validity_gates(alias: &str) -> String {
     format!(
-        "{a}.status NOT IN ('superseded','archived') \
-         AND ({a}.expires_at IS NULL OR julianday({a}.expires_at) > julianday('now')) \
+        "({a}.expires_at IS NULL OR julianday({a}.expires_at) > julianday('now')) \
          AND ({a}.valid_from IS NULL OR julianday({a}.valid_from) <= julianday('now')) \
          AND ({a}.valid_until IS NULL OR julianday({a}.valid_until) > julianday('now')) \
          AND ({a}.version_id IS NULL OR {a}.version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned'))",
         a = alias
+    )
+}
+
+fn qualified_current_gates(alias: &str) -> String {
+    format!(
+        "{a}.status NOT IN ('superseded','archived') AND {rest}",
+        a = alias,
+        rest = qualified_validity_gates(alias)
     )
 }
 
@@ -700,7 +707,13 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
     let caller = caller_acl_param(ctx);
     let is_decision = kind == "decision";
     let alias = if is_decision { "d" } else { "m" };
-    let gates = if ctx.as_of.is_some() { qualified_as_of_gates(alias, "?5") } else { format!("{} AND (?5 IS NULL OR 1)", qualified_current_gates(alias)) };
+    let gates = if ctx.as_of.is_some() {
+        qualified_as_of_gates(alias, "?5")
+    } else if ctx.include_cold {
+        format!("{} AND (?5 IS NULL OR 1)", qualified_validity_gates(alias))
+    } else {
+        format!("{} AND (?5 IS NULL OR 1)", qualified_current_gates(alias))
+    };
     let acl = qualified_acl(alias, "?4");
     let sql = if is_decision {
         format!(
@@ -806,11 +819,15 @@ fn load_target(conn: &Connection, target_type: &str, target_id: i64, ctx: &Recal
     let gates = if ctx.as_of.is_some() {
         qualified_as_of_gates("x", "?3").replace("x.", "")
     } else if ctx.include_cold {
-        // Cold/archived partition included: keep validity/HEAD gates, drop
-        // the status gate.
-        format!("{} AND (?3 IS NULL OR 1)", qualified_current_gates("x").replace("x.", "").replacen("status NOT IN ('superseded','archived') AND ", "", 1))
+        format!(
+            "{} AND (?3 IS NULL OR 1)",
+            qualified_validity_gates("x").replace("x.", "")
+        )
     } else {
-        format!("{} AND (?3 IS NULL OR 1)", qualified_current_gates("x").replace("x.", ""))
+        format!(
+            "{} AND (?3 IS NULL OR 1)",
+            qualified_current_gates("x").replace("x.", "")
+        )
     };
     let acl = qualified_acl("x", "?2").replace("x.", "");
     let sql = if target_type == "memory" {

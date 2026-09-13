@@ -223,6 +223,13 @@ impl View {
             };
             let heads = crate::db::records::heads(conn, &record_id)?;
             let Some(revision) = heads.first() else {
+                card.epistemic = "contested";
+                card.exceptions
+                    .push("qualification_unavailable: no record head".into());
+                card.required = true;
+                card.bytes = card.statement.len()
+                    + card.exceptions.iter().map(|e| e.len() + 2).sum::<usize>()
+                    + card.exact_text.as_ref().map(|t| t.len()).unwrap_or(0);
                 continue;
             };
             let legacy_id = card
@@ -240,6 +247,15 @@ impl View {
                 }
             }
             let Ok((items, contrary)) = close_revision(conn, revision, legacy_id) else {
+                // Fail closed: a claim whose exceptions could not be loaded
+                // must not travel as an asserted Card.
+                card.epistemic = "contested";
+                card.exceptions
+                    .push("qualification_unavailable: evidence closure failed".into());
+                card.required = true;
+                card.bytes = card.statement.len()
+                    + card.exceptions.iter().map(|e| e.len() + 2).sum::<usize>()
+                    + card.exact_text.as_ref().map(|t| t.len()).unwrap_or(0);
                 continue;
             };
             for item in items {

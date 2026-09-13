@@ -752,7 +752,7 @@ impl CortexRuntime {
         .map_err(|err| err.to_string())?;
         tx.execute(
             "INSERT INTO assemblies(assembly_id,principal,scope_label,kind,created_sequence) VALUES(?1,?2,?3,?4,?5)
-             ON CONFLICT(principal,assembly_id) DO UPDATE SET kind=excluded.kind",
+             ON CONFLICT(principal,assembly_id) DO UPDATE SET kind=excluded.kind, scope_label=excluded.scope_label",
             params![spec.id, principal, spec.scope, spec.kind, sequence],
         )
         .map_err(|err| err.to_string())?;
