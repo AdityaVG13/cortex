@@ -70,7 +70,7 @@ pub fn build_identity_capsule(conn: &Connection) -> (String, usize) {
         let digest: String = conn
             .query_row(
                 &format!(
-                    "SELECT COALESCE(group_concat(id || ':' || length(text) || ':' || score, ','), '') FROM (SELECT id, text, score FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')){mem_scope} ORDER BY score DESC, id ASC LIMIT 20)"
+                    "SELECT COALESCE(group_concat(id || ':' || length(text) || ':' || score || ':' || COALESCE(updated_at,''), ','), '') FROM (SELECT id, text, score, updated_at FROM memories WHERE type = 'feedback' AND status = 'active' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')){mem_scope} ORDER BY score DESC, id ASC LIMIT 20)"
                 ),
                 [],
                 |r| r.get(0),

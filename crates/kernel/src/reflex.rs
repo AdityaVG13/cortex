@@ -235,6 +235,12 @@ pub fn state_for(snapshot: Option<&ReflexSnapshot>, conn: &Connection) -> Snapsh
     if s.header.frontier_sequence != frontier_sequence(conn) {
         return SnapshotState::Expired;
     }
+    let clock_now = crate::clockwork::current_generation(conn)
+        .map(|g| g.to_string())
+        .unwrap_or_else(|_| "0".into());
+    if s.header.projection_versions.get("clock") != Some(&clock_now) {
+        return SnapshotState::Expired;
+    }
     SnapshotState::Fresh
 }
 

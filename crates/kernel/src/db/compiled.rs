@@ -9,7 +9,7 @@ use super::records::{brain_epochs, DEFAULT_SCOPE};
 use crate::recipe::{evaluate, Fact, Limits, RecipeResult, Snapshot, Step};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Advance the guard epoch of one (scope, relation) domain plus the coarse
 /// scope-wide epoch. Called by every mutation that can change a searched
@@ -102,14 +102,63 @@ pub fn snapshot(conn: &Connection, environment: &str) -> rusqlite::Result<Snapsh
     Ok(snap)
 }
 
-fn compiled_id(recipe_id: &str, principal: &str, params_json: &str, environment: &str) -> String {
-    let payload = format!("{recipe_id}|{principal}|{params_json}|{environment}");
+fn plan_fingerprint(steps: &[Step], outputs: &[String]) -> String {
+    let payload = json!({"outputs": outputs, "steps": steps}).to_string();
+    cortex_logic::traces::content_hash(&payload)
+}
+
+fn compiled_id(
+    recipe_id: &str,
+    principal: &str,
+    params_json: &str,
+    environment: &str,
+    plan: &str,
+) -> String {
+    let payload = format!(
+        "{recipe_id}|{principal}|{params_json}|{environment}|{}|{plan}",
+        cortex_logic::recipe::OPERATOR_VERSIONS
+    );
     format!("compiled:{}", cortex_logic::traces::content_hash(&payload))
 }
 
+fn recipe_result_from_cached(cached: &Value, snap: &Snapshot) -> Option<RecipeResult> {
+    let values = cached
+        .get("values")?
+        .as_object()?
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let work = cached.get("work")?.as_u64()? as usize;
+    let positive: BTreeSet<String> = cached
+        .get("positive")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    let mut guards = BTreeMap::new();
+    for guard in cached.get("guards")?.as_array()? {
+        let scope = guard.get("scope")?.as_str()?.to_string();
+        let relation = guard.get("relation")?.as_str()?.to_string();
+        let epoch = guard.get("epoch")?.as_i64()?;
+        guards.insert((scope, relation), epoch);
+    }
+    Some(RecipeResult {
+        values,
+        guards,
+        positive,
+        brain_epoch: snap.brain_epoch.clone(),
+        policy_epoch: snap.policy_epoch.clone(),
+        environment: snap.environment.clone(),
+        scope: DEFAULT_SCOPE.into(),
+        work,
+        operator_versions: cortex_logic::recipe::OPERATOR_VERSIONS,
+    })
+}
+
 /// Evaluate (or reuse) a recipe. Identity = recipe + operator versions +
-/// parameters + principal + brain epoch + policy epoch + environment; a
-/// cached result for one scope/params can never answer another.
+/// plan (steps/outputs) + parameters + principal + brain epoch + policy
+/// epoch + environment; a cached result for one scope/params/plan can
+/// never answer another.
 pub fn run_compiled(
     conn: &Connection,
     principal: &str,
@@ -123,7 +172,14 @@ pub fn run_compiled(
     super::records::ensure_authoritative_schema(conn).map_err(|e| e.to_string())?;
     let snap = snapshot(conn, environment).map_err(|e| e.to_string())?;
     let params_json = params_value.to_string();
-    let id = compiled_id(recipe_id, principal, &params_json, environment);
+    let plan = plan_fingerprint(steps, outputs);
+    let id = compiled_id(
+        recipe_id,
+        principal,
+        &params_json,
+        environment,
+        &plan,
+    );
     // Reuse path: stored guards must all match the current epochs.
     let cached: Option<(String, String, String, String, i64, String)> = conn
         .query_row(
@@ -142,13 +198,19 @@ pub fn run_compiled(
             let mut stmt = conn
                 .prepare("SELECT scope_id, guard_key, expected_generation, kind FROM compiled_guards WHERE compiled_id = ?1")
                 .map_err(|e| e.to_string())?;
-            let guards: Vec<(String, String, i64, String)> = stmt
+            let guards = match stmt
                 .query_map(params![id], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                 })
                 .map_err(|e| e.to_string())?
-                .flatten()
-                .collect();
+                .collect::<rusqlite::Result<Vec<(String, String, i64, String)>>>()
+            {
+                Ok(guards) => guards,
+                Err(_) => {
+                    valid = false;
+                    Vec::new()
+                }
+            };
             for (scope, key, expected, kind) in guards {
                 let now = if kind == "positive" {
                     if snap.facts.contains_key(&key) {
@@ -170,9 +232,9 @@ pub fn run_compiled(
         }
         if valid {
             if let Ok(cached_value) = serde_json::from_str(&result_json) {
-                let result = evaluate(&snap, DEFAULT_SCOPE, steps, outputs, limits)
-                    .map_err(|e| e.to_string())?;
-                return Ok((cached_value, true, result));
+                if let Some(result) = recipe_result_from_cached(&cached_value, &snap) {
+                    return Ok((cached_value, true, result));
+                }
             }
         }
         conn.execute(

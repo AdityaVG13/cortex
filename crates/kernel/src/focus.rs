@@ -2,17 +2,17 @@ use crate::handlers::estimate_tokens;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {
-    let existing: Option<i64> = conn
+    let existing: Option<(i64, String)> = conn
         .query_row(
-            "SELECT id FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'",
-            params![label, agent],
-            |row| row.get(0),
+            "SELECT id, label FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY started_at DESC, id DESC LIMIT 1",
+            params![agent],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .ok();
-    if let Some(id) = existing {
+    if let Some((id, open_label)) = existing {
         return Ok(
-            json!({"id":id,"label":label,"status":"already_open","message":
-"Focus session already open with this label"}),
+            json!({"id":id,"label":open_label,"status":"already_open","message":
+format!("Focus session already open with label '{open_label}'")}),
         );
     }
     conn.execute("INSERT INTO focus_sessions (label, agent, status, raw_entries) VALUES (?1, ?2, 'open', '[]')", params![label, agent])

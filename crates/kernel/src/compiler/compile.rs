@@ -1,6 +1,6 @@
 use super::*;
 use crate::handlers::estimate_tokens;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde_json::json;
 use std::path::Path;
 
@@ -122,6 +122,14 @@ fn build_constraints_capsule_uncached(conn: &Connection) -> (String, usize) {
     }
     (format!("## Constraints\n{}", lines.join("\n")), omitted)
 }
+struct BootCompileGuard;
+impl Drop for BootCompileGuard {
+    fn drop(&mut self) {
+        super::capsules::set_boot_owner(None);
+        super::capsules::set_boot_paths(&[]);
+    }
+}
+
 /// Owner-scoped boot: in team mode every capsule query is filtered to the
 /// caller's rows so one owner's messages, tasks, locks, feed and decisions
 /// never appear in another owner's brief.
@@ -135,10 +143,8 @@ pub fn compile_for_owner(
 ) -> BootResult {
     super::capsules::set_boot_owner(owner);
     super::capsules::set_boot_paths(paths);
-    let result = compile(conn, home, agent, max_tokens);
-    super::capsules::set_boot_owner(None);
-    super::capsules::set_boot_paths(&[]);
-    result
+    let _guard = BootCompileGuard;
+    compile(conn, home, agent, max_tokens)
 }
 pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -> BootResult {
     let mut items: Vec<ContextItem> = Vec::new();
@@ -280,15 +286,13 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
         0
     };
     if raw_baseline > 0 {
-        let _ = conn.prepare_cached("INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)").and_then(|mut stmt| {
-            stmt.execute(params![
-                "boot_savings",
-                serde_json::to_string(&json!({"agent":agent,"served":token_estimate,"baseline":raw_baseline,"saved":saved,"percent":percent,
-"admitted":admitted.len(),"rejected":rejected.len()}))
-                .unwrap_or_default(),
-                "rust-daemon"
-            ])
-        });
+        let _ = crate::handlers::log_event(
+            conn,
+            "boot_savings",
+            json!({"agent":agent,"served":token_estimate,"baseline":raw_baseline,"saved":saved,"percent":percent,
+"admitted":admitted.len(),"rejected":rejected.len()}),
+            "rust-daemon",
+        );
     }
     BootResult {
         boot_prompt: assembled,

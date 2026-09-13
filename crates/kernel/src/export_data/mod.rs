@@ -65,9 +65,7 @@ query_table_json_page(conn,
 ,limit,decisions_offset,)?;
     Ok(
         json!({"version":1,"mode":"page","exported_at":now_iso(),"limit":limit,"memories_offset":memories_offset
-,"decisions_offset":decisions_offset,"next_memories_offset":if memories_has_more{Some(memories_offset.saturating_add(memories.len(
-)))}else{None::<usize>},"next_decisions_offset":if decisions_has_more{Some(decisions_offset.saturating_add(decisions.len()))}else{
-None::<usize>},"truncated":memories_has_more||decisions_has_more,"memories":memories,"decisions":decisions,"memories_count":
+,"decisions_offset":decisions_offset,"next_memories_offset":next_page_offset(memories_offset,&memories,memories_has_more),"next_decisions_offset":next_page_offset(decisions_offset,&decisions,decisions_has_more),"truncated":memories_has_more||decisions_has_more,"memories":memories,"decisions":decisions,"memories_count":
 memories.len(),"decisions_count":decisions.len(),}),
     )
 }
@@ -76,15 +74,18 @@ pub fn export_json_changeset_value(
     since: Option<&str>,
 ) -> Result<Value, String> {
     let cursor = now_iso();
-    let lower = since.unwrap_or("0000-00-00T00:00:00Z");
+    // `updated_at` mixes RFC3339 (`now_iso`) and SQLite `datetime('now')`.
+    // Lexicographic compare treats space as less than `T`, so a RFC3339
+    // cursor silently skips same-day SQLite timestamps. Compare as instants.
+    let lower = since.unwrap_or("0001-01-01T00:00:00.000Z");
     let memories = query_rows_json(
         conn,
-        "SELECT id, text, source, type, status, created_at, updated_at FROM memories WHERE status = 'active' AND updated_at > ?1 AND updated_at <= ?2 ORDER BY id",
+        "SELECT id, text, source, type, status, created_at, updated_at FROM memories WHERE status = 'active' AND julianday(updated_at) > julianday(?1) AND julianday(updated_at) <= julianday(?2) ORDER BY id",
         &[&lower, &cursor],
     )?;
     let decisions = query_rows_json(
         conn,
-        "SELECT id, decision, context, type, status, created_at, updated_at FROM decisions WHERE status = 'active' AND updated_at > ?1 AND updated_at <= ?2 ORDER BY id",
+        "SELECT id, decision, context, type, status, created_at, updated_at FROM decisions WHERE status = 'active' AND julianday(updated_at) > julianday(?1) AND julianday(updated_at) <= julianday(?2) ORDER BY id",
         &[&lower, &cursor],
     )?;
     Ok(
@@ -257,6 +258,16 @@ fn query_table_json_page(
         rows.truncate(limit);
     }
     Ok((rows, has_more))
+}
+/// Resume cursor for the other table when this page is short but the
+/// sibling table still has rows. `None` only when this collection is empty
+/// at `offset` (nothing to skip on the next call).
+fn next_page_offset(offset: usize, page: &[Value], has_more: bool) -> Option<usize> {
+    if has_more || !page.is_empty() {
+        Some(offset.saturating_add(page.len()))
+    } else {
+        None
+    }
 }
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)

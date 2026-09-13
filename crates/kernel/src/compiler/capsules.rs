@@ -16,11 +16,12 @@ pub fn stored_max_timestamp(conn: &Connection) -> Option<String> {
 }
 
 pub fn get_last_boot_time(conn: &Connection, agent: &str) -> Option<String> {
-    conn.query_row("SELECT data FROM events WHERE type = 'agent_boot' AND source_agent = ?1 ORDER BY created_at DESC, id DESC LIMIT 1", params![agent], |r| {
-        r.get::<_, String>(0)
-    })
+    conn.query_row(
+        "SELECT created_at FROM events WHERE type = 'agent_boot' AND source_agent = ?1 ORDER BY id DESC LIMIT 1",
+        params![agent],
+        |r| r.get::<_, String>(0),
+    )
     .ok()
-    .and_then(|data| serde_json::from_str::<Value>(&data).ok()?.get("timestamp")?.as_str().map(|s| s.to_string()))
 }
 /// `AND owner_id = N` when the table carries owner scoping and a caller is
 /// known; empty otherwise. Team-mode boot must not leak another owner's
@@ -411,7 +412,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
     }
     if let Some(ref lb) = last_boot {
         if let Ok(mut stmt) =
-            conn.prepare_cached(&format!("SELECT id, decision, context, source_agent FROM decisions WHERE status = 'active'{} AND created_at >= ?1 AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, rowid DESC LIMIT 20", owner_clause(conn, "decisions", boot_owner())))
+            conn.prepare_cached(&format!("SELECT id, decision, context, source_agent FROM decisions WHERE status = 'active'{} AND julianday(created_at) >= julianday(?1) AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY created_at DESC, rowid DESC LIMIT 20", owner_clause(conn, "decisions", boot_owner())))
         {
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?))) {
                 let collected: Vec<(i64, String, Option<String>, String)> = rows.flatten().collect();
@@ -432,7 +433,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             }
         }
         if let Ok(mut stmt) =
-            conn.prepare_cached(&format!("SELECT text, type FROM memories WHERE status = 'active'{} AND updated_at >= ?1 AND type != 'state' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY updated_at DESC, id DESC LIMIT 3", owner_clause(conn, "memories", boot_owner())))
+            conn.prepare_cached(&format!("SELECT text, type FROM memories WHERE status = 'active'{} AND julianday(updated_at) >= julianday(?1) AND type != 'state' AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) ORDER BY updated_at DESC, id DESC LIMIT 3", owner_clause(conn, "memories", boot_owner())))
         {
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
                 let lines: Vec<String> = rows
@@ -448,7 +449,7 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
             }
         }
         if let Ok(mut stmt) = conn
-            .prepare("SELECT type, COUNT(*) as cnt FROM events WHERE created_at > ?1 AND type NOT IN ('brain_init', 'index_all', 'agent_boot') GROUP BY type ORDER BY type ASC")
+            .prepare("SELECT type, COUNT(*) as cnt FROM events WHERE julianday(created_at) > julianday(?1) AND type NOT IN ('brain_init', 'index_all', 'agent_boot') GROUP BY type ORDER BY type ASC")
         {
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
                 let entries: Vec<String> = rows.flatten().map(|(etype, cnt)| format!("{cnt} {}", etype.replace('_', " "))).collect();
@@ -513,14 +514,10 @@ pub fn estimate_raw_baseline(conn: &Connection, _home: &Path) -> usize {
 pub fn record_boot(conn: &Connection, agent: &str) {
     let now = stored_max_timestamp(conn)
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
-    let _ = conn.execute(
-        "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
-        params![
-            "agent_boot",
-            serde_json::to_string(&json!({"timestamp"
-:&now,"agent":agent}))
-            .unwrap_or_default(),
-            agent
-        ],
+    let _ = crate::handlers::log_event(
+        conn,
+        "agent_boot",
+        json!({"timestamp": &now, "agent": agent}),
+        agent,
     );
 }
