@@ -897,11 +897,17 @@ struct LoadedRow {
 fn loaded_candidate(
     conn: &Connection, row: &LoadedRow, hops: u8, write: u8, truth: u8, task: u8, history: u8, hard_anchor: bool, strong_lexical: bool, specificity: u8,
 ) -> Result<ScoredCandidate, String> {
-    let use_score = feedback_use_score(conn, &row.source)?;
+    let kind = if row.target_type == "decision" {
+        SearchTableKind::Decisions
+    } else {
+        SearchTableKind::Memories
+    };
+    let source = search_source_key(kind, row.target_id, Some(row.source.as_str()));
+    let use_score = feedback_use_score(conn, &source)?;
     Ok(ScoredCandidate {
         target_type: row.target_type.clone(),
         target_id: row.target_id,
-        source: row.source.clone(),
+        source,
         excerpt: row.excerpt.clone(),
         owner_id: row.owner_id,
         visibility: row.visibility.clone(),
@@ -978,11 +984,17 @@ fn load_target(conn: &Connection, target_type: &str, target_id: i64, ctx: &Recal
     if !is_visible(owner_id, visibility.as_deref(), ctx) {
         return Ok(None);
     }
+    let kind = if target_type == "decision" {
+        SearchTableKind::Decisions
+    } else {
+        SearchTableKind::Memories
+    };
+    let source = search_source_key(kind, target_id, Some(source.as_str()));
     let use_score = feedback_use_score(conn, &source)?;
     Ok(Some(ScoredCandidate {
         target_type: target_type.to_string(),
         target_id,
-        source: source.clone(),
+        source,
         excerpt,
         owner_id,
         visibility,

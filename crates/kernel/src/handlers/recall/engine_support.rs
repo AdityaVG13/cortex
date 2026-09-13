@@ -49,12 +49,34 @@ pub fn bump_retrievals_sources(conn: &Connection, sources: &[String]) {
         return;
     }
     let now = now_iso();
-    let sources: Vec<&str> = sources.iter().map(String::as_str).collect();
-    bump_retrievals_str_keys(conn, "memories", "source", &now, &sources);
-    let decision_ids: Vec<i64> = sources.iter().filter_map(|s| s.strip_prefix("decision::").and_then(|id| id.parse::<i64>().ok())).collect();
+    // Blank keys would `UPDATE ... WHERE source IN ('')` and bump every
+    // sourceless row. Identity keys (`memory::{id}`, `decision::{id}`) are
+    // not stored in those columns; they must bump the row by id.
+    let sources: Vec<&str> = sources
+        .iter()
+        .map(String::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    if sources.is_empty() {
+        return;
+    }
+    let memory_ids: Vec<i64> = sources
+        .iter()
+        .filter_map(|s| s.strip_prefix("memory::").and_then(|id| id.parse::<i64>().ok()))
+        .collect();
+    let decision_ids: Vec<i64> = sources
+        .iter()
+        .filter_map(|s| s.strip_prefix("decision::").and_then(|id| id.parse::<i64>().ok()))
+        .collect();
+    let named_sources: Vec<&str> = sources
+        .iter()
+        .copied()
+        .filter(|s| !s.starts_with("memory::") && !s.starts_with("decision::"))
+        .collect();
+    bump_retrievals_str_keys(conn, "memories", "source", &now, &named_sources);
+    bump_retrievals_i64_keys(conn, "memories", "id", &now, &memory_ids);
     bump_retrievals_i64_keys(conn, "decisions", "id", &now, &decision_ids);
-    let context_sources: Vec<&str> = sources.iter().copied().filter(|source| !source.starts_with("decision::")).collect();
-    bump_retrievals_str_keys(conn, "decisions", "context", &now, &context_sources);
+    bump_retrievals_str_keys(conn, "decisions", "context", &now, &named_sources);
 }
 pub fn recall_to_json(item: RecallItem) -> Value {
     let mut payload = json!({"source":item.source,"relevance":item.relevance,"excerpt":item.excerpt,"method":item.method,"why":item.why_json()});

@@ -35,6 +35,10 @@ pub async fn run_op_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[
         }
     };
     let state = runtime.state();
+    if state.team_mode && state.default_owner_id.is_none() {
+        println!("{}", serde_json::json!({"status": "unavailable", "error": "Team mode requires a local owner"}));
+        std::process::exit(1);
+    }
     let caller = Caller {
         owner_id: state.default_owner_id,
         agent: &agent,

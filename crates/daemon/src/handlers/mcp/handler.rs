@@ -12,6 +12,9 @@ pub async fn handle_mcp_message_with_caller(
     if !msg.is_object() {
         return Some(mcp_error(id, -32600, "Invalid JSON-RPC request"));
     }
+    if state.team_mode && caller_id.is_none() {
+        return Some(mcp_error(id, -32000, "Team mode requires a local owner"));
+    }
     match msg.get("jsonrpc").and_then(|v| v.as_str()) {
         Some("2.0") => {}
         Some(_) => return Some(mcp_error(id, -32600, "Invalid JSON-RPC version")),

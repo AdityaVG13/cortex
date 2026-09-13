@@ -1653,7 +1653,9 @@ fn fts_keyword_sort(ranked: &mut [SearchCandidate]) {
     });
 }
 fn search_source_key(kind: SearchTableKind, id: i64, alt: Option<&str>) -> String {
-    match (kind, alt) {
+    // Blank `source`/`context` is stored as '' not NULL; treat it as missing
+    // so ranking, feedback, and retrieval bumps use the identity key.
+    match (kind, alt.map(str::trim).filter(|s| !s.is_empty())) {
         (SearchTableKind::Memories, Some(s)) => s.to_string(),
         (SearchTableKind::Memories, None) => format!("memory::{id}"),
         (SearchTableKind::Decisions, Some(c)) => c.to_string(),
@@ -1686,15 +1688,15 @@ fn search_table_recency(
                     .get::<_, Option<String>>(10)?
                     .unwrap_or_else(|| "fresh".to_string());
                 let display = crate::aging::get_display_text(&text, &compressed, &age_tier);
-                let source = row
-                    .get::<_, Option<String>>(2)?
-                    .unwrap_or_else(|| format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0)));
+                let id: i64 = row.get(0)?;
+                let alt: Option<String> = row.get(2)?;
+                let source = search_source_key(SearchTableKind::Memories, id, alt.as_deref());
                 (display, source)
             } else {
                 let decision: String = row.get(1)?;
-                let source = row
-                    .get::<_, Option<String>>(2)?
-                    .unwrap_or_else(|| format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0)));
+                let id: i64 = row.get(0)?;
+                let alt: Option<String> = row.get(2)?;
+                let source = search_source_key(SearchTableKind::Decisions, id, alt.as_deref());
                 (decision, source)
             };
             Ok(SearchCandidate {

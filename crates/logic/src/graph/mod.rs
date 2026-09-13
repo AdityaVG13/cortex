@@ -235,22 +235,24 @@ pub fn resolve_mention(
     trace_id: Option<i64>,
     owner_id: Option<i64>,
 ) -> Option<i64> {
-    if let Some(id) = lookup_alias_of_kind(conn, &mention.surface.to_lowercase(), &mention.kind) {
-        return Some(id);
+    match lookup_alias_of_kind(conn, &mention.surface.to_lowercase(), &mention.kind) {
+        Ok(Some(id)) => return Some(id),
+        Ok(None) => {}
+        Err(_) => return None,
     }
-    let mut resolved: Option<i64> = None;
-    if let Ok(mut stmt) =
-        conn.prepare_cached("SELECT id, qualifier FROM entities WHERE kind = ?1 ORDER BY id ASC")
-    {
-        if let Ok(rows) = stmt.query_map(params![mention.kind], |row| {
+    let mut stmt = conn
+        .prepare_cached("SELECT id, qualifier FROM entities WHERE kind = ?1 ORDER BY id ASC")
+        .ok()?;
+    let rows = stmt
+        .query_map(params![mention.kind], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        }) {
-            for (id, qualifier) in rows.flatten() {
-                if same_qualifier(&mention.qualifier, &qualifier) {
-                    resolved = Some(id);
-                    break;
-                }
-            }
+        })
+        .ok()?;
+    let mut resolved: Option<i64> = None;
+    for (id, qualifier) in rows.flatten() {
+        if same_qualifier(&mention.qualifier, &qualifier) {
+            resolved = Some(id);
+            break;
         }
     }
     let entity_id = match resolved {
@@ -349,7 +351,7 @@ fn lookup_alias(conn: &Connection, alias: &str) -> Option<i64> {
     .flatten()
 }
 
-fn lookup_alias_of_kind(conn: &Connection, alias: &str, kind: &str) -> Option<i64> {
+fn lookup_alias_of_kind(conn: &Connection, alias: &str, kind: &str) -> rusqlite::Result<Option<i64>> {
     conn.query_row(
         "SELECT a.entity_id FROM entity_aliases a
          JOIN entities e ON e.id = a.entity_id
@@ -359,8 +361,6 @@ fn lookup_alias_of_kind(conn: &Connection, alias: &str, kind: &str) -> Option<i6
         |row| row.get(0),
     )
     .optional()
-    .ok()
-    .flatten()
 }
 
 fn lookup_entity_by_qualifier(conn: &Connection, qualifier: &str) -> Option<i64> {
@@ -381,8 +381,10 @@ fn lookup_entity_by_qualifier(conn: &Connection, qualifier: &str) -> Option<i64>
 }
 
 fn resolve_mention_to_existing(conn: &Connection, mention: &Mention) -> Option<i64> {
-    if let Some(id) = lookup_alias_of_kind(conn, &mention.surface.to_lowercase(), &mention.kind) {
-        return Some(id);
+    match lookup_alias_of_kind(conn, &mention.surface.to_lowercase(), &mention.kind) {
+        Ok(Some(id)) => return Some(id),
+        Ok(None) => {}
+        Err(_) => return None,
     }
     let mut stmt = conn
         .prepare_cached("SELECT id, qualifier FROM entities WHERE kind = ?1 ORDER BY id ASC")
