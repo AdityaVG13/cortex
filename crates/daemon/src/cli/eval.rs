@@ -28,6 +28,10 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
     let json_output = args.iter().any(|arg| arg == "--json");
     let fail_on_regression = args.iter().any(|arg| arg == "--fail-on-regression");
     let baseline_file = parse_flag_value(args, "--baseline-file");
+    if fail_on_regression && baseline_file.is_none() {
+        eprintln!("--fail-on-regression requires --baseline-file");
+        std::process::exit(2);
+    }
     let max_regression = match parse_flag_value(args, "--max-regression") {
         Some(raw) => {
             let parsed = raw.trim().parse::<f64>().map_err(|_| format!("invalid value for --max-regression: '{raw}'")).unwrap_or_else(|err| {
@@ -70,7 +74,13 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
         map.insert("regressionGate".to_string(), gate);
     }
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string()));
+        match serde_json::to_string_pretty(&snapshot) {
+            Ok(encoded) => println!("{encoded}"),
+            Err(err) => {
+                eprintln!("Failed to serialize eval snapshot: {err}");
+                std::process::exit(1);
+            }
+        }
         if fail_on_regression && regression_gate.as_ref().and_then(|gate| gate.get("ok")).and_then(Value::as_bool) == Some(false) {
             std::process::exit(2);
         }

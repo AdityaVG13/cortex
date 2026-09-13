@@ -11,6 +11,7 @@ use cortex_kernel::reflex;
 use cortex_kernel::runtime::CortexRuntime;
 use cortex_tests::support::solo_state;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 async fn seed(cx: &asupersync::Cx, runtime: &CortexRuntime, n: usize) {
     for i in 0..n {
@@ -161,6 +162,58 @@ fn snapshot_is_published_atomically_validated_against_the_frontier_and_discardab
             out.additional_context
         );
     });
+}
+
+#[test]
+fn level0_known_thread_does_not_leak_inapplicable_hits() {
+    let snapshot = reflex::ReflexSnapshot {
+        header: reflex::ReflexHeader {
+            format_version: reflex::REFLEX_FORMAT_VERSION,
+            generation: 1,
+            brain_id: "b".into(),
+            restore_epoch: "0".into(),
+            policy_epoch: "0".into(),
+            frontier_sequence: 0,
+            projection_versions: BTreeMap::new(),
+            built_at: "0".into(),
+            records: 2,
+        },
+        anchor_dictionary: BTreeMap::from([
+            ("rfx-1".into(), "ticket".into()),
+            ("rfx-2".into(), "ticket".into()),
+        ]),
+        automaton: reflex::Automaton {
+            positive: BTreeMap::from([
+                ("rfx-1".to_string(), vec![0]),
+                ("rfx-2".to_string(), vec![1]),
+            ]),
+            negative: BTreeMap::new(),
+        },
+        thread_applicability: BTreeMap::from([("thread-a".to_string(), vec![0])]),
+        views: vec![
+            reflex::PreRendered {
+                source: "decision::1".into(),
+                line: "- RFX-1 gateway (active)".into(),
+                kind: "decision".into(),
+            },
+            reflex::PreRendered {
+                source: "decision::2".into(),
+                line: "- RFX-2 ledger (active)".into(),
+                kind: "decision".into(),
+            },
+        ],
+    };
+    let leaked = reflex::level0(&snapshot, "what is the RFX-2 retry budget?", Some("thread-a"), 4);
+    assert!(
+        leaked.fallback && leaked.hits.iter().all(|hit| !hit.line.contains("RFX-2")),
+        "thread-a must not receive RFX-2: {leaked:?}"
+    );
+    let scoped = reflex::level0(&snapshot, "what is the RFX-1 retry budget?", Some("thread-a"), 4);
+    assert!(!scoped.fallback, "{scoped:?}");
+    assert!(scoped.hits[0].line.contains("RFX-1"), "{scoped:?}");
+    let unscoped = reflex::level0(&snapshot, "what is the RFX-2 retry budget?", None, 4);
+    assert!(!unscoped.fallback, "{unscoped:?}");
+    assert!(unscoped.hits[0].line.contains("RFX-2"), "{unscoped:?}");
 }
 
 /// Benchmark harness: warm Level-0 at a declared percentile on a declared

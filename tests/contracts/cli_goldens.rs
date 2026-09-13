@@ -65,6 +65,15 @@ fn cli_robot_docs_guide_and_help_alias_match_golden() {
 }
 
 #[test]
+fn cli_robot_docs_unknown_subcommand_is_rejected() {
+    let output = run_cortex(&["robot-docs", "bogus"]);
+    assert_rejection(
+        &output,
+        "[cortex] Unknown robot-docs command: bogus\nDid you mean: `cortex robot-docs guide`?\n",
+    );
+}
+
+#[test]
 fn retired_commands_are_rejected_before_any_home_or_database_work() {
     let cases: &[&[&str]] = &[
         &["service", "help"],

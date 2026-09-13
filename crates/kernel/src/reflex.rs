@@ -10,7 +10,7 @@
 
 use crate::adapter::SnapshotState;
 use crate::clockwork::{extract_anchors, Anchor, AnchorKind};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -76,11 +76,10 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-fn frontier_sequence(conn: &Connection) -> i64 {
+fn frontier_sequence(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COALESCE(MAX(id), 0) FROM versions", [], |r| {
         r.get(0)
     })
-    .unwrap_or(0)
 }
 
 /// Cut a snapshot from the current brain state.
@@ -90,7 +89,7 @@ pub fn build(
     max_records: usize,
 ) -> Result<ReflexSnapshot, String> {
     let (brain_id, restore_epoch, policy_epoch) = crate::db::records::brain_epochs(conn);
-    let frontier = frontier_sequence(conn);
+    let frontier = frontier_sequence(conn).map_err(|e| e.to_string())?;
     let mut views = Vec::new();
     let mut dictionary = BTreeMap::new();
     let mut automaton = Automaton::default();
@@ -124,7 +123,7 @@ pub fn build(
                 .or_default()
                 .push(index);
         }
-        if let Some(sup) = superseder_anchor(conn, id) {
+        if let Some(sup) = superseder_anchor(conn, id)? {
             automaton.negative.entry(sup).or_default().push(index);
         }
     }
@@ -149,8 +148,8 @@ pub fn build(
         (
             "clock".to_string(),
             crate::clockwork::current_generation(conn)
-                .map(|g| g.to_string())
-                .unwrap_or_else(|_| "0".into()),
+                .map_err(|e| e.to_string())?
+                .to_string(),
         ),
     ]
     .into_iter()
@@ -175,14 +174,21 @@ pub fn build(
 }
 
 /// A ticket anchor of the decision that superseded this one, if any.
-fn superseder_anchor(conn: &Connection, decision_id: i64) -> Option<String> {
-    let text: String = conn
-        .query_row("SELECT d2.decision FROM decisions d2 WHERE d2.supersedes_id = ?1 ORDER BY d2.id DESC LIMIT 1", [decision_id], |r| r.get(0))
-        .ok()?;
-    extract_anchors(&text, &[], 8)
-        .into_iter()
-        .find(|a| a.kind == AnchorKind::Ticket)
-        .map(|a| a.value)
+fn superseder_anchor(conn: &Connection, decision_id: i64) -> Result<Option<String>, String> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT d2.decision FROM decisions d2 WHERE d2.supersedes_id = ?1 ORDER BY d2.id DESC LIMIT 1",
+            [decision_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(text.and_then(|text| {
+        extract_anchors(&text, &[], 8)
+            .into_iter()
+            .find(|a| a.kind == AnchorKind::Ticket)
+            .map(|a| a.value)
+    }))
 }
 
 pub fn snapshot_path(home: &Path) -> PathBuf {
@@ -232,12 +238,15 @@ pub fn state_for(snapshot: Option<&ReflexSnapshot>, conn: &Connection) -> Snapsh
     {
         return SnapshotState::Expired;
     }
-    if s.header.frontier_sequence != frontier_sequence(conn) {
+    let Ok(frontier) = frontier_sequence(conn) else {
+        return SnapshotState::Expired;
+    };
+    if s.header.frontier_sequence != frontier {
         return SnapshotState::Expired;
     }
-    let clock_now = crate::clockwork::current_generation(conn)
-        .map(|g| g.to_string())
-        .unwrap_or_else(|_| "0".into());
+    let Ok(clock_now) = crate::clockwork::current_generation(conn).map(|g| g.to_string()) else {
+        return SnapshotState::Expired;
+    };
     if s.header.projection_versions.get("clock") != Some(&clock_now) {
         return SnapshotState::Expired;
     }
@@ -272,10 +281,7 @@ pub fn level0(
     }
     if let Some(thread) = thread.and_then(|t| snapshot.thread_applicability.get(t)) {
         let applicable: BTreeSet<usize> = thread.iter().copied().collect();
-        let narrowed: BTreeSet<usize> = hits.intersection(&applicable).copied().collect();
-        if !narrowed.is_empty() {
-            hits = narrowed;
-        }
+        hits = hits.intersection(&applicable).copied().collect();
     }
     let rendered: Vec<PreRendered> = hits
         .iter()

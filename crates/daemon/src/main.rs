@@ -107,7 +107,13 @@ async fn run(cx: &Cx, paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
         "recrystallize" => cli::run_recrystallize_cli(cx, paths, rest.iter().any(|arg| arg == "--json")).await,
         "embeddings" => cli::run_embeddings_cli(cx, paths, rest).await,
         "eval" => cli::run_eval_cli(paths, rest),
-        "robot-docs" => println!("{}", cli::cli_robot_docs_guide()),
+        "robot-docs" => {
+            let subcommand = cli::first_positional(rest, &[]).unwrap_or("guide");
+            match subcommand {
+                "guide" | "help" => println!("{}", cli::cli_robot_docs_guide()),
+                other => return Err(cli::unknown_robot_docs_subcommand_message(other)),
+            }
+        }
         other => return Err(cli::unknown_cli_command_message(other)),
     }
     Ok(())

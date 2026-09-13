@@ -1,4 +1,4 @@
-use super::common::parse_flag_usize;
+use super::common::{parse_flag_usize, validate_cli_options_or_exit};
 use crate::auth;
 use crate::state;
 use serde_json::json;
@@ -7,6 +7,7 @@ pub async fn run_embeddings_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, 
     let subcmd = args.first().map(|s| s.as_str()).unwrap_or("");
     match subcmd {
         "status" => {
+            validate_cli_options_or_exit(&args[1..], &[], &["--json"]);
             let json_output = args.iter().any(|arg| arg == "--json");
             run_embeddings_status_cli(cx, paths, json_output).await;
         }
@@ -38,9 +39,18 @@ pub(crate) async fn run_embeddings_status_cli(cx: &asupersync::Cx, paths: &auth:
             std::process::exit(1);
         }
     };
-    let anchors: i64 = conn.query_row("SELECT COUNT(*) FROM clock_anchors", [], |row| row.get(0)).unwrap_or(0);
-    let links: i64 = conn.query_row("SELECT COUNT(*) FROM clock_links", [], |row| row.get(0)).unwrap_or(0);
-    let inert: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0)).unwrap_or(0);
+    let count = |sql: &str, table: &str| -> i64 {
+        match conn.query_row(sql, [], |row| row.get(0)) {
+            Ok(n) => n,
+            Err(err) => {
+                eprintln!("Error: failed to count {table}: {err}");
+                std::process::exit(1);
+            }
+        }
+    };
+    let anchors = count("SELECT COUNT(*) FROM clock_anchors", "clock_anchors");
+    let links = count("SELECT COUNT(*) FROM clock_links", "clock_links");
+    let inert = count("SELECT COUNT(*) FROM embeddings", "embeddings");
     if json_output {
         println!("{}", json!({"engine":"clock-quorum","modelFree":true,"anchors":anchors,"links":links,"inertEmbeddings":inert}));
     } else {
@@ -55,6 +65,7 @@ pub async fn run_rebuild_anchors_cli(cx: &asupersync::Cx, paths: &auth::CortexPa
     run_clock_rebuild_cli(cx, paths, args).await;
 }
 async fn run_clock_rebuild_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[String]) {
+    validate_cli_options_or_exit(args, &["--batch-size"], &["--json"]);
     let json_output = args.iter().any(|arg| arg == "--json");
     let batch = match parse_flag_usize(args, "--batch-size") {
         Ok(Some(value)) => value.clamp(16, 10_000),

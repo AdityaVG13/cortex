@@ -14,18 +14,22 @@ function useDashboardHandlers(ctx) { const { panel, sidebarCollapsed, isNarrowVi
     scheduleStartupRecoveryRetry, runRestartDaemonSequence, openEditorSetupWizard, closeEditorSetupWizard,
     dismissConnectionDialog, setMemorySearching, setMemoryResults, } = ctx;
   async function handleMemorySearch(e) { if ((e?.preventDefault(), !!memoryQuery.trim())) { setMemorySearching(!0);
-      try { const peekResult = await api(`/peek?q=${encodeURIComponent(memoryQuery.trim())}&k=15`, !0);
-        if (!peekResult || typeof peekResult != "object") throw new Error("/peek: unexpected daemon payload");
-        if (!Array.isArray(peekResult.matches)) throw new Error("/peek: missing matches array");
-        setMemoryResults(peekResult.matches);
+      try { const peekResult = await api(`/recall?q=${encodeURIComponent(memoryQuery.trim())}&k=15&budget=0`, !0);
+        if (!peekResult || typeof peekResult != "object") throw new Error("/recall: unexpected daemon payload");
+        const matches = Array.isArray(peekResult.matches) ? peekResult.matches : peekResult.results;
+        if (!Array.isArray(matches)) throw new Error("/recall: missing results array");
+        setMemoryResults(matches);
       } catch (err) { setFeedbackMessage(`Memory search failed: ${err?.message || err}`);
       }
       setMemorySearching(!1);
     }
   }
   async function handleMemoryExpand(source) { try {
-      const match = (await api(`/recall?q=${encodeURIComponent(source)}&k=3`, !0))?.results?.find( (r) => r.source === source, );
-      match && setMemoryResults((prev) => prev.map((m) => (m.source === source ? { ...m, excerpt: match.excerpt, expanded: !0 } : m)), );
+      const payload = await api(`/recall?q=${encodeURIComponent(source)}&k=3`, !0);
+      const rows = Array.isArray(payload?.results) ? payload.results : payload?.matches;
+      const match = Array.isArray(rows) ? rows.find((r) => r.source === source) : null;
+      if (!match) throw new Error(`Memory expand found no excerpt for ${source}`);
+      setMemoryResults((prev) => prev.map((m) => (m.source === source ? { ...m, excerpt: match.excerpt, expanded: !0 } : m)), );
     } catch (err) { setFeedbackMessage(`Memory expand failed: ${err.message || err}`);
     }
   }

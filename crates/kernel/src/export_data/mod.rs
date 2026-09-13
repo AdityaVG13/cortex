@@ -142,10 +142,10 @@ pub fn import_payload(
     let mut counts = ImportCounts::default();
     let visibility = options.visibility.as_deref().unwrap_or("private");
     let fallback = options.source_agent_fallback.as_str();
-    let memories_has_owner = column_exists(conn, "memories", "owner_id");
-    let memories_has_visibility = column_exists(conn, "memories", "visibility");
-    let decisions_has_owner = column_exists(conn, "decisions", "owner_id");
-    let decisions_has_visibility = column_exists(conn, "decisions", "visibility");
+    let memories_has_owner = column_exists(conn, "memories", "owner_id")?;
+    let memories_has_visibility = column_exists(conn, "memories", "visibility")?;
+    let decisions_has_owner = column_exists(conn, "decisions", "owner_id")?;
+    let decisions_has_visibility = column_exists(conn, "decisions", "visibility")?;
     let tx = conn
         .transaction()
         .map_err(|e| format!("failed to start import transaction: {e}"))?;
@@ -226,9 +226,18 @@ fn row_to_json(row: &rusqlite::Row<'_>, column_names: &[String]) -> rusqlite::Re
             Ok(rusqlite::types::ValueRef::Null) => Value::Null,
             Ok(rusqlite::types::ValueRef::Integer(n)) => json!(n),
             Ok(rusqlite::types::ValueRef::Real(f)) => json!(f),
-            Ok(rusqlite::types::ValueRef::Text(s)) => json!(std::str::from_utf8(s).unwrap_or("")),
+            Ok(rusqlite::types::ValueRef::Text(s)) => {
+                let text = std::str::from_utf8(s).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        i,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                json!(text)
+            }
             Ok(rusqlite::types::ValueRef::Blob(_)) => Value::Null,
-            Err(_) => Value::Null,
+            Err(err) => return Err(err),
         };
         obj.insert(name.clone(), val);
     }
@@ -283,19 +292,21 @@ fn next_page_offset(offset: usize, page: &[Value], has_more: bool) -> Option<usi
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
-fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
-    let mut stmt = match conn.prepare(&format!("PRAGMA table_info({table})")) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let rows = match stmt.query_map([], |row| row.get::<_, String>(1)) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    for name in rows.flatten() {
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    if !table.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err("export_schema_table".into());
+    }
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| format!("schema inspect failed: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("schema inspect failed: {e}"))?;
+    for name in rows {
+        let name = name.map_err(|e| format!("schema inspect failed: {e}"))?;
         if name == column {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }

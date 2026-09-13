@@ -41,7 +41,13 @@ pub async fn run_op_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[
         principal: state.default_owner_id.map(|id| format!("user:{id}")).unwrap_or_else(|| "solo".into()),
     };
     match dispatch(cx, state, caller, op, &parsed).await {
-        Ok(payload) => println!("{}", serde_json::to_string(&payload).unwrap_or_default()),
+        Ok(payload) => match serde_json::to_string(&payload) {
+            Ok(encoded) => println!("{encoded}"),
+            Err(err) => {
+                println!("{}", serde_json::json!({"status": "unavailable", "error": format!("serialize failed: {err}")}));
+                std::process::exit(1);
+            }
+        },
         Err(err) => {
             println!("{}", serde_json::json!({"status": "unavailable", "error": err.to_string()}));
             std::process::exit(1);
