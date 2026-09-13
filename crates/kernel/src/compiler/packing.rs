@@ -41,14 +41,14 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
     if let Ok(mut stmt) = conn.prepare_cached(
         &format!(
         "SELECT id, text, retention_class, score, retrievals, last_accessed, updated_at, created_at, status, confirmed_by,
-                COALESCE(valid_from, observed_at, created_at), valid_until
+                COALESCE(NULLIF(TRIM(valid_from), ''), NULLIF(TRIM(observed_at), ''), created_at), valid_until
          FROM memories
          WHERE status = 'active' AND type != 'state'
-           AND (expires_at IS NULL OR julianday(expires_at) > julianday('now'))
-           AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now'))
-           AND (valid_until IS NULL OR julianday(valid_until) > julianday('now'))
+           AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
+           AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now'))
+           AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))
            AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){mem_scope}
-         ORDER BY updated_at DESC, id DESC
+         ORDER BY julianday(updated_at) DESC, id DESC
          LIMIT 80"
         ),
     ) {
@@ -76,14 +76,14 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
     if let Ok(mut stmt) = conn.prepare_cached(
         &format!(
         "SELECT id, decision, context, retention_class, score, retrievals, last_accessed, updated_at, created_at, status, confirmed_by,
-                COALESCE(valid_from, observed_at, created_at), valid_until
+                COALESCE(NULLIF(TRIM(valid_from), ''), NULLIF(TRIM(observed_at), ''), created_at), valid_until
          FROM decisions
          WHERE status = 'active'
-           AND (expires_at IS NULL OR julianday(expires_at) > julianday('now'))
-           AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now'))
-           AND (valid_until IS NULL OR julianday(valid_until) > julianday('now'))
+           AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
+           AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now'))
+           AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))
            AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){dec_scope}
-         ORDER BY updated_at DESC, id DESC
+         ORDER BY julianday(updated_at) DESC, id DESC
          LIMIT 80"
         ),
     ) {

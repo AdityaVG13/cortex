@@ -250,7 +250,7 @@ fn scored_to_item(candidate: ScoredCandidate, frame: &QueryFrame, valid_at: &str
 
 fn current_status_filters(frame: &QueryFrame, ctx: &RecallContext) -> Vec<String> {
     if ctx.include_cold
-        || ctx.as_of.is_some()
+        || as_of_bind(ctx).is_some()
         || frame.as_of.is_some()
         || matches!(
             frame.temporal_mode,
@@ -683,11 +683,17 @@ fn caller_acl_param(ctx: &RecallContext) -> Option<i64> {
     }
 }
 
+/// Empty `as_of` is omitted JSON, not "valid at the empty instant".
+/// `julianday('')` is NULL and would fail every temporal gate.
+fn as_of_bind(ctx: &RecallContext) -> Option<&str> {
+    ctx.as_of.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
 fn qualified_validity_gates(alias: &str) -> String {
     format!(
-        "({a}.expires_at IS NULL OR julianday({a}.expires_at) > julianday('now')) \
-         AND ({a}.valid_from IS NULL OR julianday({a}.valid_from) <= julianday('now')) \
-         AND ({a}.valid_until IS NULL OR julianday({a}.valid_until) > julianday('now')) \
+        "({a}.expires_at IS NULL OR TRIM({a}.expires_at) = '' OR julianday({a}.expires_at) > julianday('now')) \
+         AND ({a}.valid_from IS NULL OR TRIM({a}.valid_from) = '' OR julianday({a}.valid_from) <= julianday('now')) \
+         AND ({a}.valid_until IS NULL OR TRIM({a}.valid_until) = '' OR julianday({a}.valid_until) > julianday('now')) \
          AND ({a}.version_id IS NULL OR {a}.version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned'))",
         a = alias
     )
@@ -703,9 +709,9 @@ fn qualified_current_gates(alias: &str) -> String {
 
 fn qualified_as_of_gates(alias: &str, bind: &str) -> String {
     format!(
-        "({a}.expires_at IS NULL OR julianday({a}.expires_at) > julianday({b})) \
-         AND ({a}.valid_from IS NULL OR julianday({a}.valid_from) <= julianday({b})) \
-         AND ({a}.valid_until IS NULL OR julianday({a}.valid_until) > julianday({b})) \
+        "({a}.expires_at IS NULL OR TRIM({a}.expires_at) = '' OR julianday({a}.expires_at) > julianday({b})) \
+         AND ({a}.valid_from IS NULL OR TRIM({a}.valid_from) = '' OR julianday({a}.valid_from) <= julianday({b})) \
+         AND ({a}.valid_until IS NULL OR TRIM({a}.valid_until) = '' OR julianday({a}.valid_until) > julianday({b})) \
          AND ({a}.version_id IS NULL OR {a}.version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned'))",
         a = alias,
         b = bind
@@ -805,7 +811,7 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
     let caller = caller_acl_param(ctx);
     let is_decision = kind == "decision";
     let alias = if is_decision { "d" } else { "m" };
-    let gates = if ctx.as_of.is_some() {
+    let gates = if as_of_bind(ctx).is_some() {
         qualified_as_of_gates(alias, "?5")
     } else if ctx.include_cold {
         format!("{} AND (?5 IS NULL OR 1)", qualified_validity_gates(alias))
@@ -840,7 +846,7 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
         )
     };
     let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
-    let as_of = ctx.as_of.clone();
+    let as_of = as_of_bind(ctx);
     let rows = stmt
         .query_map(params![fts_query, limit as i64, source_like, caller, as_of, path_guard], |row| {
             Ok(LoadedRow {
@@ -918,8 +924,8 @@ fn loaded_candidate(
 
 fn load_target(conn: &Connection, target_type: &str, target_id: i64, ctx: &RecallContext) -> Result<Option<ScoredCandidate>, String> {
     let caller = caller_acl_param(ctx);
-    let as_of = ctx.as_of.clone();
-    let gates = if ctx.as_of.is_some() {
+    let as_of = as_of_bind(ctx);
+    let gates = if as_of.is_some() {
         qualified_as_of_gates("x", "?3").replace("x.", "")
     } else if ctx.include_cold {
         format!(
@@ -1012,7 +1018,7 @@ fn row_eligible(
     {
         return Ok(false);
     }
-    if matches!(frame.temporal_mode, TemporalMode::Current) || ctx.as_of.is_some() {
+    if matches!(frame.temporal_mode, TemporalMode::Current) || as_of_bind(ctx).is_some() {
         let exists = load_target(conn, &candidate.target_type, candidate.target_id, ctx)?.is_some();
         if !exists {
             return Ok(false);

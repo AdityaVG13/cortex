@@ -58,11 +58,11 @@ pub fn build_constraints_capsule(conn: &Connection) -> (String, usize) {
     let key: String = conn
         .query_row(
             &format!(
-                "SELECT COUNT(*) || ':' || COALESCE(MAX(id),0) || ':' || COALESCE(MAX(updated_at),'') \
+                "SELECT COUNT(*) || ':' || COALESCE(MAX(id),0) || ':' || COALESCE(MAX(julianday(updated_at)),'') \
                  FROM decisions WHERE status = 'active' AND COALESCE(retention_class,'operational') = 'durable' \
-                 AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) \
-                 AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) \
-                 AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) \
+                 AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+                 AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+                 AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
                  AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){scope}"
             ),
             [],
@@ -88,9 +88,9 @@ fn build_constraints_capsule_uncached(conn: &Connection) -> (String, usize) {
     let Ok(mut stmt) = conn.prepare_cached(
         &format!(
             "SELECT id, decision, COALESCE(type,'decision') FROM decisions WHERE status = 'active' AND COALESCE(retention_class,'operational') = 'durable' \
-             AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) \
-             AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){scope} \
-             ORDER BY CASE WHEN type IN ('constraint','policy','rule','convention','contract','preference') THEN 0 ELSE 1 END, created_at ASC, id ASC"
+             AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+             AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){scope} \
+             ORDER BY CASE WHEN type IN ('constraint','policy','rule','convention','contract','preference') THEN 0 ELSE 1 END, julianday(created_at) ASC, id ASC"
         ),
     ) else {
         return (String::new(), 0);

@@ -124,3 +124,33 @@ fn boot_unread_feed_capsule_pins_newest_ten_after_ack() {
         );
     }
 }
+
+#[test]
+fn stored_max_timestamp_is_chronological_across_rfc3339_and_sqlite_datetime() {
+    let conn = test_conn();
+    conn.execute(
+        "INSERT INTO memories (text, type, source_agent, status, created_at, updated_at, observed_at, valid_from) \
+         VALUES ('earlier rfc', 'fact', 'a', 'active', \
+                 '2026-09-13T10:00:00.000Z', '2026-09-13T10:00:00.000Z', \
+                 '2026-09-13T10:00:00.000Z', '2026-09-13T10:00:00.000Z')",
+        [],
+    )
+    .expect("insert rfc3339 memory");
+    conn.execute(
+        "INSERT INTO memories (text, type, source_agent, status, created_at, updated_at, observed_at, valid_from) \
+         VALUES ('later sqlite', 'fact', 'a', 'active', \
+                 '2026-09-13 12:00:00', '2026-09-13 12:00:00', \
+                 '2026-09-13 12:00:00', '2026-09-13 12:00:00')",
+        [],
+    )
+    .expect("insert sqlite-datetime memory");
+    let max = compiler::stored_max_timestamp(&conn).expect("max timestamp");
+    assert!(
+        max.contains("12:00:00"),
+        "later space-format updated_at must win over earlier same-day RFC3339; MAX(text) would pick the T-format stamp: {max}"
+    );
+    assert!(
+        !max.contains("10:00:00"),
+        "earlier RFC3339 updated_at must not be selected as newest: {max}"
+    );
+}

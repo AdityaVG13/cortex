@@ -94,11 +94,11 @@ pub struct ExpiredCleanupCounts {
 }
 pub fn delete_expired_entries(conn: &Connection) -> rusqlite::Result<ExpiredCleanupCounts> {
     let memories_deleted = conn.execute(
-        "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+        "DELETE FROM memories WHERE expires_at IS NOT NULL AND TRIM(expires_at) != '' AND julianday(expires_at) < julianday('now')",
         [],
     )?;
     let decisions_deleted = conn.execute(
-        "DELETE FROM decisions WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+        "DELETE FROM decisions WHERE expires_at IS NOT NULL AND TRIM(expires_at) != '' AND julianday(expires_at) < julianday('now')",
         [],
     )?;
     Ok(ExpiredCleanupCounts {

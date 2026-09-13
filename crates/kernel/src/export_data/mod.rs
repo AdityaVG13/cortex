@@ -47,6 +47,11 @@ fn normalize_decision_entry_type(raw: Option<&str>) -> String {
         ],
     )
 }
+/// SQLite `COALESCE` does not skip `''`. Empty temporal fields must bind as
+/// NULL so they mean "unbounded", matching omitted JSON properties.
+fn optional_time(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|value| !value.is_empty())
+}
 pub fn export_json_page_value(
     conn: &Connection,
     limit: usize,
@@ -152,6 +157,9 @@ pub fn import_payload(
     if let Some(memories) = &payload.memories {
         for (idx, m) in memories.iter().enumerate() {
             let entry_type = normalize_memory_entry_type(m.entry_type.as_deref());
+            let observed_at = optional_time(m.observed_at.as_deref());
+            let valid_from = optional_time(m.valid_from.as_deref());
+            let valid_until = optional_time(m.valid_until.as_deref());
             let inserted = if memories_has_owner && memories_has_visibility {
                 tx.
 execute(
@@ -160,7 +168,7 @@ execute(
 ,params![m.text,m.source,entry_type,m.tags,m.source_agent.as_deref().unwrap_or(fallback),m.source_client.as_deref().unwrap_or(m.
 source_agent.as_deref().unwrap_or(fallback)),m.source_model.as_deref(),m.confidence.unwrap_or(0.8),m.reasoning_depth.as_deref().
 unwrap_or("single-shot"),m.trust_score.unwrap_or(m.confidence.unwrap_or(0.8)),m.score.unwrap_or(1.0),m.retention_class.
-unwrap_or_default().as_str(),m.observed_at.as_deref(),m.valid_from.as_deref(),m.valid_until.as_deref(),options.owner_id,visibility
+unwrap_or_default().as_str(),observed_at,valid_from,valid_until,options.owner_id,visibility
 ,],)
             } else {
                 tx.execute(
@@ -169,7 +177,7 @@ unwrap_or_default().as_str(),m.observed_at.as_deref(),m.valid_from.as_deref(),m.
 ,params![m.text,m.source,entry_type,m.tags,m.source_agent.as_deref().unwrap_or(fallback),m.source_client.as_deref().unwrap_or(m.
 source_agent.as_deref().unwrap_or(fallback)),m.source_model.as_deref(),m.confidence.unwrap_or(0.8),m.reasoning_depth.as_deref().
 unwrap_or("single-shot"),m.trust_score.unwrap_or(m.confidence.unwrap_or(0.8)),m.score.unwrap_or(1.0),m.retention_class.
-unwrap_or_default().as_str(),m.observed_at.as_deref(),m.valid_from.as_deref(),m.valid_until.as_deref(),],)
+unwrap_or_default().as_str(),observed_at,valid_from,valid_until,],)
             };
             match inserted {
                 Ok(_) => counts.memories += 1,
@@ -180,6 +188,9 @@ unwrap_or_default().as_str(),m.observed_at.as_deref(),m.valid_from.as_deref(),m.
     if let Some(decisions) = &payload.decisions {
         for (idx, d) in decisions.iter().enumerate() {
             let entry_type = normalize_decision_entry_type(d.entry_type.as_deref());
+            let observed_at = optional_time(d.observed_at.as_deref());
+            let valid_from = optional_time(d.valid_from.as_deref());
+            let valid_until = optional_time(d.valid_until.as_deref());
             let inserted = if decisions_has_owner && decisions_has_visibility {
                 tx.execute(
 "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until, owner_id, visibility)
@@ -187,7 +198,7 @@ unwrap_or_default().as_str(),m.observed_at.as_deref(),m.valid_from.as_deref(),m.
 ,params![d.decision,d.context,entry_type,d.source_agent.as_deref().unwrap_or(fallback),d.source_client.as_deref().unwrap_or(d.
 source_agent.as_deref().unwrap_or(fallback)),d.source_model.as_deref(),d.confidence.unwrap_or(0.8),d.reasoning_depth.as_deref().
 unwrap_or("single-shot"),d.trust_score.unwrap_or(d.confidence.unwrap_or(0.8)),d.score.unwrap_or(1.0),d.retention_class.
-unwrap_or_default().as_str(),d.observed_at.as_deref(),d.valid_from.as_deref(),d.valid_until.as_deref(),options.owner_id,visibility
+unwrap_or_default().as_str(),observed_at,valid_from,valid_until,options.owner_id,visibility
 ,],)
             } else {
                 tx.execute(
@@ -196,7 +207,7 @@ unwrap_or_default().as_str(),d.observed_at.as_deref(),d.valid_from.as_deref(),d.
 ,params![d.decision,d.context,entry_type,d.source_agent.as_deref().unwrap_or(fallback),d.source_client.as_deref().unwrap_or(d.
 source_agent.as_deref().unwrap_or(fallback)),d.source_model.as_deref(),d.confidence.unwrap_or(0.8),d.reasoning_depth.as_deref().
 unwrap_or("single-shot"),d.trust_score.unwrap_or(d.confidence.unwrap_or(0.8)),d.score.unwrap_or(1.0),d.retention_class.
-unwrap_or_default().as_str(),d.observed_at.as_deref(),d.valid_from.as_deref(),d.valid_until.as_deref(),],)
+unwrap_or_default().as_str(),observed_at,valid_from,valid_until,],)
             };
             match inserted {
                 Ok(_) => counts.decisions += 1,

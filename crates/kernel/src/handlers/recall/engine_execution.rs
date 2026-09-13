@@ -793,12 +793,10 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     }
     None
 }
-// valid_from/valid_until are stored RFC3339 with 'T' (now_iso / strftime
-// '%Y-%m-%dT%H:%M:%fZ'), so they must never be string-compared against the
-// space-separated datetime('now') output ('T' > ' ' excludes every same-day
-// row). julianday() normalizes both formats; expires_at is written by
-// datetime('now', '+N seconds') in space format and stays format-consistent.
-const UNFOLD_ACTIVE:&str="status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR julianday(valid_until) > julianday('now'))";
+// RFC3339 (`T`) and SQLite `datetime('now')` (space) are not lexicographic.
+// Empty strings mean unbounded (same as NULL); julianday('') is NULL and
+// would otherwise exclude the row.
+const UNFOLD_ACTIVE:&str="status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))";
 pub type MemoryUnfoldRow = (String, String, Option<i64>, Option<String>);
 pub type DecisionUnfoldRow = (String, Option<String>, Option<i64>, Option<String>);
 fn query_acl_row<T, F, G>(conn: &Connection, with_sql: &str, without_sql: &str, bind: &[&dyn rusqlite::types::ToSql], map_with: F, map_without: G) -> Option<T>

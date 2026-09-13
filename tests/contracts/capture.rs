@@ -152,6 +152,86 @@ fn import_redacts_like_store_and_reports_it() {
 }
 
 #[test]
+fn import_empty_temporal_fields_are_unbounded_not_present() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let payload = serde_json::from_value(json!({
+            "memories": [{
+                "text": "EDGE-EMPTY-TEMPORAL imported fact remains recallable",
+                "observed_at": "",
+                "valid_from": "  ",
+                "valid_until": ""
+            }]
+        }))
+        .unwrap();
+        {
+            let mut conn = state.db.lock(&cx).await.expect("database lock");
+            cortex_kernel::export_data::import_payload(
+                &mut conn,
+                &payload,
+                &Default::default(),
+            )
+            .expect("import");
+            let (observed, valid_from, valid_until): (Option<String>, Option<String>, Option<String>) =
+                conn.query_row(
+                    "SELECT observed_at, valid_from, valid_until FROM memories WHERE text LIKE 'EDGE-EMPTY-TEMPORAL%'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .expect("imported row");
+            assert!(
+                observed.as_deref().is_some_and(|v| !v.trim().is_empty()),
+                "empty observed_at must fall back to now, not store '': {observed:?}"
+            );
+            assert!(
+                valid_from.as_deref().is_some_and(|v| !v.trim().is_empty()),
+                "empty valid_from must fall back to now, not store '': {valid_from:?}"
+            );
+            assert_eq!(
+                valid_until, None,
+                "empty valid_until must bind NULL (unbounded), not '': {valid_until:?}"
+            );
+        }
+        let recalled = cortex_kernel::handlers::recall::execute_unified_recall(
+            &cx,
+            &state,
+            "EDGE-EMPTY-TEMPORAL",
+            400,
+            8,
+            "capture",
+            &cortex_kernel::handlers::recall::RecallContext::solo(),
+            None,
+        )
+        .await
+        .expect("recall imported empty-temporal row");
+        let text = recalled.to_string();
+        assert!(
+            text.contains("EDGE-EMPTY-TEMPORAL"),
+            "empty valid_until must not hide the imported row: {text}"
+        );
+        let mut as_of_ctx = cortex_kernel::handlers::recall::RecallContext::solo();
+        as_of_ctx.as_of = Some(String::new());
+        let as_of_recall = cortex_kernel::handlers::recall::execute_unified_recall(
+            &cx,
+            &state,
+            "EDGE-EMPTY-TEMPORAL",
+            400,
+            8,
+            "capture",
+            &as_of_ctx,
+            None,
+        )
+        .await
+        .expect("recall with empty as_of");
+        let as_of_text = as_of_recall.to_string();
+        assert!(
+            as_of_text.contains("EDGE-EMPTY-TEMPORAL"),
+            "empty as_of must not be treated as a present bound: {as_of_text}"
+        );
+    });
+}
+
+#[test]
 fn indexer_never_reads_more_than_the_ceiling() {
     cortex_tests::support::run_with_cx(|cx| async move {
         use cortex_kernel::indexer::INDEXER_MAX_FILE_BYTES;
