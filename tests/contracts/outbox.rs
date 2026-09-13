@@ -4,8 +4,8 @@
 //! refuses intake; telemetry is pruned; brain health is semantic.
 
 use cortex_kernel::db::outbox::{
-    claim_next, complete, debt, enqueue_for_commit, maintain_slice, prune_telemetry,
-    DEBT_HARD_LIMIT_JOBS, FEED_MAX_ROWS,
+    claim_next, complete, debt, enqueue_for_commit, fail, maintain_slice, prune_telemetry,
+    ANCHOR_HUB_DEGREE, DEBT_HARD_LIMIT_JOBS, FEED_MAX_ROWS,
 };
 use cortex_kernel::db::records::append_commit;
 use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
@@ -86,6 +86,18 @@ fn crashed_claimant_leaves_the_job_and_completion_is_generation_checked() {
         .unwrap()
         .expect("reclaim after expiry");
     assert_eq!(second.generation, 2, "reclaim bumps the generation");
+    assert!(
+        !fail(&conn, &first, "stale claimant").unwrap(),
+        "the crashed claimant's stale generation cannot fail the new lease"
+    );
+    let state: String = conn
+        .query_row(
+            "SELECT state FROM outbox WHERE job_id = ?1",
+            [&first.job_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "claimed", "stale fail must not clear the live claim");
     assert!(
         !complete(&conn, &first).unwrap(),
         "the crashed claimant's stale generation cannot complete"
@@ -218,4 +230,51 @@ fn health_reports_semantic_brain_state_and_spi_maintain_drains() {
             .unwrap();
         assert_eq!(after["brain"]["projection_lag"], 0, "{}", after["brain"]);
     });
+}
+
+#[test]
+fn clock_link_audit_keeps_a_cap_of_hub_links() {
+    let conn = test_conn();
+    conn.execute(
+        "INSERT INTO clock_anchors (kind, value, specificity) VALUES ('term', 'hub-term', 3)",
+        [],
+    )
+    .unwrap();
+    let anchor_id = conn.last_insert_rowid();
+    let members = ANCHOR_HUB_DEGREE + 6;
+    for i in 1..=members {
+        conn.execute(
+            "INSERT INTO clock_anchor_evidence (anchor_id, target_type, target_id, origin) VALUES (?1, 'decision', ?2, 'extract')",
+            rusqlite::params![anchor_id, i],
+        )
+        .unwrap();
+    }
+    for i in 1..members {
+        conn.execute(
+            "INSERT INTO clock_links (src_type, src_id, dst_type, dst_id, relation) VALUES ('decision', ?1, 'decision', ?2, 'observed_with')",
+            rusqlite::params![i, i + 1],
+        )
+        .unwrap();
+    }
+    let before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM clock_links", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(before, members - 1);
+    let seq = append_commit(&conn, "solo", None, "process_crash").unwrap();
+    assert_eq!(
+        enqueue_for_commit(&conn, seq, &["clock_link_audit"], json!({})).unwrap(),
+        1
+    );
+    let slice = maintain_slice(&conn, "test", 1).unwrap();
+    assert!(
+        slice["jobs"][0]["error"].is_null(),
+        "audit must use src_/dst_ columns: {slice}"
+    );
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM clock_links", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        left, ANCHOR_HUB_DEGREE,
+        "hub trim keeps the newest cap, not wipe or no-op: {left}"
+    );
 }

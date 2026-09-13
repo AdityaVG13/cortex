@@ -9,6 +9,9 @@ pub const CRYSTAL_RELEVANCE_BOOST: f64 = 1.15;
 
 const MAX_SCAN_ROWS: i64 = 500;
 const JACCARD_THRESHOLD: f64 = 0.30;
+/// `last_accessed` / `created_at` mix RFC3339 (`T`) and SQLite `datetime('now')`
+/// (space). Lexicographic ORDER BY ranks the formats, not the instants.
+const CANDIDATE_RECENCY: &str = "julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), ''))) DESC, id DESC";
 
 const STOPWORDS: &[&str] = &[
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "is",
@@ -49,7 +52,11 @@ fn fold_jaccard_token(token: &str) -> String {
 fn jaccard_token_set(text: &str) -> HashSet<String> {
     let mut set = HashSet::new();
     for word in text.split_whitespace().filter(|w| w.len() > 1) {
-        set.insert(fold_jaccard_token(word));
+        let token = fold_jaccard_token(word);
+        if STOPWORDS.contains(&token.as_str()) {
+            continue;
+        }
+        set.insert(token);
     }
     set
 }
@@ -205,11 +212,11 @@ fn scan_candidates(conn: &Connection, owner_id: Option<i64>) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
 
     let mem_sql = if owner_id.is_some() {
-        "SELECT id, text, COALESCE(source,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') AND (owner_id = ?1 OR owner_id IS NULL) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?2"
+        format!("SELECT id, text, COALESCE(source,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') AND (owner_id = ?1 OR owner_id IS NULL) ORDER BY {CANDIDATE_RECENCY} LIMIT ?2")
     } else {
-        "SELECT id, text, COALESCE(source,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?2"
+        format!("SELECT id, text, COALESCE(source,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') ORDER BY {CANDIDATE_RECENCY} LIMIT ?2")
     };
-    let mut stmt = match conn.prepare(mem_sql) {
+    let mut stmt = match conn.prepare(&mem_sql) {
         Ok(s) => s,
         Err(_) => return out,
     };
@@ -231,12 +238,12 @@ fn scan_candidates(conn: &Connection, owner_id: Option<i64>) -> Vec<Candidate> {
         }
     }
     let dec_sql = if owner_id.is_some() {
-        "SELECT id, decision, COALESCE(context,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') AND (owner_id = ?1 OR owner_id IS NULL) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?2"
+        format!("SELECT id, decision, COALESCE(context,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') AND (owner_id = ?1 OR owner_id IS NULL) ORDER BY {CANDIDATE_RECENCY} LIMIT ?2")
     } else {
-        "SELECT id, decision, COALESCE(context,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?2"
+        format!("SELECT id, decision, COALESCE(context,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') ORDER BY {CANDIDATE_RECENCY} LIMIT ?2")
     };
     if owner_id.is_some() {
-        if let Ok(mut dstmt) = conn.prepare(dec_sql) {
+        if let Ok(mut dstmt) = conn.prepare(&dec_sql) {
             if let Ok(mapped) = dstmt.query_map(params![owner_id, MAX_SCAN_ROWS], |row| {
                 Ok(Candidate {
                     id: row.get(0)?,
@@ -252,17 +259,13 @@ fn scan_candidates(conn: &Connection, owner_id: Option<i64>) -> Vec<Candidate> {
         }
     }
 
-    if out.len() as i64 > MAX_SCAN_ROWS {
-        out.sort_by(|a, b| b.id.cmp(&a.id));
-        out.truncate(MAX_SCAN_ROWS as usize);
-    }
     out
 }
 
 fn scan_candidates_no_owner(conn: &Connection) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT id, text, COALESCE(source,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
+        &format!("SELECT id, text, COALESCE(source,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM memories WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='memory') ORDER BY {CANDIDATE_RECENCY} LIMIT ?1"),
     ) {
         if let Ok(mapped) = stmt.query_map(params![MAX_SCAN_ROWS], |row| {
             Ok(Candidate {
@@ -278,7 +281,7 @@ fn scan_candidates_no_owner(conn: &Connection) -> Vec<Candidate> {
         }
     }
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT id, decision, COALESCE(context,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
+        &format!("SELECT id, decision, COALESCE(context,'') , COALESCE(score,1.0), COALESCE(created_at,'') FROM decisions WHERE status NOT IN ('superseded','archived') AND id NOT IN (SELECT target_id FROM cluster_members WHERE target_type='decision') ORDER BY {CANDIDATE_RECENCY} LIMIT ?1"),
     ) {
         if let Ok(mapped) = stmt.query_map(params![MAX_SCAN_ROWS], |row| {
             Ok(Candidate {
@@ -338,7 +341,7 @@ pub fn search_crystals_filtered(
     let mut stmt = match conn.prepare(
         "SELECT id, label, consolidated_text, centroid, owner_id, visibility
          FROM memory_clusters
-         ORDER BY updated_at DESC
+         ORDER BY julianday(updated_at) DESC, id DESC
          LIMIT ?1",
     ) {
         Ok(stmt) => stmt,
@@ -380,7 +383,7 @@ pub fn unfold_crystal(conn: &Connection, crystal_id: i64) -> Vec<String> {
 }
 
 pub fn list_crystals(conn: &Connection) -> Vec<Value> {
-    let mut stmt = match conn.prepare("SELECT id, label, consolidated_text, member_count, updated_at FROM memory_clusters ORDER BY updated_at DESC") {
+    let mut stmt = match conn.prepare("SELECT id, label, consolidated_text, member_count, updated_at FROM memory_clusters ORDER BY julianday(updated_at) DESC, id DESC") {
         Ok(stmt) => stmt,
         Err(_) => return Vec::new(),
     };

@@ -101,12 +101,12 @@ pub fn complete(conn: &Connection, claim: &Claim) -> rusqlite::Result<bool> {
     Ok(n > 0)
 }
 
-pub fn fail(conn: &Connection, claim: &Claim, error: &str) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE outbox SET state = CASE WHEN attempts >= ?3 THEN 'failed' ELSE 'pending' END, last_error = ?1, lease_until = NULL WHERE job_id = ?2",
-        params![error, claim.job_id, MAX_ATTEMPTS],
+pub fn fail(conn: &Connection, claim: &Claim, error: &str) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE outbox SET state = CASE WHEN attempts >= ?3 THEN 'failed' ELSE 'pending' END, last_error = ?1, lease_until = NULL WHERE job_id = ?2 AND generation = ?4 AND state = 'claimed'",
+        params![error, claim.job_id, MAX_ATTEMPTS, claim.generation],
     )?;
-    Ok(())
+    Ok(n > 0)
 }
 
 /// Execute one job kind. Every kind is idempotent and bounded.
@@ -135,16 +135,17 @@ pub fn run_job(conn: &Connection, claim: &Claim) -> Result<Value, String> {
         "clock_link_audit" => {
             let hubs = hub_anchors(conn).map_err(|e| e.to_string())?;
             let mut trimmed = 0usize;
-            for (anchor_id, degree) in &hubs {
-                // Keep membership (evidence rows), drop materialized pairwise
-                // links beyond the cap: k(k-1)/2 edges are rebuilt at query
-                // time from the posting, not stored.
+            for (anchor_id, _) in &hubs {
+                // Keep membership (evidence rows). Drop stored pairwise links
+                // past the cap; extra clique edges are rebuilt at query time.
+                // Columns are src_*/dst_* (not from_/to_). OFFSET keeps the
+                // newest cap rows the same way feed prune keeps newest rows.
                 trimmed += conn
                     .execute(
-                        "DELETE FROM clock_links WHERE rowid IN (SELECT l.rowid FROM clock_links l WHERE l.relation IN ('observed_with','same_path','same_symbol') AND EXISTS (SELECT 1 FROM clock_anchor_evidence e1 WHERE e1.anchor_id = ?1 AND e1.target_type = l.from_type AND e1.target_id = l.from_id) AND EXISTS (SELECT 1 FROM clock_anchor_evidence e2 WHERE e2.anchor_id = ?1 AND e2.target_type = l.to_type AND e2.target_id = l.to_id) ORDER BY l.rowid DESC LIMIT MAX(0, ?2 - ?3))",
-                        params![anchor_id, degree * (degree - 1) / 2, ANCHOR_HUB_DEGREE],
+                        "DELETE FROM clock_links WHERE rowid IN (SELECT l.rowid FROM clock_links l WHERE l.relation IN ('observed_with','same_path','same_symbol') AND EXISTS (SELECT 1 FROM clock_anchor_evidence e1 WHERE e1.anchor_id = ?1 AND e1.target_type = l.src_type AND e1.target_id = l.src_id) AND EXISTS (SELECT 1 FROM clock_anchor_evidence e2 WHERE e2.anchor_id = ?1 AND e2.target_type = l.dst_type AND e2.target_id = l.dst_id) ORDER BY l.rowid DESC LIMIT -1 OFFSET ?2)",
+                        params![anchor_id, ANCHOR_HUB_DEGREE],
                     )
-                    .unwrap_or(0);
+                    .map_err(|e| e.to_string())?;
             }
             Ok(json!({"hubs": hubs.len(), "links_trimmed": trimmed}))
         }
@@ -170,7 +171,7 @@ pub fn prune_telemetry(conn: &Connection) -> rusqlite::Result<usize> {
         params![cutoff],
     )?;
     pruned += conn
-        .execute("DELETE FROM feed WHERE rowid IN (SELECT rowid FROM feed ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?1)", params![FEED_MAX_ROWS])?;
+        .execute("DELETE FROM feed WHERE rowid IN (SELECT rowid FROM feed ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT -1 OFFSET ?1)", params![FEED_MAX_ROWS])?;
     pruned += conn.execute("DELETE FROM feed_acks WHERE last_seen_id IS NOT NULL AND last_seen_id NOT IN (SELECT id FROM feed)", [])?;
     Ok(pruned)
 }
