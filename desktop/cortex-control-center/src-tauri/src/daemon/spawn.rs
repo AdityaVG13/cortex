@@ -70,7 +70,7 @@ pub fn local_app_managed_start_timeout_message(state: &DaemonState, pid: Option<
         format!("App-managed daemon spawn did not produce a live daemon on :{port}.")
     };
 
-    match state.stop() {
+    match state.abort_managed_child() {
         Ok(()) => format!("{base} Control Center cleared the stale app-managed startup state."),
         Err(err) => format!("{base} Control Center could not clear the stale app-managed startup state: {err}"),
     }

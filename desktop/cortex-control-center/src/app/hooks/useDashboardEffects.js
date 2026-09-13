@@ -14,7 +14,7 @@ const {
   messageDraft:messageDraft,setMessageDraft:setMessageDraft,setTaskCompletionDrafts:setTaskCompletionDrafts,setCompletionTaskId:setCompletionTaskId,
   daemonTimeoutStaleSummary:daemonTimeoutStaleSummary,cortexBase:cortexBase,setCortexBase:setCortexBase,setFeedbackMessage:setFeedbackMessage,
   hasVisitedAnalytics:hasVisitedAnalytics,analyticsReady:analyticsReady,controlSettings:controlSettings,budgetConfigStatus:budgetConfigStatus,
-  budgetDraftDirty:budgetDraftDirty,budgetConfigBusy:budgetConfigBusy,ipcAvailable:ipcAvailable,analyticsMode:analyticsMode,
+  budgetDraftDirty:budgetDraftDirty,setBudgetDraft:setBudgetDraft,budgetConfigBusy:budgetConfigBusy,ipcAvailable:ipcAvailable,analyticsMode:analyticsMode,
   effectiveReducedMotion:effectiveReducedMotion,refreshAllRef:refreshAllRef,tokenRef:tokenRef,isTauriRuntime:isTauriRuntime,
   normalizedSessions:normalizedSessions,knownAgents:knownAgents,selectedOperatorName:selectedOperatorName,messageTargetName:messageTargetName,
   safeCurrency:safeCurrency,runRefreshAll:runRefreshAll,reloadBudgetConfigDraft:reloadBudgetConfigDraft,refreshMessages:refreshMessages,
@@ -141,7 +141,7 @@ setFeedbackMessage("Select an operator before acknowledging feed entries.");retu
 setFeedbackMessage("No visible teammate feed entries to acknowledge.");return}setBusyActionKey("feed:ack");try{await postApi("/feed/ack",{agent:operator,
 lastSeenId:lastSeenId}),setFeedbackMessage(`Acknowledged the visible feed for ${operator}.`),await refreshFeed()}catch(error){reportSurfaceError(error)}finally{
 setBusyActionKey("")}},[feedEntries,postApi,refreshFeed,reportSurfaceError,selectedOperatorName]);return{...ctx,pendingTasks:pendingTasks,
-claimedTasks:claimedTasks,completedTasks:completedTasks,recentOverviewTasks:recentOverviewTasks,utilityPill:utilityPill,daemonSysStatus:daemonSysStatus,
+claimedTasks:claimedTasks,completedTasks:completedTasks,recentOverviewTasks:recentOverviewTasks,pill:pill,utilityPill:utilityPill,daemonSysStatus:daemonSysStatus,
 operationRows:operationRows,operationMaxSaved:operationMaxSaved,dailySeries:dailySeries,cumulativeSeries:cumulativeSeries,
 cumulativeLatestTotal:cumulativeLatestTotal,recallTrendSeries:recallTrendSeries,activityHeatmap:activityHeatmap,activityHeatmapLookup:activityHeatmapLookup,
 activityHeatmapMax:activityHeatmapMax,bootSavingsMomentum:bootSavingsMomentum,throughputSummary:throughputSummary,throughputBoots30d:throughputBoots30d,

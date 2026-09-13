@@ -1,4 +1,4 @@
-use crate::daemon::paths::{cortex_home, find_cortex_binary};
+use crate::daemon::paths::{cortex_home, find_cortex_binary, installed_plugin_binary_path};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
@@ -151,6 +151,15 @@ fn editor_command_path(cortex_exe: Option<&str>) -> Option<String> {
     cortex_exe.map(|path| path.to_string())
 }
 
+pub fn preferred_editor_command_path(home: &Path, found: Option<PathBuf>) -> Option<PathBuf> {
+    let installed = installed_plugin_binary_path(home);
+    if installed.exists() {
+        Some(installed)
+    } else {
+        found
+    }
+}
+
 pub fn editor_detection(target: &EditorTarget, detected: bool, registered: bool, cortex_exe: Option<&str>, message: String) -> EditorDetection {
     let config_path = editor_config_path(target);
     EditorDetection {
@@ -162,6 +171,27 @@ pub fn editor_detection(target: &EditorTarget, detected: bool, registered: bool,
         command_path: editor_command_path(cortex_exe),
         message,
     }
+}
+
+pub(crate) fn write_config_atomic(path: &Path, contents: &str) -> Result<(), String> {
+    let parent = path.parent().ok_or_else(|| format!("Invalid editor config path: {}", path.display()))?;
+    fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("config");
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    fs::write(&temp_path, contents).map_err(|e| format!("write {}: {e}", temp_path.display()))?;
+    // Unix rename replaces atomically. Unlinking first opens a crash window that
+    // wipes the live editor config if rename never completes.
+    #[cfg(windows)]
+    {
+        if path.exists() {
+            fs::remove_file(path).map_err(|e| format!("replace {}: {e}", path.display()))?;
+        }
+    }
+    fs::rename(&temp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&temp_path);
+        format!("Failed to save {}: {err}", path.display())
+    })?;
+    Ok(())
 }
 
 fn json_registration_for(target: &EditorTarget, cortex_exe: &str) -> serde_json::Value {
@@ -287,7 +317,7 @@ fn register_json_editor(target: &EditorTarget, cortex_exe: &str) -> Result<Edito
         .or_insert_with(|| serde_json::json!({}));
 
     let action = if is_editor_registered_at_path(target, cortex_exe, &config_path)? {
-        "Already configured"
+        return Ok(editor_detection(target, true, true, Some(cortex_exe), format!("Already configured in {}", config_path.display())));
     } else if config_path.exists() {
         "Updated configuration"
     } else {
@@ -303,7 +333,7 @@ fn register_json_editor(target: &EditorTarget, cortex_exe: &str) -> Result<Edito
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let out = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(&config_path, out).map_err(|e| e.to_string())?;
+    write_config_atomic(&config_path, &out)?;
 
     Ok(editor_detection(target, true, true, Some(cortex_exe), format!("{action} in {}", config_path.display())))
 }
@@ -323,7 +353,7 @@ fn register_toml_editor(target: &EditorTarget, cortex_exe: &str) -> Result<Edito
         .ok_or_else(|| format!("Invalid [mcp_servers] format in {}", config_path.display()))?;
 
     let action = if is_editor_registered_at_path(target, cortex_exe, &config_path)? {
-        "Already configured"
+        return Ok(editor_detection(target, true, true, Some(cortex_exe), format!("Already configured in {}", config_path.display())));
     } else if config_path.exists() {
         "Updated configuration"
     } else {
@@ -342,11 +372,8 @@ fn register_toml_editor(target: &EditorTarget, cortex_exe: &str) -> Result<Edito
     server.insert("env".into(), toml::Value::Table(env_table));
     servers.insert("cortex".into(), toml::Value::Table(server));
 
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let out = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(&config_path, out).map_err(|e| e.to_string())?;
+    write_config_atomic(&config_path, &out)?;
 
     Ok(editor_detection(target, true, true, Some(cortex_exe), format!("{action} in {}", config_path.display())))
 }
@@ -408,7 +435,8 @@ pub fn setup_editors(editor_ids: Option<Vec<String>>) -> Result<Vec<EditorDetect
 
 pub fn detect_editors() -> Result<Vec<EditorDetection>, String> {
     let home = cortex_home()?;
-    let cortex_exe = cortex_exe_path();
+    let found = cortex_exe_path();
+    let cortex_exe = preferred_editor_command_path(&home, found);
     let cortex_exe_string = cortex_exe.as_ref().map(|path| path.to_string_lossy().to_string());
     let mut results = Vec::new();
 

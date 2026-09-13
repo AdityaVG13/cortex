@@ -15,6 +15,11 @@ function toneForDurability(profile) {
   return "idle";
 }
 
+function restoreReport(restore) {
+  const ok = restore.verified === true || restore.ok === true;
+  return { at: String(pick(restore.verified_at, pick(restore.at, UNKNOWN))), ok, tone: ok ? "ok" : "bad" };
+}
+
 function normalizeBrainHealth(brain) {
   const b = brain && typeof brain === "object" ? brain : {};
   const debt = b.maintenance_debt && typeof b.maintenance_debt === "object" ? b.maintenance_debt : {};
@@ -41,7 +46,7 @@ function normalizeBrainHealth(brain) {
       hookCaptures: Number(pick(receipts.hook_captures, 0)) || 0,
     },
     debt: { pending: Number(pick(debt.pending_jobs, 0)) || 0, failed: Number(pick(debt.failed_jobs, 0)) || 0, projectionLag: lag, pressure, tone: pressure === "hard" ? "bad" : pressure === "soft" ? "warn" : lag > 0 ? "warn" : "ok" },
-    lastVerifiedRestore: restore ? { at: String(pick(restore.verified_at, pick(restore.at, UNKNOWN))), ok: restore.ok !== false, tone: restore.ok === false ? "bad" : "ok" } : { at: "never", ok: false, tone: "warn" },
+    lastVerifiedRestore: restore ? restoreReport(restore) : { at: "never", ok: false, tone: "warn" },
     unresolvedHeads: { count: unresolvedHeads, tone: unresolvedHeads > 0 ? "warn" : "ok" },
     contradictions: { count: contradictions, tone: contradictions > 0 ? "warn" : "ok" },
     captureScope: { state: captureState, tone: captureState === "active" ? "ok" : captureState === "paused" ? "warn" : captureState === "stopped" ? "bad" : "idle", pausedScopes: pausedScopes.map((s) => ({ scope: String(s.scope), state: String(s.state), reason: s.reason ? String(s.reason) : "" })) },
@@ -57,7 +62,7 @@ function brainHealthRows(normalized) {
     ["ACK", n.ackProfile.label.toUpperCase().replace(/_/g, " "), n.ackProfile.tone],
     ["CAPTURE", `${n.captureReceipts.owned} OWNED / ${n.captureReceipts.hookCaptures} HOOK`, n.captureReceipts.unavailable > 0 ? "warn" : "ok"],
     ["DEBT", n.debt.projectionLag > 0 ? `LAG ${n.debt.projectionLag}` : n.debt.pending > 0 ? `${n.debt.pending} PENDING` : "CLEAR", n.debt.tone],
-    ["RESTORE", n.lastVerifiedRestore.at === "never" ? "NEVER VERIFIED" : "VERIFIED", n.lastVerifiedRestore.tone],
+    ["RESTORE", n.lastVerifiedRestore.at === "never" ? "NEVER VERIFIED" : n.lastVerifiedRestore.ok ? "VERIFIED" : "FAILED", n.lastVerifiedRestore.tone],
     ["HEADS", n.unresolvedHeads.count > 0 ? `${n.unresolvedHeads.count} UNRESOLVED` : "RESOLVED", n.unresolvedHeads.tone],
     ["SCOPE", n.captureScope.state.toUpperCase() + (n.captureScope.pausedScopes.length ? ` (+${n.captureScope.pausedScopes.length})` : ""), n.captureScope.tone],
     ["REFLEX", n.reflex.state.toUpperCase(), n.reflex.tone],

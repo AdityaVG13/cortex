@@ -10,7 +10,11 @@ function isDaemonTimeoutErrorMessage(message) { const value = String(message || 
 function isDaemonSuppressibleErrorMessage(message) { return isDaemonOfflineErrorMessage(message) || isDaemonTimeoutErrorMessage(message);
 }
 function isReachableHealthPayload(health) { const status = String(health?.status || "").toLowerCase();
+  if (health?.ready === !1) return !1;
   return status !== "ok" && status !== "degraded" ? !1 : !!health?.runtime || !!health?.stats;
+}
+function isDaemonOfflineState(daemonState) {
+  return !daemonState?.running && !daemonState?.reachable;
 }
 function setElementInert(element, inert) { if (element) { if (inert) { (element.setAttribute("inert", ""), (element.inert = !0));
       return;
@@ -19,10 +23,11 @@ function setElementInert(element, inert) { if (element) { if (inert) { (element.
   }
 }
 function isReadyReadinessPayload(readiness) { if (!readiness || typeof readiness != "object") return !1;
+  if (readiness.ready === !1) return !1;
   if (readiness.ready === !0) return !0;
   const status = String(readiness.status || "").toLowerCase();
-  return status === "ready" || status === "ok";
+  return status === "ready";
 }
 export {
-  isDaemonOfflineErrorMessage, isDaemonSuppressibleErrorMessage, isDaemonTimeoutErrorMessage, isReachableHealthPayload,
+  isDaemonOfflineErrorMessage, isDaemonOfflineState, isDaemonSuppressibleErrorMessage, isDaemonTimeoutErrorMessage, isReachableHealthPayload,
   isReadyReadinessPayload, setElementInert, };

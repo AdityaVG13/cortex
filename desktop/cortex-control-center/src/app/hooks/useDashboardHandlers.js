@@ -41,6 +41,7 @@ function useDashboardHandlers(ctx) { const { panel, sidebarCollapsed, isNarrowVi
       try { const result = await call("stop_daemon");
         setFeedbackMessage(result.message || "Daemon stop requested.");
         const offline = await waitForDaemonOffline();
+        daemonTransitionRef.current = !1;
         ((tokenRef.current = ""), persistBrowserAuthToken(""), offline
             ? (clearDisconnectedData(), setDaemonState({ running: !1, reachable: !1,
                 managed: !1, authTokenReady: !1, pid: null, message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,

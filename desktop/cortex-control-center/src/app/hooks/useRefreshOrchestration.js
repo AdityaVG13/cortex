@@ -14,7 +14,11 @@ import {
 function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, locks, savings,
       feedFilters, activitySince, permissionsEndpointAvailable, permissionDraft, setPermissionDraft, selectedEditorIds, cortexBase, setFeedbackMessage,
       budgetDraft, invokeRef, tokenRef, editorSetupTriggerRef, selectedOperatorName, closeEditorSetupWizard, daemonTransitionRef, browserHealthProbeRef,
-      setDaemonState, clearTransientFeedback, permissionsEndpointAvailableRef, lastCoreRefreshAtRef,
+      setDaemonState, setHealthMeta, setStats, setSessions, setLocks, setTasks, setFeedEntries, setMessageEntries, setActivityEntries, setSavings,
+      setConflictPairs, setResolveDrafts, setConflictLoading, setPermissionsEndpointAvailable, setPermissionGrants, setPermissionAccessDenied, setPermissionLoading,
+      setIsSettingUpEditors, setEditorDetections, setSelectedEditorIds, setShowEditorSetupWizard, setEditorSetup,
+      setBudgetDraftDirty, setBudgetConfigMessage, setBudgetDraft, setBudgetConfigBusy, setBudgetConfigStatus,
+      clearTransientFeedback, permissionsEndpointAvailableRef, lastCoreRefreshAtRef,
       lastSecondaryRefreshAtRef, startupSecondaryRefreshInFlightRef, daemonStateRef, setDaemonTimeoutStaleSummary,
       setSecondaryAvailabilityFeedback, startupCoreReadyRef, setStartupCoreReadyState, budgetConfigLoadAttemptedRef,
     } = ctx, refreshTokenForApi = useCallback(async () => {
@@ -67,7 +71,7 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
         return ( setHealthMeta(EMPTY_HEALTH_META), setStats({ memories: "--", decisions: "--", events: "--" }), readinessReady );
       }
       const status = String(health?.status || "unknown").toLowerCase(), runtimeVersion = String(health?.runtime?.version || "");
-      if ( (setHealthMeta({ status, degraded: !!health?.degraded, dbCorrupted: !!health?.db_corrupted, runtimeVersion, budgets: health?.budgets || null, brain: health?.brain || null, }),
+      if ( (setHealthMeta({ status, degraded: !!(health?.degraded || status === "degraded"), dbCorrupted: !!(health?.db_corrupted || health?.dbCorrupted), runtimeVersion, budgets: health?.budgets || null, brain: health?.brain || null, }),
         !health?.stats) )
         return (setStats({ memories: "--", decisions: "--", events: "--" }), isReachableHealthPayload(health));
       const next = health.stats;
@@ -273,8 +277,11 @@ function useRefreshOrchestration(ctx) { const { panel, stats, sessions, tasks, l
         } finally { setBudgetConfigBusy(!1);
         } }, [budgetDraft, call], );
   const setCapturePolicy = useCallback(async (state, scope) => { const body = { state }; if (scope) body.scope = scope;
-      await postApi("/capture/policy", body); await refreshHealth(); }, [postApi, refreshHealth]),
-    rebuildReflex = useCallback(async () => { await postApi("/reflex/rebuild", {}); await refreshHealth(); }, [postApi, refreshHealth]);
+      try { await postApi("/capture/policy", body); await refreshHealth(); }
+      catch (err) { setFeedbackMessage(`Capture policy update failed: ${err?.message || err}`); }
+    }, [postApi, refreshHealth, setFeedbackMessage]),
+    rebuildReflex = useCallback(async () => { try { await postApi("/reflex/rebuild", {}); await refreshHealth(); }
+      catch (err) { setFeedbackMessage(`Reflex rebuild failed: ${err?.message || err}`); } }, [postApi, refreshHealth, setFeedbackMessage]);
   return { ...ctx, api, postApi, call, readAuthToken, refreshDaemonState, probeReadiness, setCapturePolicy, rebuildReflex,
     refreshHealth, refreshCoreData, refreshFeed, refreshMessages, refreshActivity, refreshSavings, refreshConflicts, refreshPermissions,
     refreshSecondaryData, refreshProtectedData, refreshSecondaryDataInBackground, refreshProtectedDataForStartup,

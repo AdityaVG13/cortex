@@ -4,7 +4,7 @@ import {
   DAEMON_STOP_WAIT_TIMEOUT_MS, EMPTY_DAEMON, } from "../constants.js";
 import { persistBrowserAuthToken } from "../browser-bootstrap.js";
 import { formatDaemonEndpoint } from "../utils/format.js";
-import { isDaemonOfflineErrorMessage, isReachableHealthPayload } from "../utils/daemon.js";
+import { isDaemonOfflineErrorMessage, isDaemonOfflineState, isReachableHealthPayload } from "../utils/daemon.js";
 function useDaemonConnection(ctx) { const { cortexBase, setFeedbackMessage, invokeRef, tokenRef, runRefreshAll, readAuthToken,
       api, call, setDaemonState, daemonTransitionRef, resetStartupRetryState, clearDisconnectedData, scheduleStartupRecoveryRetry, } = ctx,
     waitForDaemonReachable = useCallback( async (options = {}) => { const shortCircuitIfStarting = options?.shortCircuitIfStarting === !0, started = Date.now();
@@ -21,7 +21,7 @@ function useDaemonConnection(ctx) { const { cortexBase, setFeedbackMessage, invo
         }
         return !1; }, [api, call], ), waitForDaemonOffline = useCallback(async () => { const started = Date.now();
       for (; Date.now() - started < DAEMON_STOP_WAIT_TIMEOUT_MS;) { try { if (invokeRef.current) { const state = await call("daemon_status");
-            if ((setDaemonState(state), !state?.reachable)) return !0;
+            if ((setDaemonState(state), isDaemonOfflineState(state))) return !0;
           } else await api("/health");
         } catch (error) { if (isDaemonOfflineErrorMessage(error?.message || error)) return !0;
         }

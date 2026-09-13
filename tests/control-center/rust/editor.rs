@@ -143,3 +143,57 @@ fn claude_desktop_uses_platform_specific_config_path() {
 
     assert_eq!(claude_desktop.config_path, expected);
 }
+
+#[test]
+fn preferred_editor_command_path_prefers_installed_binary() {
+    let temp_root = TestTempDir::new("cortex_control_center_editor_cmd");
+    let installed_dir = temp_root.0.join(".cortex").join("bin");
+    fs::create_dir_all(&installed_dir).expect("bin dir");
+    let binary_name = if cfg!(windows) { "cortex.exe" } else { "cortex" };
+    let installed = installed_dir.join(binary_name);
+    fs::write(&installed, b"stub").expect("write installed");
+    let found = temp_root.0.join("sidecar").join(binary_name);
+    let preferred = preferred_editor_command_path(&temp_root.0, Some(found));
+    assert_eq!(preferred.as_deref(), Some(installed.as_path()));
+}
+
+#[test]
+fn already_registered_json_editor_does_not_rewrite_config() {
+    let temp_root = TestTempDir::new("cortex_control_center_editor_skip");
+    let home = &temp_root.0;
+    fs::create_dir_all(home.join(".cursor")).expect("cursor dir");
+    let exe = if cfg!(windows) { r"C:\cortex-test\bin\cortex.exe" } else { "/opt/cortex/bin/cortex" };
+    let compact = serde_json::json!({
+        "keep": "me",
+        "mcpServers": {
+            "cortex": {
+                "command": exe,
+                "args": ["mcp", "--agent", "cursor"],
+                "env": {
+                    "CORTEX_APP_REQUIRED": "1",
+                    "CORTEX_DAEMON_OWNER_LOCAL_SPAWN": "0",
+                    "CORTEX_APP_CLIENT": "cursor"
+                }
+            }
+        }
+    });
+    let compact_text = serde_json::to_string(&compact).expect("serialize compact config");
+    let config_path = home.join(".cursor").join("mcp.json");
+    fs::write(&config_path, &compact_text).expect("write compact config");
+    let targets = editor_targets(home);
+    let cursor = targets.iter().find(|target| target.id == "cursor").unwrap();
+    let result = register_editor(cursor, exe).expect("register");
+    assert!(result.registered);
+    let after = fs::read_to_string(&config_path).expect("reread config");
+    assert_eq!(after, compact_text, "already-configured editor config must not be rewritten");
+}
+
+#[test]
+fn write_config_atomic_replaces_existing_file() {
+    let temp_root = TestTempDir::new("cortex_control_center_editor_atomic");
+    let path = temp_root.0.join("mcp.json");
+    fs::write(&path, "{\"keep\":\"old\"}").expect("seed config");
+    write_config_atomic(&path, "{\"keep\":\"new\"}").expect("atomic replace");
+    assert_eq!(fs::read_to_string(&path).expect("reread"), "{\"keep\":\"new\"}");
+    assert!(temp_root.0.join("mcp.json").exists(), "replace must not leave the destination missing");
+}

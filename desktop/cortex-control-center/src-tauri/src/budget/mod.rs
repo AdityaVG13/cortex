@@ -310,8 +310,11 @@ pub fn write_budget_config_file(path: &Path, contents: &str) -> Result<(), Strin
         file.sync_all().map_err(|err| format!("Failed to flush {}: {err}", temp_path.display()))?;
     }
 
-    if path.exists() {
-        fs::remove_file(path).map_err(|err| format!("Failed to replace {}: {err}", path.display()))?;
+    #[cfg(windows)]
+    {
+        if path.exists() {
+            fs::remove_file(path).map_err(|err| format!("Failed to replace {}: {err}", path.display()))?;
+        }
     }
     fs::rename(&temp_path, path).map_err(|err| {
         let _ = fs::remove_file(&temp_path);

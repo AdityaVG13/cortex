@@ -1,12 +1,12 @@
 import { useCallback } from "react";
 import { isAuthFailure, summarizeDashboardErrors } from "../../api-client.js";
-import { shouldContinueStartupRecovery } from "../../daemon-startup.js";
+import { isDaemonStartingState, shouldContinueStartupRecovery } from "../../daemon-startup.js";
 import { readTauriInvoke, persistBrowserAuthToken } from "../browser-bootstrap.js";
 import { formatDaemonEndpoint } from "../utils/format.js";
 import { isDaemonOfflineErrorMessage, isDaemonTimeoutErrorMessage } from "../utils/daemon.js";
 function useRefreshAll(ctx) { const { cortexBase, setFeedbackMessage, invokeRef, tokenRef, readAuthToken, call,
       setIpcAvailable, refreshDaemonState, refreshHealth, probeReadiness, daemonTransitionRef, setDaemonState, daemonStateRef, setDaemonTimeoutStaleSummary,
-      clearStartupCoreReady, scheduleStartupRecoveryRetry, clearDisconnectedData, resetStartupRetryState,
+      clearStartupCoreReady, scheduleStartupRecoveryRetry, scheduleRecoveryRetry, clearDisconnectedData, resetStartupRetryState,
       clearRecoveryRetry, clearTransientFeedback, refreshProtectedDataForStartup, startupCoreReadyRef,
       setStartupCoreReadyState, refreshSecondaryDataInBackground, connectionDialogAutoPromptSuppressedRef, setShowConnectionDialog,
       setSecondaryAvailabilityFeedback, refreshAllInFlightRef, refreshAllQueuedRef, } = ctx,
@@ -18,8 +18,9 @@ function useRefreshAll(ctx) { const { cortexBase, setFeedbackMessage, invokeRef,
       let healthReady = await refreshHealth(), readinessReady = !1;
       invokeRef.current && nextDaemonState?.managed && !nextDaemonState?.reachable && !healthReady &&
         ((readinessReady = await probeReadiness()), readinessReady && (healthReady = !0));
-      const reachableViaHealthFallback = !!invokeRef.current && !!healthReady && !nextDaemonState?.reachable,
-        reachableViaReadinessFallback = !!invokeRef.current && !!readinessReady && !nextDaemonState?.reachable,
+      const daemonStarting = isDaemonStartingState(nextDaemonState),
+        reachableViaHealthFallback = !!invokeRef.current && !!healthReady && !nextDaemonState?.reachable && !daemonStarting,
+        reachableViaReadinessFallback = !!invokeRef.current && !!readinessReady && !nextDaemonState?.reachable && !daemonStarting,
         daemonReachable = !!nextDaemonState?.reachable || reachableViaHealthFallback || reachableViaReadinessFallback;
       if (daemonTransitionRef.current) return;
       if ( ((reachableViaHealthFallback || reachableViaReadinessFallback) && setDaemonState((current) => ({ ...current,

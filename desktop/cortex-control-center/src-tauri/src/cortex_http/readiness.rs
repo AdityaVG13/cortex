@@ -312,5 +312,9 @@ pub fn is_cortex_health_response(status: u16, body: &str, expected_port: Option<
         }
     }
 
+    if json.get("ready").and_then(|value| value.as_bool()) == Some(false) {
+        return false;
+    }
+
     matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }

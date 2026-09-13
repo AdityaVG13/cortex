@@ -20,7 +20,9 @@ function useSseStream(ctx) { const { daemonState, cortexBase, refreshAllRef, tok
           ((reconnectAttempt += 1), clearReconnectTimer(), (reconnectTimer = window.setTimeout(() => { ((reconnectTimer = null), connect());
             }, exponentialDelay + jitter))); }, connect = () => { if (disposed || stream) return;
           const token = tokenRef.current;
-          if (!token) return;
+          if (!token) { scheduleReconnect();
+            return;
+          }
           const streamUrl = `${cortexBase}/events/stream?token=${encodeURIComponent(token)}`, nextStream = new EventSource(streamUrl);
           ((stream = nextStream), (nextStream.onopen = () => { ((reconnectAttempt = 0), (streamConnectedAtRef.current = Date.now()), scheduleRefresh(!0));
             }), (nextStream.onmessage = handleRealtimeEvent),

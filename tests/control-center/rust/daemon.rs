@@ -159,6 +159,7 @@ fn local_start_timeout_cleanup_clears_managed_child_state() {
     let (managed_after, pid_after) = state.status().expect("post-cleanup status");
     assert!(!managed_after);
     assert_eq!(pid_after, None);
+    assert!(!state.supervisor_paused(), "start timeout cleanup must not pause the supervisor");
 }
 
 #[test]

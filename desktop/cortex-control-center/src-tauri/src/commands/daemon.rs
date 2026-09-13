@@ -1,13 +1,13 @@
 use crate::constants::{DAEMON_REACHABILITY_TIMEOUT_MS, DAEMON_STOP_WAIT_MS};
 use crate::cortex_http::{
-    auth_token_ready, is_cortex_reachable_with_port, probe_cortex_reachability_with_port, read_auth_token_with_retry, wait_for_reachability,
+    auth_token_ready, is_cortex_reachable_with_port, probe_cortex_reachability_with_port, read_auth_token_with_retry, wait_for_reachability_blocking,
 };
 use crate::daemon::paths::{daemon_port, log_startup_path, service_ensure_fallback_enabled};
 use crate::daemon::shutdown::send_http_shutdown;
 use crate::daemon::spawn::{try_local_app_managed_ensure, try_service_ensure};
 use crate::daemon::state::{describe_daemon_state, DaemonCommandResult, DaemonState};
 use std::time::Duration;
-use tauri::State;
+use tauri::{Manager, State};
 
 #[tauri::command]
 pub async fn daemon_status(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
@@ -32,7 +32,16 @@ pub async fn daemon_status(state: State<'_, DaemonState>) -> Result<DaemonComman
 }
 
 #[tauri::command]
-pub async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
+pub async fn start_daemon(app: tauri::AppHandle) -> Result<DaemonCommandResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DaemonState>();
+        start_daemon_blocking(&state)
+    })
+    .await
+    .map_err(|err| format!("start_daemon task failed: {err}"))?
+}
+
+fn start_daemon_blocking(state: &DaemonState) -> Result<DaemonCommandResult, String> {
     state.resume_supervisor();
     let port = daemon_port();
     let (managed, pid) = state.status()?;
@@ -73,7 +82,7 @@ pub async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommand
         return Ok(DaemonCommandResult { running: true, reachable: false, managed, auth_token_ready, pid, message });
     }
 
-    match try_local_app_managed_ensure(&state, port) {
+    match try_local_app_managed_ensure(state, port) {
         Ok(local_probe) => {
             log_startup_path(
                 "start_daemon",
@@ -132,7 +141,16 @@ pub async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommand
 }
 
 #[tauri::command]
-pub async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
+pub async fn stop_daemon(app: tauri::AppHandle) -> Result<DaemonCommandResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DaemonState>();
+        stop_daemon_blocking(&state)
+    })
+    .await
+    .map_err(|err| format!("stop_daemon task failed: {err}"))?
+}
+
+fn stop_daemon_blocking(state: &DaemonState) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
     let (was_running, _) = state.status()?;
     let still_reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
@@ -141,7 +159,7 @@ pub async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandR
         if let Err(err) = send_http_shutdown() {
             shutdown_error = Some(err);
         }
-        let _ = wait_for_reachability(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS)).await;
+        let _ = wait_for_reachability_blocking(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS));
     }
 
     let managed_stop_error = if was_running { state.stop().err() } else { None };

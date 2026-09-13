@@ -10,6 +10,7 @@ import {
   isTransientDaemonFeedback,
   shouldContinueStartupRecovery,
 } from "../../../desktop/cortex-control-center/src/daemon-startup.js";
+import { isReachableHealthPayload, isReadyReadinessPayload, isDaemonOfflineState } from "../../../desktop/cortex-control-center/src/app/utils/daemon.js";
 
 describe("buildFirstRunReadiness", () => {
   it("asks for a local start when the daemon is offline", () => {
@@ -230,6 +231,35 @@ describe("shouldContinueStartupRecovery", () => {
         previousDaemonState: { managed: true, running: true, reachable: false },
       }),
     ).toBe(false);
+  });
+});
+
+describe("health and readiness payload classification", () => {
+  it("does not treat running-but-unreachable as offline", () => {
+    expect(isDaemonOfflineState({ running: true, reachable: false })).toBe(false);
+    expect(isDaemonOfflineState({ running: true, reachable: true })).toBe(false);
+    expect(isDaemonOfflineState({ running: false, reachable: true })).toBe(false);
+    expect(isDaemonOfflineState({ running: false, reachable: false })).toBe(true);
+  });
+
+  it("does not treat a starting /health payload as reachable", () => {
+    const startingHealth = {
+      status: "ok",
+      ready: false,
+      runtime: { version: "0.6.0" },
+      stats: { memories: 0 },
+    };
+    expect(isReachableHealthPayload(startingHealth)).toBe(false);
+    expect(isReachableHealthPayload({ status: "ok", ready: true, runtime: { version: "0.6.0" } })).toBe(true);
+    expect(isReachableHealthPayload({ status: "degraded", stats: { memories: 1 } })).toBe(true);
+  });
+
+  it("does not treat ready:false as ready even when status is ok", () => {
+    expect(isReadyReadinessPayload({ ready: false, status: "ok" })).toBe(false);
+    expect(isReadyReadinessPayload({ ready: false, status: "starting" })).toBe(false);
+    expect(isReadyReadinessPayload({ ready: true, status: "ready" })).toBe(true);
+    expect(isReadyReadinessPayload({ status: "ready" })).toBe(true);
+    expect(isReadyReadinessPayload({ status: "ok" })).toBe(false);
   });
 });
 

@@ -47,4 +47,20 @@ describe("brain health normalizer", () => {
     expect(nextCaptureAction("stopped").state).toBe("active");
     expect(normalizeBrainHealth({ capture_policy: { global: "stopped" } }).captureScope.tone).toBe("bad");
   });
+
+  it("treats a restore report as verified only when verified/ok is true", () => {
+    const failed = normalizeBrainHealth({
+      last_verified_restore: { verified_at: "2026-09-04T00:00:00Z", verified: false, integrity_ok: false },
+    });
+    expect(failed.lastVerifiedRestore.ok).toBe(false);
+    expect(failed.lastVerifiedRestore.tone).toBe("bad");
+    expect(brainHealthRows(failed).find((r) => r[0] === "RESTORE")).toEqual(["RESTORE", "FAILED", "bad"]);
+
+    const passed = normalizeBrainHealth({
+      last_verified_restore: { verified_at: "2026-09-04T00:00:00Z", verified: true },
+    });
+    expect(passed.lastVerifiedRestore.ok).toBe(true);
+    expect(passed.lastVerifiedRestore.tone).toBe("ok");
+    expect(brainHealthRows(passed).find((r) => r[0] === "RESTORE")).toEqual(["RESTORE", "VERIFIED", "ok"]);
+  });
 });

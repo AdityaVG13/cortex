@@ -120,6 +120,22 @@ fn cortex_health_probe_accepts_healthy_response_shape() {
 }
 
 #[test]
+fn cortex_health_probe_rejects_ready_false_as_reachable() {
+    assert!(!is_cortex_health_response(
+        200,
+        r#"{"status":"ok","ready":false,"runtime":{"version":"0.6.0"},"stats":{"memories":0}}"#,
+        None,
+        None
+    ));
+    assert!(is_cortex_health_response(
+        200,
+        r#"{"status":"ok","ready":true,"runtime":{"version":"0.6.0"},"stats":{"memories":0}}"#,
+        None,
+        None
+    ));
+}
+
+#[test]
 fn cortex_health_probe_rejects_non_cortex_responses() {
     assert!(!is_cortex_health_response(200, "<html>ok</html>", None, None));
     assert!(!is_cortex_health_response(200, r#"{"status":"ok"}"#, None, None));

@@ -120,8 +120,7 @@ impl DaemonState {
         Ok(Some(pid))
     }
 
-    pub fn stop(&self) -> Result<(), String> {
-        self.intentional_stop.store(true, Ordering::SeqCst);
+    pub fn abort_managed_child(&self) -> Result<(), String> {
         let mut child = self.child_lock();
         if let Some(managed_child) = child.as_mut() {
             match managed_child.try_wait() {
@@ -143,6 +142,11 @@ impl DaemonState {
             }
         }
         Ok(())
+    }
+
+    pub fn stop(&self) -> Result<(), String> {
+        self.intentional_stop.store(true, Ordering::SeqCst);
+        self.abort_managed_child()
     }
 }
 
