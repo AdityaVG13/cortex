@@ -473,7 +473,20 @@ pub fn lookup_targets_with_matches(
             break;
         }
     }
-    Ok(matched.into_iter().take(limit).collect())
+    // Membership can overshoot `limit` after a late anchor; keep the strongest
+    // matches, not the lowest (target_type, target_id). BTreeMap order would
+    // drop a spec-3 row with a high id in favor of a spec-2 neighbor.
+    let mut out: Vec<(ClockTarget, Vec<QueryAnchor>)> = matched.into_iter().collect();
+    out.sort_by(|a, b| {
+        let spec_a = a.1.iter().map(|anchor| anchor.specificity).max().unwrap_or(0);
+        let spec_b = b.1.iter().map(|anchor| anchor.specificity).max().unwrap_or(0);
+        spec_b
+            .cmp(&spec_a)
+            .then_with(|| a.0.target_type.cmp(&b.0.target_type))
+            .then_with(|| a.0.target_id.cmp(&b.0.target_id))
+    });
+    out.truncate(limit);
+    Ok(out)
 }
 
 /// The projected anchor values of one target for a kind: the row's own

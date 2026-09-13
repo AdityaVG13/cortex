@@ -77,8 +77,10 @@ impl QueryFrame {
         entity_ids.dedup();
         let mut paths = self.paths.clone();
         paths.sort();
+        let mut symbols = self.symbols.clone();
+        symbols.sort();
         format!(
-            "t={}|a={}|e={:?}|m={}|o={:?}|g={:?}|p={:?}|s={:?}",
+            "t={}|a={}|e={:?}|m={}|o={:?}|g={:?}|p={:?}|s={:?}|sym={:?}|as={:?}|h={:?}",
             terms.join(" "),
             anchors.join(","),
             entity_ids,
@@ -86,7 +88,10 @@ impl QueryFrame {
             self.owner_id,
             self.goal_id,
             paths,
-            self.session_id
+            self.session_id,
+            symbols,
+            self.as_of,
+            self.head_id
         )
     }
 }
@@ -208,17 +213,15 @@ fn infer_temporal(raw: &str, explicit: Option<&str>) -> (TemporalMode, Option<St
     if lower.contains("as of") || lower.contains("as-of") {
         return (TemporalMode::ExplicitAsOf, None);
     }
-    if [
-        "before",
-        "after",
-        "history",
-        "historical",
-        "previous version",
-        "rolled back",
-    ]
-    .iter()
-    .any(|cue| lower.contains(cue))
-    {
+    // Substring "before"/"after" is not a temporal cue: they fire inside
+    // ordinary task language ("before merging", "after login") and would
+    // switch Current recall into Historical (archived rows + history arm).
+    let historical_phrase =
+        lower.contains("previous version") || lower.contains("rolled back");
+    let historical_token = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|t| matches!(t, "history" | "historical"));
+    if historical_phrase || historical_token {
         return (TemporalMode::Historical, None);
     }
     if ["now", "current", "latest"]

@@ -226,7 +226,7 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
              FROM events
              WHERE type = 'consensus'
                AND created_at >= datetime('now', ?1)
-               AND json_extract(data, '$.action') = 'promoted'",
+               AND json_extract(data, '$.action') = 'failed'",
             params![since_modifier.as_str()],
             |row| row.get(0),
         )

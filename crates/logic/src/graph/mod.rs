@@ -201,7 +201,7 @@ pub fn extract_mentions(text: &str) -> Vec<Mention> {
         let mut split = trimmed.splitn(2, '-');
         if let (Some(prefix), Some(number)) = (split.next(), split.next()) {
             if prefix.len() >= 2
-                && prefix.chars().all(|c| c.is_ascii_uppercase())
+                && prefix.chars().all(|c| c.is_ascii_alphabetic())
                 && !number.is_empty()
                 && number.chars().all(|c| c.is_ascii_digit())
             {
@@ -235,16 +235,7 @@ pub fn resolve_mention(
     trace_id: Option<i64>,
     owner_id: Option<i64>,
 ) -> Option<i64> {
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT entity_id FROM entity_aliases WHERE alias = ?1 LIMIT 1",
-            params![mention.surface.to_lowercase()],
-            |row| row.get(0),
-        )
-        .optional()
-        .ok()
-        .flatten();
-    if let Some(id) = existing {
+    if let Some(id) = lookup_alias_of_kind(conn, &mention.surface.to_lowercase(), &mention.kind) {
         return Some(id);
     }
     let mut resolved: Option<i64> = None;
@@ -314,13 +305,21 @@ pub fn resolve_query(conn: &Connection, query: &str) -> Vec<i64> {
         .split_whitespace()
         .take(crate::clockwork::MAX_QUERY_TOKENS)
     {
+        let token = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+        let lowered = token.to_ascii_lowercase();
         let norm = normalize_token(token);
         if norm.len() < 2 || kind_class(&norm).is_some() {
             continue;
         }
-        if let Some(id) = lookup_alias(conn, &norm) {
+        if let Some(id) = lookup_alias(conn, &lowered) {
             ids.push(id);
             continue;
+        }
+        if norm != lowered {
+            if let Some(id) = lookup_alias(conn, &norm) {
+                ids.push(id);
+                continue;
+            }
         }
         if let Some(id) = lookup_entity_by_qualifier(conn, &norm) {
             ids.push(id);
@@ -333,8 +332,22 @@ pub fn resolve_query(conn: &Connection, query: &str) -> Vec<i64> {
 
 fn lookup_alias(conn: &Connection, alias: &str) -> Option<i64> {
     conn.query_row(
-        "SELECT entity_id FROM entity_aliases WHERE alias = ?1 LIMIT 1",
+        "SELECT entity_id FROM entity_aliases WHERE alias = ?1 ORDER BY entity_id ASC LIMIT 1",
         params![alias],
+        |row| row.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+fn lookup_alias_of_kind(conn: &Connection, alias: &str, kind: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT a.entity_id FROM entity_aliases a
+         JOIN entities e ON e.id = a.entity_id
+         WHERE a.alias = ?1 AND e.kind = ?2
+         ORDER BY a.entity_id ASC LIMIT 1",
+        params![alias, kind],
         |row| row.get(0),
     )
     .optional()
@@ -360,7 +373,7 @@ fn lookup_entity_by_qualifier(conn: &Connection, qualifier: &str) -> Option<i64>
 }
 
 fn resolve_mention_to_existing(conn: &Connection, mention: &Mention) -> Option<i64> {
-    if let Some(id) = lookup_alias(conn, &mention.surface.to_lowercase()) {
+    if let Some(id) = lookup_alias_of_kind(conn, &mention.surface.to_lowercase(), &mention.kind) {
         return Some(id);
     }
     let mut stmt = conn
@@ -394,7 +407,8 @@ pub fn entity_arm_candidates(
     if let Ok(mut stmt) = conn.prepare_cached(
         "SELECT DISTINCT other.entity_id FROM entity_mentions seed \
          JOIN entity_mentions other ON other.target_type = seed.target_type AND other.target_id = seed.target_id \
-         WHERE seed.entity_id = ?1 AND other.entity_id != ?1 LIMIT 8",
+         WHERE seed.entity_id = ?1 AND other.entity_id != ?1 \
+         ORDER BY other.entity_id ASC LIMIT 8",
     ) {
         for seed in &seed_ids {
             if let Ok(rows) = stmt.query_map(params![seed], |row| row.get::<_, i64>(0)) {

@@ -80,6 +80,7 @@ impl ResponseStatus {
     /// Used while error sites migrate to explicit statuses.
     pub fn from_http_code(code: u16) -> Self {
         match code {
+            202 => Self::ProjectionPending,
             200..=299 => Self::Ok,
             401 | 403 => Self::Denied,
             404 => Self::NoMatch,
