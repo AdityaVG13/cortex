@@ -530,7 +530,8 @@ fn merge_prepared(views: Vec<PreparedView>, max_results: usize, max_bytes: usize
     let mut pending = 0usize;
     let mut restore = String::new();
     let mut policy = String::new();
-    let mut status = "ready".to_string();
+    let mut saw_ready = false;
+    let mut blocking = String::new();
     for view in views {
         pending += view.projection_pending;
         if restore.is_empty() {
@@ -539,31 +540,48 @@ fn merge_prepared(views: Vec<PreparedView>, max_results: usize, max_bytes: usize
         if policy.is_empty() {
             policy = view.policy_epoch;
         }
-        if evidence.is_empty() && view.status != "ready" {
-            status = view.status.clone();
+        if view.status == "ready" {
+            saw_ready = true;
+            for item in view.evidence {
+                if seen.insert(item.source_id.clone()) {
+                    evidence.push(item);
+                }
+            }
+        } else if blocking.is_empty() {
+            blocking = view.status;
         }
-        for item in view.evidence {
-            if seen.insert(item.source_id.clone()) {
-                evidence.push(item);
+    }
+    // Incomplete scopes keep their status. Their evidence must not upgrade the
+    // merge to `ready` — materialize already refuses to treat a partial bundle
+    // as absence/exception-complete.
+    let status = if saw_ready {
+        "ready".to_string()
+    } else if !blocking.is_empty() {
+        blocking
+    } else {
+        "ready".to_string()
+    };
+    evidence.truncate(max_results);
+    let mut payload = String::new();
+    if status == "ready" {
+        while !evidence.is_empty() {
+            match serde_json::to_string(&evidence) {
+                Ok(rendered) if rendered.len() <= max_bytes => {
+                    payload = rendered;
+                    break;
+                }
+                Ok(_) => {
+                    evidence.pop();
+                }
+                Err(_) => {
+                    evidence.clear();
+                    break;
+                }
             }
         }
-    }
-    evidence.truncate(max_results);
-    while !evidence.is_empty() {
-        let rendered = serde_json::to_string(&evidence).unwrap_or_default();
-        if rendered.len() <= max_bytes {
-            break;
-        }
-        evidence.pop();
-    }
-    if !evidence.is_empty() {
-        status = "ready".into();
-    }
-    let payload = if status == "ready" && !evidence.is_empty() {
-        serde_json::to_string(&evidence).unwrap_or_default()
     } else {
-        String::new()
-    };
+        evidence.clear();
+    }
     let source_refs = evidence.iter().map(|e| e.source_id.clone()).collect();
     let fingerprint = cortex_logic::traces::content_hash(
         &serde_json::json!([&source_refs, &status, pending, &payload]).to_string(),

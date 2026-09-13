@@ -125,8 +125,16 @@ pub fn rank_candidates(
             .total_score
             .partial_cmp(&left.components.total_score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| right.updated_at.cmp(&left.updated_at))
-            .then_with(|| right.created_at.cmp(&left.created_at))
+            // `updated_at` mixes RFC3339 (`T`) and SQLite `datetime('now')`
+            // (space); lexicographic Option<String> order is not recency.
+            .then_with(|| {
+                parse_timestamp(right.updated_at.as_deref())
+                    .cmp(&parse_timestamp(left.updated_at.as_deref()))
+            })
+            .then_with(|| {
+                parse_timestamp(right.created_at.as_deref())
+                    .cmp(&parse_timestamp(left.created_at.as_deref()))
+            })
             .then_with(|| left.source_kind.cmp(right.source_kind))
             .then_with(|| left.source_id.cmp(&right.source_id))
     });
