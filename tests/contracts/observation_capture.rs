@@ -175,6 +175,83 @@ fn custom_sources_config_refuses_oversize_toml() {
     });
 }
 
+#[cfg(unix)]
+#[test]
+fn custom_sources_skip_planted_file_symlink_like_automatic_state() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let secret = home.path().join("secret.md");
+        std::fs::write(&secret, "PLANTED_CUSTOM_SECRET_pass14\n").unwrap();
+        let alias = home.path().join("notes.md");
+        std::os::unix::fs::symlink(&secret, &alias).unwrap();
+        std::fs::create_dir_all(home.path().join(".cortex")).unwrap();
+        std::fs::write(
+            home.path().join(".cortex").join("sources.toml"),
+            format!("[[source]]\npath = \"{}\"\n", alias.display()),
+        )
+        .unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        let key = format!("file:{}", secret.canonicalize().unwrap().display());
+        runtime
+            .register_source(&cx, SourceSpec::document(&key, "project"))
+            .await
+            .unwrap();
+        let mut conn = runtime.state().db.lock(&cx).await.unwrap();
+        let count = cortex_kernel::indexer::index_all(&mut conn, home.path(), None)
+            .expect("planted custom alias must skip, not fail the rest of index");
+        assert_eq!(count, 0);
+        let stored: i64 = conn
+            .query_row("SELECT count(*) FROM observation_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            stored, 0,
+            "must not ingest a file reached by canonicalize-following a sources.toml alias"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn custom_directory_skips_symlink_child_and_keeps_real_sibling() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let docs = home.path().join("docs");
+        std::fs::create_dir(&docs).unwrap();
+        let real = docs.join("a.md");
+        std::fs::write(&real, "sibling-real\n").unwrap();
+        let secret = home.path().join("secret.md");
+        std::fs::write(&secret, "PLANTED_DIR_CHILD_SECRET_pass14\n").unwrap();
+        std::os::unix::fs::symlink(&secret, docs.join("z.md")).unwrap();
+        std::fs::create_dir_all(home.path().join(".cortex")).unwrap();
+        std::fs::write(
+            home.path().join(".cortex").join("sources.toml"),
+            format!(
+                "[[source]]\npath = \"{}\"\nglob = \"*.md\"\nrecursive = false\n",
+                docs.display()
+            ),
+        )
+        .unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        let key = format!("file:{}", real.canonicalize().unwrap().display());
+        runtime
+            .register_source(&cx, SourceSpec::document(&key, "project"))
+            .await
+            .unwrap();
+        let mut conn = runtime.state().db.lock(&cx).await.unwrap();
+        let count = cortex_kernel::indexer::index_all(&mut conn, home.path(), None)
+            .expect("symlink child must skip, not abort sibling capture");
+        assert_eq!(count, 1);
+        let stored: i64 = conn
+            .query_row("SELECT count(*) FROM observation_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, 1);
+        let origin: String = conn
+            .query_row("SELECT origin_id FROM sources LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(origin, key);
+    });
+}
+
 #[test]
 fn exact_capture_preserves_tail_and_distinguishes_occurrences_from_retries() {
     run_with_cx(|cx| async move {

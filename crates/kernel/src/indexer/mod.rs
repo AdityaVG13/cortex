@@ -179,6 +179,10 @@ fn open_capture(path: &Path, follow: bool) -> Result<(fs::File, PathBuf), String
     }
 }
 
+fn skip_unusable_source(err: &str) -> bool {
+    err == "source_not_found" || err == "source_symlink_requires_explicit_path"
+}
+
 fn index_discovered_file(
     conn: &mut Connection,
     path: &Path,
@@ -186,9 +190,7 @@ fn index_discovered_file(
     home: &Path,
 ) -> Result<usize, String> {
     match capture_file(conn, path, owner_id, false, Some(home)) {
-        Err(err) if err == "source_not_found" || err == "source_symlink_requires_explicit_path" => {
-            Ok(0)
-        }
+        Err(err) if skip_unusable_source(&err) => Ok(0),
         Err(err) => Err(err),
         Ok(_) => Ok(1),
     }
@@ -249,8 +251,7 @@ fn capture_file(
     }
     let key = format!("file:{}", key_path.to_str().ok_or("source_path_not_utf8")?);
     let principal = owner_id.map_or_else(|| "local".into(), |id| format!("user:{id}"));
-    let limit = observation::source_capture_limit(conn, &principal, &key)?
-        .min(INDEXER_MAX_FILE_BYTES as usize);
+    let limit = file_capture_limit(conn, &principal, &key)?;
     if before.len() > limit as u64 {
         return Err("capture_byte_limit".into());
     }
@@ -418,6 +419,38 @@ fn load_custom_sources(home: &Path) -> Result<Vec<CustomSource>, String> {
         })
         .collect())
 }
+fn resolve_listed_source(raw: &str, home: &Path) -> PathBuf {
+    let expanded = expand_tilde(raw);
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        home.join(expanded)
+    }
+}
+
+fn normalize_listed_components(path: &Path) -> Result<PathBuf, String> {
+    let abs = lexical_absolute(path).map_err(source_unavailable)?;
+    let mut out = PathBuf::new();
+    for component in abs.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => out.push(component),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    return Err("source_outside_home".into());
+                }
+            }
+            std::path::Component::Normal(_) => out.push(component),
+        }
+    }
+    Ok(out)
+}
+
+fn listed_stays_under_home(listed: &Path, home: &Path, root: &Path) -> Result<bool, String> {
+    let normalized = normalize_listed_components(listed)?;
+    Ok(normalized.starts_with(home) || normalized.starts_with(root))
+}
+
 fn index_custom_sources(
     conn: &mut Connection,
     home: &Path,
@@ -427,17 +460,33 @@ fn index_custom_sources(
     let root = home.canonicalize().map_err(|err| err.to_string())?;
     let mut total = 0;
     for src in &sources {
-        let resolved = expand_tilde(&src.path)
-            .canonicalize()
-            .map_err(|err| format!("source_unavailable: {err}"))?;
-        if !resolved.starts_with(&root) {
+        let listed = resolve_listed_source(&src.path, home);
+        if !listed_stays_under_home(&listed, home, &root)? {
             return Err("source_outside_home".into());
         }
-        if resolved.is_dir() {
-            total += index_directory(conn, &resolved, &root, src, owner_id)?;
+        // Same confine as automatic `.claude/state.md`: a planted alias is
+        // skipped, never canonicalize-followed onto another file.
+        if relative_has_symlink(home, &listed)? || relative_has_symlink(&root, &listed)? {
+            continue;
+        }
+        let meta = match fs::symlink_metadata(&listed) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Err(source_unavailable(err));
+            }
+            Err(err) => return Err(err.to_string()),
+            Ok(meta) => meta,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            total += index_directory(conn, &listed, &root, src, owner_id, home)?;
         } else {
-            capture_file(conn, &resolved, owner_id, false, Some(&root))?;
-            total += 1;
+            match capture_file(conn, &listed, owner_id, false, Some(home)) {
+                Err(err) if skip_unusable_source(&err) => {}
+                Err(err) => return Err(err),
+                Ok(_) => total += 1,
+            }
         }
     }
     Ok(total)
@@ -448,7 +497,11 @@ fn index_directory(
     root: &Path,
     src: &CustomSource,
     owner_id: Option<i64>,
+    home: &Path,
 ) -> Result<usize, String> {
+    if relative_has_symlink(home, dir)? || relative_has_symlink(root, dir)? {
+        return Ok(0);
+    }
     let mut entries = fs::read_dir(dir)
         .map_err(|err| err.to_string())?
         .collect::<Result<Vec<_>, _>>()
@@ -458,20 +511,24 @@ fn index_directory(
     for entry in entries {
         let kind = entry.file_type().map_err(|err| err.to_string())?;
         // Do not follow directory aliases or cycles during recursive discovery.
+        // Skip the alias; do not abort siblings the way automatic intake skips.
         if kind.is_symlink() {
-            return Err("source_symlink_requires_explicit_path".into());
+            continue;
         }
-        let path = entry.path().canonicalize().map_err(|err| err.to_string())?;
-        if !path.starts_with(root) {
+        let path = entry.path();
+        if !listed_stays_under_home(&path, home, root)? {
             return Err("source_outside_home".into());
         }
         if kind.is_dir() {
             if src.recursive {
-                count += index_directory(conn, &path, root, src, owner_id)?;
+                count += index_directory(conn, &path, root, src, owner_id, home)?;
             }
         } else if matches_glob(&path, &src.glob) {
-            capture_file(conn, &path, owner_id, false, Some(root))?;
-            count += 1;
+            match capture_file(conn, &path, owner_id, false, Some(home)) {
+                Err(err) if skip_unusable_source(&err) => {}
+                Err(err) => return Err(err),
+                Ok(_) => count += 1,
+            }
         }
     }
     Ok(count)
@@ -480,6 +537,16 @@ fn index_directory(
 pub const INDEXER_MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// `sources.toml` is a small operator config loaded automatically on index.
 pub const INDEXER_MAX_CONFIG_BYTES: u64 = 64 * 1024;
+
+/// Effective file intake ceiling: registered grant, capped at the indexer hard limit.
+pub(crate) fn file_capture_limit(
+    conn: &Connection,
+    principal: &str,
+    source: &str,
+) -> Result<usize, String> {
+    Ok(observation::source_capture_limit(conn, principal, source)?
+        .min(INDEXER_MAX_FILE_BYTES as usize))
+}
 
 fn matches_glob(path: &Path, pattern: &str) -> bool {
     if pattern == "*" {

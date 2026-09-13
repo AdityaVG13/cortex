@@ -230,3 +230,30 @@ fn reconcile_marks_changed_files_and_counts_later_registrations() {
         assert_eq!(reconciled.next_index, 1);
     });
 }
+
+#[test]
+fn inventory_snapshot_applies_indexer_file_ceiling() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        let path = home.path().join("big.md");
+        let oversized = cortex_kernel::indexer::INDEXER_MAX_FILE_BYTES as usize + 1;
+        std::fs::write(&path, vec![b'a'; oversized]).unwrap();
+        let key = format!("file:{}", path.canonicalize().unwrap().display());
+        let mut spec = SourceSpec::document(&key, "project");
+        spec.max_bytes = cortex_kernel::runtime::observation::MAX_CAPTURE_BYTES;
+        runtime.register_source(&cx, spec).await.unwrap();
+        let inventory = runtime.inventory_sources(&cx).await.unwrap();
+        assert_eq!(inventory.entries[0].status, InventoryStatus::QuotaBlocked);
+        assert_eq!(
+            inventory.entries[0].detail.as_deref(),
+            Some("capture_byte_limit")
+        );
+        let blocked = runtime
+            .bootstrap_inventory(&cx, &inventory.revision, 1, 16 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(blocked.status, InventoryStatus::QuotaBlocked);
+        assert_eq!(blocked.next_index, 0);
+    });
+}

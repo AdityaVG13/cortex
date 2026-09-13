@@ -4,10 +4,7 @@
 //! describes exact capture only, never projection, delivery, or invocation presence.
 //! Blocked entries retain the cursor. A changed source requires a new inventory.
 //! Capture commits before progress: a crash between them safely retries observe_file.
-use super::{
-    CortexRuntime,
-    observation::{self, ObservationReceipt},
-};
+use super::{CortexRuntime, observation::ObservationReceipt};
 use asupersync::Cx;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -206,7 +203,7 @@ impl CortexRuntime {
                 receipt: None,
             };
             // Check grant before any filesystem access, including metadata.
-            match observation::source_capture_limit(&conn, &principal, &entry.source_key) {
+            match crate::indexer::file_capture_limit(&conn, &principal, &entry.source_key) {
                 Err(error) => mark(&mut entry, classify(&error), error),
                 Ok(limit) => match snapshot(&entry.source_key) {
                     Ok((bytes, revision)) => {
@@ -307,7 +304,7 @@ impl CortexRuntime {
             let entry = &mut inventory.entries[inventory.next_index];
             let limit = {
                 let conn = self.state().db.lock(cx).await.map_err(|e| e.to_string())?;
-                observation::source_capture_limit(&conn, &principal, &entry.source_key)
+                crate::indexer::file_capture_limit(&conn, &principal, &entry.source_key)
             };
             let probe = limit.and_then(|limit| {
                 let (bytes, current) = snapshot(&entry.source_key)?;
@@ -432,17 +429,26 @@ impl CortexRuntime {
                 );
                 continue;
             }
-            match observation::source_capture_limit(&conn, &principal, &entry.source_key)
-                .and_then(|_| snapshot(&entry.source_key))
-            {
+            match crate::indexer::file_capture_limit(&conn, &principal, &entry.source_key).and_then(
+                |limit| {
+                    snapshot(&entry.source_key)
+                        .map(|(bytes, revision)| (limit as u64, bytes, revision))
+                },
+            ) {
                 Err(error) => mark(entry, classify(&error), error),
-                Ok((bytes, current_revision)) => {
+                Ok((limit, bytes, current_revision)) => {
                     entry.bytes = Some(bytes);
                     if entry.source_revision.as_ref() != Some(&current_revision) {
                         mark(
                             entry,
                             InventoryStatus::SourceChanged,
                             "source_changed: reconcile",
+                        );
+                    } else if bytes > limit {
+                        mark(
+                            entry,
+                            InventoryStatus::QuotaBlocked,
+                            "capture_byte_limit",
                         );
                     }
                 }
