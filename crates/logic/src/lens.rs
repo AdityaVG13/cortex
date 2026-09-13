@@ -290,7 +290,11 @@ pub fn extract_handles(text: &str) -> Handles {
                 continue;
             }
         }
-        if token.contains('/') && token.len() > 2 && !token.starts_with("http") {
+        if token.contains('/')
+            && token.len() > 2
+            && !token.starts_with("http://")
+            && !token.starts_with("https://")
+        {
             insert_capped(&mut handles.paths, token.to_string());
             continue;
         }

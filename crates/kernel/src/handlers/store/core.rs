@@ -304,7 +304,9 @@ pub fn store_decision_legacy(
                 crate::handlers::recall::jaccard_path_sets(&incoming, candidate_paths)
             });
         }
-        Err(_) => recent_candidates.clear(),
+        Err(err) => {
+            return Err(StoreError::Internal(err));
+        }
     }
     let mut recent_scan = scan_recent_decision_candidates(
         &recent_candidates,

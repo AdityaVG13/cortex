@@ -413,7 +413,21 @@ pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconci
 /// only deliverable when no erasure happened after it. Stronger deployments
 /// serialize this check; disconnected replicas get no instant-revocation claim.
 pub fn fence_check(conn: &Connection, through_sequence: i64) -> Result<(), Value> {
-    let floor = erasure_floor(conn);
+    let floor = match conn.query_row(
+        "SELECT erasure_floor FROM brain_meta WHERE singleton = 1",
+        [],
+        |r| r.get::<_, String>(0),
+    ) {
+        Ok(raw) => raw.parse::<i64>().map_err(|_| {
+            json!({"status": "unavailable", "error": "erasure floor is not an integer"})
+        })?,
+        Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+        Err(_) => {
+            return Err(
+                json!({"status": "unavailable", "error": "erasure floor unreadable"}),
+            );
+        }
+    };
     if through_sequence < floor {
         Err(
             json!({"status": "resnapshot_required", "error": "revocation fence: an erasure happened after this View was minted", "erasure_floor": floor, "through_sequence": through_sequence}),

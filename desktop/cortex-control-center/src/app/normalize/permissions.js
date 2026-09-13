@@ -7,7 +7,14 @@ function normalizePermissionGrant(entry, index) { const client = String(pickDefi
     grantedAt = String(pickDefined(entry?.grantedAt, entry?.granted_at, "") || "");
   return { key: `${client}-${permission}-${scope}-${index}`, client, permission, scope, grantedBy, grantedAt, };
 }
-function normalizePermissionPayload(payload) { return (Array.isArray(payload?.grants) ? payload.grants : []).map((entry, index) =>
-    normalizePermissionGrant(entry, index), );
+function normalizePermissionPayload(payload) {
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.permissions)
+      ? payload.permissions
+      : Array.isArray(payload?.grants)
+        ? payload.grants
+        : [];
+  return rows.map((entry, index) => normalizePermissionGrant(entry, index));
 }
 export { normalizePermissionPayload };

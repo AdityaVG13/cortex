@@ -279,7 +279,11 @@ fn classify_token(token: &str, push: &mut impl FnMut(AnchorKind, &str, u8)) {
         return;
     }
     if let Some((left, right)) = stripped.split_once("::") {
-        if left.contains('/') && left.len() > 3 && !left.starts_with("http") {
+        if left.contains('/')
+            && left.len() > 3
+            && !left.starts_with("http://")
+            && !left.starts_with("https://")
+        {
             push_path_anchor(left, push);
             if !right.is_empty() {
                 push(AnchorKind::Symbol, right, 3);
@@ -295,7 +299,11 @@ fn classify_token(token: &str, push: &mut impl FnMut(AnchorKind, &str, u8)) {
         }
         return;
     }
-    if stripped.contains('/') && stripped.len() > 3 && !stripped.starts_with("http") {
+    if stripped.contains('/')
+        && stripped.len() > 3
+        && !stripped.starts_with("http://")
+        && !stripped.starts_with("https://")
+    {
         push_path_anchor(stripped, push);
         return;
     }

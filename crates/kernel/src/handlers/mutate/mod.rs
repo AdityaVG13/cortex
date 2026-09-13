@@ -169,6 +169,32 @@ pub fn resolve_decision_with_metadata(
         if other_updated == 0 {
             return Err(format!("decision `{other}` was not found"));
         }
+        tx.execute(
+            "UPDATE decision_conflicts
+             SET status = 'user_resolved',
+                 resolution_strategy = ?3,
+                 resolved_by = 'user',
+                 resolved_at = datetime('now')
+             WHERE status = 'open'
+               AND (
+                 (source_decision_id = ?1 AND target_decision_id = ?2)
+                 OR (source_decision_id = ?2 AND target_decision_id = ?1)
+               )",
+            params![keep_id, other, action],
+        )
+        .map_err(|err| err.to_string())?;
+    } else {
+        tx.execute(
+            "UPDATE decision_conflicts
+             SET status = 'user_resolved',
+                 resolution_strategy = ?2,
+                 resolved_by = 'user',
+                 resolved_at = datetime('now')
+             WHERE status = 'open'
+               AND (source_decision_id = ?1 OR target_decision_id = ?1)",
+            params![keep_id, action],
+        )
+        .map_err(|err| err.to_string())?;
     }
     tx.commit().map_err(|err| err.to_string())?;
     Ok(

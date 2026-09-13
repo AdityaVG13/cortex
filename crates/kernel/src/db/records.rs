@@ -305,13 +305,21 @@ pub fn heads(conn: &Connection, record_id: &str) -> rusqlite::Result<Vec<String>
 }
 
 pub fn revision_body(conn: &Connection, revision_id: &str) -> rusqlite::Result<Option<Value>> {
-    conn.query_row(
-        "SELECT body_json FROM revisions WHERE revision_id = ?1",
-        params![revision_id],
-        |r| r.get::<_, String>(0),
-    )
-    .optional()
-    .map(|opt| opt.and_then(|s| serde_json::from_str(&s).ok()))
+    let raw = conn
+        .query_row(
+            "SELECT body_json FROM revisions WHERE revision_id = ?1",
+            params![revision_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    match raw {
+        None => Ok(None),
+        Some(s) => serde_json::from_str(&s).map(Some).map_err(|err| {
+            rusqlite::Error::InvalidParameterName(format!(
+                "revision `{revision_id}` body is not valid JSON: {err}"
+            ))
+        }),
+    }
 }
 
 /// A resolution names the heads it considered, its authority and rationale;
