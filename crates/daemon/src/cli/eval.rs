@@ -62,6 +62,21 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
         }
     };
     let mut snapshot = eval::build_eval_snapshot(&conn, window_days);
+    if snapshot.get("ok").and_then(Value::as_bool) != Some(true) {
+        if json_output {
+            match serde_json::to_string_pretty(&snapshot) {
+                Ok(encoded) => println!("{encoded}"),
+                Err(err) => eprintln!("Failed to serialize eval snapshot: {err}"),
+            }
+        } else {
+            let error = snapshot
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("eval snapshot unavailable");
+            eprintln!("Eval snapshot failed: {error}");
+        }
+        std::process::exit(1);
+    }
     let regression_gate = baseline_file.as_deref().map(|path| {
         let baseline_raw = read_eval_baseline(path);
         let baseline_json: Value = serde_json::from_str(&baseline_raw).unwrap_or_else(|err| {
