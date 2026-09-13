@@ -1,6 +1,11 @@
 use crate::compaction::MaintenanceFailure;
 use crate::handlers::feedback;
 use rusqlite::{params, Connection};
+
+/// Blank TEXT is not NULL. `COALESCE(updated_at, created_at)` sticks on `''`,
+/// `julianday('')` is NULL, and the age predicate never matches -- so those
+/// rows skip every tier, including expired-but-still-`active` ones. Fall
+/// through the first non-blank stamp instead of treating blank as unbounded.
 const FRESH_DAYS: i64 = 3;
 const RECENT_DAYS: i64 = 14;
 const OLD_DAYS: i64 = 60;
@@ -102,7 +107,7 @@ fn age_memories_to_recent(conn: &Connection, failures: &mut Vec<MaintenanceFailu
         "SELECT id, text, source FROM memories \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'fresh' \
-         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
         FRESH_DAYS,
         |row| {
             Ok((
@@ -138,7 +143,7 @@ fn age_memories_to_old(conn: &Connection, failures: &mut Vec<MaintenanceFailure>
         "SELECT id, text, source FROM memories \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'recent' \
-         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
         RECENT_DAYS,
         |row| {
             Ok((
@@ -174,7 +179,7 @@ fn archive_ancient_memories(conn: &Connection, failures: &mut Vec<MaintenanceFai
         "UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'old' \
-         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
         params![OLD_DAYS],
     )
 }
@@ -186,7 +191,7 @@ fn age_decisions_to_recent(conn: &Connection, failures: &mut Vec<MaintenanceFail
         "SELECT id, decision, context FROM decisions \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'fresh' \
-         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
         FRESH_DAYS,
         |row| {
             Ok((
@@ -221,7 +226,7 @@ fn age_decisions_to_old(conn: &Connection, failures: &mut Vec<MaintenanceFailure
         "SELECT id, decision, context FROM decisions \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'recent' \
-         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
         RECENT_DAYS,
         |row| {
             Ok((
@@ -256,7 +261,7 @@ fn archive_ancient_decisions(conn: &Connection, failures: &mut Vec<MaintenanceFa
         "UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'old' \
-         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
         params![OLD_DAYS],
     )
 }
@@ -323,7 +328,7 @@ fn gc_low_score(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> us
          WHERE status = 'active' AND pinned = 0 \
          AND COALESCE(retention_class, 'operational') != 'durable' \
          AND score < ?1 \
-         AND julianday('now') - julianday(COALESCE(last_accessed, created_at)) > ?2",
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), ''))) > ?2",
         params![GC_SCORE_THRESHOLD, GC_MIN_DAYS],
     );
     count += exec_counted(
@@ -334,7 +339,7 @@ fn gc_low_score(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> us
          WHERE status = 'active' AND pinned = 0 \
          AND COALESCE(retention_class, 'operational') != 'durable' \
          AND score < ?1 \
-         AND julianday('now') - julianday(COALESCE(last_accessed, created_at)) > ?2",
+         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), ''))) > ?2",
         params![GC_SCORE_THRESHOLD, GC_MIN_DAYS],
     );
     if count > 0 {

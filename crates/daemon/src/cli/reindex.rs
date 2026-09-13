@@ -58,6 +58,11 @@ pub async fn run_recrystallize_cli(cx: &asupersync::Cx, paths: &auth::CortexPath
             .query_row("SELECT COUNT(*) FROM embeddings WHERE target_type = 'crystal'", [], |row| row.get::<_, i64>(0))
             .unwrap_or(0);
         let removed_embeddings = 0usize;
+        // `cluster_members` has no FK to `memory_clusters`. Deleting only
+        // clusters leaves member rows that still exclude those targets from
+        // `scan_candidates`, so recrystallize would no-op on already-clustered
+        // rows. Clear members first; crystals have no cascade.
+        let removed_members = conn.execute("DELETE FROM cluster_members", []).unwrap_or(0);
         let removed_crystals = conn.execute("DELETE FROM memory_clusters", []).unwrap_or(0);
         let brain_sender = Some(state.brain_firing.clone());
         let pass = match crystallize::run_crystallize_pass_with_brain(cx, &conn, state.default_owner_id, &brain_sender) {
@@ -73,7 +78,7 @@ pub async fn run_recrystallize_cli(cx: &asupersync::Cx, paths: &auth::CortexPath
             .query_row("SELECT COUNT(*) FROM embeddings WHERE target_type = 'crystal'", [], |row| row.get::<_, i64>(0))
             .unwrap_or(0);
         json!({"recrystallized":true,"owner_filter":state.default_owner_id,"removed":{"crystals":removed_crystals,"members":
-members_before,"embeddings":removed_embeddings},"before":{"crystals":crystals_before,"members":members_before,"embeddings":
+removed_members,"embeddings":removed_embeddings},"before":{"crystals":crystals_before,"members":members_before,"embeddings":
 embeddings_before},"pass":{"clusters_found":pass.clusters_found,"crystals_created":pass.crystals_created,"crystals_updated":pass.
 crystals_updated,"entries_consolidated":pass.entries_consolidated},"after":{"crystals":crystals_after,"members":members_after,
 "embeddings":embeddings_after}})
