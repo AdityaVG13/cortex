@@ -200,8 +200,12 @@ fn is_error_code(t: &str) -> bool {
         || (u.starts_with("TS") && u.len() >= 5 && u[2..].chars().all(|c| c.is_ascii_digit()))
 }
 
+/// True when `token` is a command name, not a substring of a longer
+/// identifier. Hyphen splits so `vue-tsc` still matches `tsc` while
+/// `tsconfig.json` does not; `.` stays inside a token so `clippy.toml`
+/// does not match `clippy`. Same class as cmake vs `make`.
 fn cmd_has_token(cmd: &str, token: &str) -> bool {
-    cmd.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
+    cmd.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
         .any(|part| part == token)
 }
 
@@ -211,8 +215,8 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
     let mut checks = Vec::new();
     let ok = exit_status.map(|c| c == 0);
     if cmd.contains("cargo test")
-        || cmd.contains("pytest")
-        || cmd.contains("vitest")
+        || cmd_has_token(&cmd, "pytest")
+        || cmd_has_token(&cmd, "vitest")
         || cmd.contains("npm test")
         || cmd.contains("bun test")
         || out.contains("test result:")
@@ -231,9 +235,9 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
         });
     }
     if cmd.contains("cargo check")
-        || cmd.contains("tsc")
-        || cmd.contains("mypy")
-        || cmd.contains("typecheck")
+        || cmd_has_token(&cmd, "tsc")
+        || cmd_has_token(&cmd, "mypy")
+        || cmd_has_token(&cmd, "typecheck")
     {
         checks.push(TypedCheck {
             kind: CheckKind::Typecheck,
@@ -242,10 +246,10 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
             failed_count: None,
         });
     }
-    if cmd.contains("clippy")
-        || cmd.contains("eslint")
-        || cmd.contains("ruff")
-        || cmd.contains(" lint")
+    if cmd_has_token(&cmd, "clippy")
+        || cmd_has_token(&cmd, "eslint")
+        || cmd_has_token(&cmd, "ruff")
+        || cmd_has_token(&cmd, "lint")
     {
         checks.push(TypedCheck {
             kind: CheckKind::Lint,
@@ -266,7 +270,7 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
             failed_count: None,
         });
     }
-    if cmd.contains("cargo fmt") || cmd.contains("prettier") || cmd.contains("black ") {
+    if cmd.contains("cargo fmt") || cmd_has_token(&cmd, "prettier") || cmd_has_token(&cmd, "black") {
         checks.push(TypedCheck {
             kind: CheckKind::Format,
             passed: ok.unwrap_or(true),
@@ -367,6 +371,24 @@ mod tests {
             make.checks.iter().any(|c| c.kind == CheckKind::Build && !c.passed),
             "{:?}",
             make.checks
+        );
+        let tsconfig = parse_tool_result("Bash", Some("cat tsconfig.json"), "{ \"compilerOptions\": {} }", Some(0));
+        assert!(
+            tsconfig.checks.iter().all(|c| c.kind != CheckKind::Typecheck),
+            "tsconfig is not a tsc invocation: {:?}",
+            tsconfig.checks
+        );
+        let tsc = parse_tool_result("Bash", Some("npx tsc --noEmit"), "error TS2304: Cannot find name 'x'.", Some(1));
+        assert!(
+            tsc.checks.iter().any(|c| c.kind == CheckKind::Typecheck && !c.passed),
+            "{:?}",
+            tsc.checks
+        );
+        let vue_tsc = parse_tool_result("Bash", Some("npx vue-tsc --noEmit"), "Found 0 errors", Some(0));
+        assert!(
+            vue_tsc.checks.iter().any(|c| c.kind == CheckKind::Typecheck && c.passed),
+            "vue-tsc is a tsc wrapper: {:?}",
+            vue_tsc.checks
         );
     }
 }
