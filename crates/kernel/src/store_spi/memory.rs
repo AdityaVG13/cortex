@@ -83,17 +83,38 @@ impl ReadSnapshot for MemorySnapshot {
         let after = continuation.unwrap_or("");
         let mut rows = Vec::new();
         let mut examined = 0u64;
+        let mut bytes = 0u64;
         let mut truncated = false;
-        for (key, row) in self.rows.iter().filter(|(k, _)| k.as_str() > after) {
+        if limits.rows == 0 {
+            return Ok(Page {
+                rows,
+                coverage: Coverage {
+                    frontier: self.frontier.clone(),
+                    exhausted: true,
+                    rows_examined: 0,
+                    continuation: None,
+                },
+            });
+        }
+        for (_key, row) in self.rows.iter().filter(|(k, _)| k.as_str() > after) {
             examined += 1;
+            if !predicate_ok(predicate, row) {
+                continue;
+            }
             if rows.len() as u32 >= limits.rows {
                 truncated = true;
                 break;
             }
-            if predicate_ok(predicate, row) {
-                rows.push(row.clone());
+            let text_len = row.body["text"].as_str().map(|t| t.len() as u64).unwrap_or(0);
+            if bytes.saturating_add(text_len) > limits.bytes && limits.bytes > 0 {
+                if rows.is_empty() {
+                    continue;
+                }
+                truncated = true;
+                break;
             }
-            let _ = key;
+            bytes = bytes.saturating_add(text_len);
+            rows.push(row.clone());
         }
         let continuation = if truncated {
             rows.last().map(|r| r.id.canonical())

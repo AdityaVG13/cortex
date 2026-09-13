@@ -26,7 +26,7 @@ pub fn store_decision_with_ttl(
     // redacted inside store_decision_internal.
     let decision = crate::handlers::redact_secrets(decision.trim());
     let provenance = DecisionProvenance::from_fields(&source_agent, None, None);
-    let result = store_decision_internal(
+    let (entry, id) = store_decision_internal(
         conn,
         &decision,
         context.clone(),
@@ -40,31 +40,32 @@ pub fn store_decision_with_ttl(
         owner_id,
         &[],
     )
-    .map_err(|err| err.to_string());
-    if let Ok((ref entry, id)) = result {
-        let target_id = id.or_else(|| entry.get("id").and_then(|v| v.as_i64()));
-        if let Some(target_id) = target_id {
-            crate::graph::ingest_for_target(
-                conn,
-                &decision,
-                "decision",
-                Some(target_id),
-                None,
-                owner_id,
-            );
-            let extra = Vec::new();
-            let _ = crate::clockwork::project_target(
-                conn,
-                &decision,
-                &extra,
-                "decision",
-                target_id,
-                crate::clockwork::ClockOrigin::DeterministicExtract,
-                None,
-            );
-        }
+    .map_err(|err| err.to_string())?;
+    let target_id = id
+        .or_else(|| entry.get("id").and_then(|v| v.as_i64()))
+        .or_else(|| entry.get("target_id").and_then(|v| v.as_i64()));
+    if let Some(target_id) = target_id {
+        crate::graph::ingest_for_target(
+            conn,
+            &decision,
+            "decision",
+            Some(target_id),
+            None,
+            owner_id,
+        );
+        let extra = Vec::new();
+        crate::clockwork::project_target(
+            conn,
+            &decision,
+            &extra,
+            "decision",
+            target_id,
+            crate::clockwork::ClockOrigin::DeterministicExtract,
+            None,
+        )
+        .map_err(|err| format!("clock projection failed for {target_id}: {err}"))?;
     }
-    result
+    Ok((entry, id))
 }
 #[allow(clippy::too_many_arguments, dead_code)]
 pub fn store_decision_with_input_embedding(

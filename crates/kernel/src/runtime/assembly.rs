@@ -933,6 +933,22 @@ impl CortexRuntime {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|err| err.to_string())?;
+        // Retractions are a global (origin, event) tombstone. A missing row
+        // would let any principal poison a key before the owner records it;
+        // a row owned by someone else is not this caller's feedback.
+        let owner: Option<String> = tx
+            .query_row(
+                "SELECT principal FROM learning_events WHERE origin=?1 AND origin_event_id=?2",
+                params![origin, origin_event_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        match owner {
+            None => return Err("learning_event_missing".into()),
+            Some(owner) if owner != principal => return Err("feedback_not_authorized".into()),
+            Some(_) => {}
+        }
         let sequence = records::append_commit(
             &tx,
             &principal,
@@ -956,6 +972,27 @@ impl CortexRuntime {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|err| err.to_string())?;
+        let learned: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM learning_events e
+                 JOIN learning_dependencies d ON d.origin=e.origin AND d.origin_event_id=e.origin_event_id
+                 WHERE d.source_id=?1 AND e.principal=?2",
+                params![source_id, principal],
+                |row| row.get(0),
+            )
+            .map_err(|err| err.to_string())?;
+        let observed: i64 = match tx.query_row(
+            "SELECT COUNT(*) FROM observation_events WHERE source_id=?1 AND principal=?2",
+            params![source_id, principal],
+            |row| row.get(0),
+        ) {
+            Ok(count) => count,
+            Err(err) if err.to_string().contains("no such table") => 0,
+            Err(err) => return Err(err.to_string()),
+        };
+        if learned + observed == 0 {
+            return Err("learning_source_not_owned".into());
+        }
         let sequence = records::append_commit(
             &tx,
             &principal,
@@ -970,10 +1007,16 @@ impl CortexRuntime {
         )
         .map_err(|err| err.to_string())?;
         let mut stmt = tx
-            .prepare("SELECT origin,origin_event_id FROM learning_dependencies WHERE source_id=?1")
+            .prepare(
+                "SELECT e.origin,e.origin_event_id FROM learning_dependencies d
+                 JOIN learning_events e ON e.origin=d.origin AND e.origin_event_id=d.origin_event_id
+                 WHERE d.source_id=?1 AND e.principal=?2",
+            )
             .map_err(|err| err.to_string())?;
         let keys = stmt
-            .query_map(params![source_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map(params![source_id, principal], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|err| err.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| err.to_string())?;

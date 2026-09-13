@@ -263,7 +263,10 @@ merged_count,"quality":quality,});
             Some("deduplicated_merge"),
         )),
     );
-    Ok((entry, None))
+    // The existing row is the store target: deposit must project clock,
+    // graph, and a successor revision onto it. Returning None dropped
+    // those side effects even though the merge wrote context.
+    Ok((entry, Some(target_id)))
 }
 #[allow(clippy::too_many_arguments)]
 pub fn handle_refinement_policy(

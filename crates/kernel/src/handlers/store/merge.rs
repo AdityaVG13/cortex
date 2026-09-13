@@ -104,7 +104,7 @@ incoming_text,"similarity":similarity,"jaccard":jaccard,"source_agent":source_ag
     Ok((
         json!({"action":"merged","target_id":target_id,
 "merged_count":merged_count,"quality":quality,"similarity":similarity,"jaccard":jaccard,}),
-        None,
+        Some(target_id),
     ))
 }
 pub fn merge_context(
