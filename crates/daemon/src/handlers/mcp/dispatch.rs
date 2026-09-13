@@ -7,7 +7,7 @@ use cortex_kernel::handlers::feedback::{build_agent_feedback_stats_payload, reco
 use cortex_kernel::handlers::mutate::{grant_permission, list_permissions, revoke_permission};
 use cortex_kernel::handlers::recall::{execute_semantic_recall, execute_unified_recall, RecallContext};
 
-use super::{arg_i64, arg_str, arg_usize, enforce_client_permission, fetch_last_call};
+use super::{arg_i64, arg_str, arg_usize, enforce_client_permission, fetch_last_call, normalize_permission_client_id};
 
 fn require_arg<'a>(args: &'a Value, keys: &[&str], label: &str) -> Result<&'a str, String> {
     arg_str(args, keys).ok_or_else(|| format!("Missing required argument: {label}"))
@@ -77,19 +77,19 @@ pub(crate) async fn mcp_dispatch(
             list_permissions(&conn, owner_id).map(|permissions| json!({"permissions":permissions}))
         }
         "cortex_permissions_grant" => {
-            let client = require_arg(args, &["client", "client_id"], "client")?;
+            let client = normalize_permission_client_id(require_arg(args, &["client", "client_id"], "client")?);
             let permission = require_arg(args, &["permission"], "permission")?;
             let scope = arg_str(args, &["scope"]).unwrap_or("*");
             let conn = state.db.lock(cx).await.map_err(|err| err.to_string())?;
-            grant_permission(&conn, owner_id, client, permission, scope, arg_str(args, &["grantedBy", "granted_by"]).unwrap_or("mcp"))?;
+            grant_permission(&conn, owner_id, &client, permission, scope, arg_str(args, &["grantedBy", "granted_by"]).unwrap_or("mcp"))?;
             Ok(json!({"granted":true,"client":client,"permission":permission,"scope":scope}))
         }
         "cortex_permissions_revoke" => {
-            let client = require_arg(args, &["client", "client_id"], "client")?;
+            let client = normalize_permission_client_id(require_arg(args, &["client", "client_id"], "client")?);
             let permission = require_arg(args, &["permission"], "permission")?;
             let scope = arg_str(args, &["scope"]).unwrap_or("*");
             let conn = state.db.lock(cx).await.map_err(|err| err.to_string())?;
-            revoke_permission(&conn, owner_id, client, permission, scope).map(|revoked| json!({"revoked":revoked}))
+            revoke_permission(&conn, owner_id, &client, permission, scope).map(|revoked| json!({"revoked":revoked}))
         }
         "cortex_lastCall" => {
             let conn = state.db_read.lock(cx).await.map_err(|err| err.to_string())?;

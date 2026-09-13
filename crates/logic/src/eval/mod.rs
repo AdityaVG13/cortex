@@ -67,7 +67,7 @@ fn collect_task_metrics(
     let mut stmt = match conn.prepare(
         "SELECT task_class, outcome, retries, latency_ms
          FROM agent_feedback
-         WHERE created_at >= datetime('now', ?1)",
+         WHERE julianday(created_at) >= julianday('now', ?1)",
     ) {
         Ok(stmt) => stmt,
         Err(_) => return (baseline, assisted),
@@ -133,20 +133,20 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
         .unwrap_or(0);
     let recent_conflicts: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM events WHERE type = 'decision_conflict' AND created_at >= datetime('now', ?1)",
+            "SELECT COUNT(*) FROM events WHERE type = 'decision_conflict' AND julianday(created_at) >= julianday('now', ?1)",
             params![since_modifier.as_str()],
             |row| row.get(0),
         )
         .unwrap_or(0);
     let recent_resolutions: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM events WHERE type = 'decision_resolve' AND created_at >= datetime('now', ?1)",
+            "SELECT COUNT(*) FROM events WHERE type = 'decision_resolve' AND julianday(created_at) >= julianday('now', ?1)",
             params![since_modifier.as_str()],
             |row| row.get(0),
         )
         .unwrap_or(0);
     let recent_recalls: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events WHERE type = 'recall_query' AND created_at >= datetime('now', ?1)", params![since_modifier.as_str()], |row| {
+        .query_row("SELECT COUNT(*) FROM events WHERE type = 'recall_query' AND julianday(created_at) >= julianday('now', ?1)", params![since_modifier.as_str()], |row| {
             row.get(0)
         })
         .unwrap_or(0);
@@ -156,7 +156,7 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
              WHERE status = 'active'
                AND retrievals > 0
                AND last_accessed IS NOT NULL
-               AND last_accessed >= datetime('now', ?1)",
+               AND julianday(last_accessed) >= julianday('now', ?1)",
             params![since_modifier.as_str()],
             |row| row.get(0),
         )
@@ -167,8 +167,8 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
              WHERE status = 'active'
                AND retrievals > 0
                AND last_accessed IS NOT NULL
-               AND last_accessed >= datetime('now', ?1)
-               AND (score < 0.5 OR (expires_at IS NOT NULL AND expires_at <= datetime('now')))",
+               AND julianday(last_accessed) >= julianday('now', ?1)
+               AND (score < 0.5 OR (expires_at IS NOT NULL AND TRIM(expires_at) != '' AND julianday(expires_at) <= julianday('now')))",
             params![since_modifier.as_str()],
             |row| row.get(0),
         )
@@ -180,12 +180,12 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
                  WHERE status = 'active'
                    AND retrievals > 0
                    AND last_accessed IS NOT NULL
-                   AND last_accessed >= datetime('now', ?1))
+                   AND julianday(last_accessed) >= julianday('now', ?1))
               + (SELECT COUNT(*) FROM decisions
                  WHERE status = 'active'
                    AND retrievals > 0
                    AND last_accessed IS NOT NULL
-                   AND last_accessed >= datetime('now', ?1))",
+                   AND julianday(last_accessed) >= julianday('now', ?1))",
             params![since_modifier.as_str()],
             |row| row.get(0),
         )
@@ -197,13 +197,13 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
                  WHERE status = 'active'
                    AND retrievals > 0
                    AND last_accessed IS NOT NULL
-                   AND last_accessed >= datetime('now', ?1)
+                   AND julianday(last_accessed) >= julianday('now', ?1)
                    AND trust_score < 0.5)
               + (SELECT COUNT(*) FROM decisions
                  WHERE status = 'active'
                    AND retrievals > 0
                    AND last_accessed IS NOT NULL
-                   AND last_accessed >= datetime('now', ?1)
+                   AND julianday(last_accessed) >= julianday('now', ?1)
                    AND trust_score < 0.5)",
             params![since_modifier.as_str()],
             |row| row.get(0),
@@ -214,7 +214,7 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
             "SELECT COALESCE(SUM(CAST(json_extract(data, '$.promoted') AS INTEGER)), 0)
              FROM events
              WHERE type = 'consensus'
-               AND created_at >= datetime('now', ?1)
+               AND julianday(created_at) >= julianday('now', ?1)
                AND json_extract(data, '$.action') = 'promoted'",
             params![since_modifier.as_str()],
             |row| row.get(0),
@@ -225,7 +225,7 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
             "SELECT COALESCE(SUM(CAST(json_extract(data, '$.failed') AS INTEGER)), 0)
              FROM events
              WHERE type = 'consensus'
-               AND created_at >= datetime('now', ?1)
+               AND julianday(created_at) >= julianday('now', ?1)
                AND json_extract(data, '$.action') = 'failed'",
             params![since_modifier.as_str()],
             |row| row.get(0),

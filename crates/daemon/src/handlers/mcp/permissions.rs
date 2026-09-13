@@ -40,7 +40,11 @@ pub(crate) fn required_permission_for_tool(tool_name: &str) -> Option<ClientPerm
     }
 }
 pub(crate) fn normalize_permission_client_id(raw: &str) -> String {
-    let before_model = raw.split('(').next().unwrap_or(raw).trim().to_ascii_lowercase();
+    let trimmed = raw.trim();
+    if trimmed == "*" {
+        return "*".to_string();
+    }
+    let before_model = trimmed.split('(').next().unwrap_or(trimmed).trim().to_ascii_lowercase();
     let normalized: String = before_model.chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_').collect();
     if normalized.is_empty() {
         "mcp".to_string()
@@ -70,16 +74,22 @@ pub(crate) fn has_client_permission(
     }
     let mut stmt = conn
         .prepare(
-            "SELECT permission FROM client_permissions
+            "SELECT client_id, permission FROM client_permissions
              WHERE owner_id = ?1
-               AND (client_id = ?2 OR client_id = '*')
-               AND (scope = ?3 OR scope = '*')",
+               AND (scope = ?2 OR scope = '*')",
         )
         .map_err(|err| err.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params![owner_id, client_id, scope], |row| row.get::<_, String>(0))
+        .query_map(rusqlite::params![owner_id, scope], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|err| err.to_string())?;
-    for granted in rows.flatten() {
+    for row in rows {
+        let (stored_client, granted) = row.map_err(|err| err.to_string())?;
+        let stored_norm = normalize_permission_client_id(&stored_client);
+        if stored_client != "*" && stored_norm != client_id && stored_client != client_id {
+            continue;
+        }
         if permission_satisfies(granted.trim(), required) {
             return Ok(true);
         }

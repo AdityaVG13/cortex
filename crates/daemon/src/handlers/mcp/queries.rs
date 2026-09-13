@@ -42,14 +42,14 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
                      json_object('text', text, 'source', source, 'type', type) AS detail,
                      owner_id, visibility
               FROM memories
-              WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))
+              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
               UNION ALL
               SELECT 'decision' AS kind, id, created_at, source_agent,
                      substr(decision, 1, 240) AS summary,
                      json_object('decision', decision, 'context', context, 'type', type) AS detail,
                      owner_id, visibility
               FROM decisions
-              WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))
+              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
               UNION ALL
               SELECT 'event' AS kind, id, created_at, source_agent,
                      substr(COALESCE(data, type), 1, 240) AS summary,
@@ -58,7 +58,7 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
               FROM events
             )
             WHERE (?1 = 'any' OR kind = ?1)
-            ORDER BY CAST(strftime('%s', created_at) AS INTEGER) DESC, id DESC
+            ORDER BY julianday(created_at) DESC, id DESC
             LIMIT 32
         "
     } else {
@@ -70,14 +70,14 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
                      json_object('text', text, 'source', source, 'type', type) AS detail,
                      NULL AS owner_id, NULL AS visibility
               FROM memories
-              WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))
+              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
               UNION ALL
               SELECT 'decision' AS kind, id, created_at, source_agent,
                      substr(decision, 1, 240) AS summary,
                      json_object('decision', decision, 'context', context, 'type', type) AS detail,
                      NULL AS owner_id, NULL AS visibility
               FROM decisions
-              WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))
+              WHERE status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now'))
               UNION ALL
               SELECT 'event' AS kind, id, created_at, source_agent,
                      substr(COALESCE(data, type), 1, 240) AS summary,
@@ -86,7 +86,7 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
               FROM events
             )
             WHERE (?1 = 'any' OR kind = ?1)
-            ORDER BY CAST(strftime('%s', created_at) AS INTEGER) DESC, id DESC
+            ORDER BY julianday(created_at) DESC, id DESC
             LIMIT 32
         "
     };
@@ -105,8 +105,9 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
             ))
         })
         .map_err(|err| err.to_string())?;
-    for row in rows.flatten() {
-        let (row_kind, id, created_at, source_agent, summary, detail, owner_id, visibility) = row;
+    for row in rows {
+        let (row_kind, id, created_at, source_agent, summary, detail, owner_id, visibility) =
+            row.map_err(|err| err.to_string())?;
         if let Some(filter) = agent_filter.as_deref() {
             let current = source_agent.as_deref().map(str::to_lowercase).unwrap_or_default();
             if current != filter {

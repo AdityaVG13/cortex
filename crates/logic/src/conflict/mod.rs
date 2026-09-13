@@ -212,7 +212,7 @@ pub fn fetch_recent_decision_candidates(
                      FROM decisions \
                      WHERE owner_id = ?1 \
                      AND status = 'active' \
-                     AND (expires_at IS NULL OR expires_at > datetime('now')) \
+                     AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
                      ORDER BY id DESC \
                      LIMIT 50 \
                  ) \
@@ -223,8 +223,8 @@ pub fn fetch_recent_decision_candidates(
                      FROM decisions \
                      WHERE owner_id = ?1 \
                      AND status = 'active' \
-                     AND (expires_at IS NULL OR expires_at > datetime('now')) \
-                     ORDER BY created_at DESC \
+                     AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+                     ORDER BY julianday(created_at) DESC \
                      LIMIT 50 \
                  ) \
              ) \
@@ -241,7 +241,7 @@ pub fn fetch_recent_decision_candidates(
                      SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) AS trust_score \
                      FROM decisions \
                      WHERE status = 'active' \
-                     AND (expires_at IS NULL OR expires_at > datetime('now')) \
+                     AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
                      ORDER BY id DESC \
                      LIMIT 50 \
                  ) \
@@ -251,8 +251,8 @@ pub fn fetch_recent_decision_candidates(
                      SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) AS trust_score \
                      FROM decisions \
                      WHERE status = 'active' \
-                     AND (expires_at IS NULL OR expires_at > datetime('now')) \
-                     ORDER BY created_at DESC \
+                     AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+                     ORDER BY julianday(created_at) DESC \
                      LIMIT 50 \
                  ) \
              ) \
@@ -278,15 +278,15 @@ pub fn fetch_recent_decision_candidates(
         let candidates = stmt
             .query_map([owner_id.unwrap_or_default()], map_candidate)
             .map_err(|error| format!("Failed to query recent decisions: {error}"))?
-            .filter_map(|row| row.ok())
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to query recent decisions: {error}"))?;
         Ok(candidates)
     } else {
         let candidates = stmt
             .query_map([], map_candidate)
             .map_err(|error| format!("Failed to query recent decisions: {error}"))?
-            .filter_map(|row| row.ok())
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to query recent decisions: {error}"))?;
         Ok(candidates)
     }
 }
@@ -353,7 +353,7 @@ pub fn detect_conflict(
              FROM decisions \
              WHERE owner_id = ?1 \
              AND status = 'active' \
-             AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
              ORDER BY id DESC \
              LIMIT 50",
             true,
@@ -363,7 +363,7 @@ pub fn detect_conflict(
             "SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) \
              FROM decisions \
              WHERE status = 'active' \
-             AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
              ORDER BY id DESC \
              LIMIT 50",
             false,
@@ -382,8 +382,8 @@ pub fn detect_conflict(
             })
         })
         .map_err(|e| format!("Failed to query decisions: {e}"))?
-        .filter_map(|r| r.ok())
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to query decisions: {e}"))?
     } else {
         stmt.query_map([], |row| {
             Ok(DecisionCandidate {
@@ -394,8 +394,8 @@ pub fn detect_conflict(
             })
         })
         .map_err(|e| format!("Failed to query decisions: {e}"))?
-        .filter_map(|r| r.ok())
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to query decisions: {e}"))?
     };
     let incoming_tokens = jaccard_token_set(decision);
     let mut candidate_tokens = FxHashSet::with_capacity_and_hasher(16, FxBuildHasher);

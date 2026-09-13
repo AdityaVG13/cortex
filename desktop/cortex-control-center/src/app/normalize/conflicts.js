@@ -8,7 +8,7 @@ function toFiniteNumber(value) { const numeric = Number(value);
 function normalizeConflictClassification(value) { const normalized = String(value || "")
     .trim()
     .toUpperCase();
-  return normalized ? (CONFLICT_CLASSIFICATIONS.has(normalized), normalized) : "UNSPECIFIED";
+  return CONFLICT_CLASSIFICATIONS.has(normalized) ? normalized : "UNSPECIFIED";
 }
 function normalizeConflictStatus(value) { const normalized = String(value || "")
     .trim()

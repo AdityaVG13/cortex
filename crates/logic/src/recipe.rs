@@ -289,6 +289,13 @@ impl RecipeResult {
     }
 }
 
+fn rows_for(rows_by_id: &BTreeMap<String, Vec<Fact>>, input: &str) -> Result<Vec<Fact>, RecipeError> {
+    rows_by_id
+        .get(input)
+        .cloned()
+        .ok_or_else(|| RecipeError::UnknownInput(input.to_string()))
+}
+
 pub fn evaluate(
     snapshot: &Snapshot,
     scope: &str,
@@ -370,7 +377,7 @@ pub fn evaluate(
                 field,
                 predicate,
             } => {
-                let rows = rows_by_id.get(input).cloned().unwrap_or_default();
+                let rows = rows_for(&rows_by_id, input)?;
                 spend(rows.len(), &mut work)?;
                 rows_by_id.insert(
                     id.clone(),
@@ -385,8 +392,8 @@ pub fn evaluate(
                 right,
                 on,
             } => {
-                let l = rows_by_id.get(left).cloned().unwrap_or_default();
-                let r = rows_by_id.get(right).cloned().unwrap_or_default();
+                let l = rows_for(&rows_by_id, left)?;
+                let r = rows_for(&rows_by_id, right)?;
                 spend(l.len() * r.len().max(1), &mut work)?;
                 let mut out = Vec::new();
                 for a in &l {
@@ -414,7 +421,7 @@ pub fn evaluate(
                 rows_by_id.insert(id.clone(), out);
             }
             Step::Project { id, input, fields } => {
-                let rows = rows_by_id.get(input).cloned().unwrap_or_default();
+                let rows = rows_for(&rows_by_id, input)?;
                 spend(rows.len(), &mut work)?;
                 let projected: Vec<Value> = rows
                     .iter()
@@ -432,7 +439,7 @@ pub fn evaluate(
                 valid_at,
                 known_seq,
             } => {
-                let rows = rows_by_id.get(input).cloned().unwrap_or_default();
+                let rows = rows_for(&rows_by_id, input)?;
                 spend(rows.len(), &mut work)?;
                 rows_by_id.insert(
                     id.clone(),
@@ -451,8 +458,8 @@ pub fn evaluate(
                 right,
                 fields,
             } => {
-                let l = rows_by_id.get(left).cloned().unwrap_or_default();
-                let r = rows_by_id.get(right).cloned().unwrap_or_default();
+                let l = rows_for(&rows_by_id, left)?;
+                let r = rows_for(&rows_by_id, right)?;
                 spend(l.len() + r.len(), &mut work)?;
                 let mut diffs = Vec::new();
                 for (a, b) in l.iter().zip(r.iter()) {
@@ -467,12 +474,12 @@ pub fn evaluate(
                 values.insert(id.clone(), Value::Array(diffs));
             }
             Step::Count { id, input } => {
-                let rows = rows_by_id.get(input).cloned().unwrap_or_default();
+                let rows = rows_for(&rows_by_id, input)?;
                 spend(rows.len(), &mut work)?;
                 values.insert(id.clone(), Value::from(rows.len()));
             }
             Step::Exists { id, input } => {
-                let rows = rows_by_id.get(input).cloned().unwrap_or_default();
+                let rows = rows_for(&rows_by_id, input)?;
                 spend(rows.len(), &mut work)?;
                 values.insert(id.clone(), Value::Bool(!rows.is_empty()));
             }
@@ -482,7 +489,7 @@ pub fn evaluate(
                 key,
                 value_field,
             } => {
-                let rows = rows_by_id.get(input).cloned().unwrap_or_default();
+                let rows = rows_for(&rows_by_id, input)?;
                 spend(rows.len(), &mut work)?;
                 let mut by_key: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
                 let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -543,7 +550,7 @@ pub fn evaluate(
                 input,
                 template,
             } => {
-                let rows = rows_by_id.get(input).cloned().unwrap_or_default();
+                let rows = rows_for(&rows_by_id, input)?;
                 spend(rows.len(), &mut work)?;
                 if template.contains("{{")
                     && !template.contains("{{text}}")

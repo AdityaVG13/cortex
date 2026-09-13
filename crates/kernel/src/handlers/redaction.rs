@@ -13,7 +13,7 @@ static AUTHORIZATION_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 
 pub fn redact_secrets(text: &str) -> String {
     let bearer = BEARER_REDACTION_RE
-        .get_or_init(|| Regex::new(r"Bearer\s+[a-f0-9]{32,}").ok())
+        .get_or_init(|| Regex::new(r"Bearer\s+[A-Za-z0-9._\-+=/]{16,}").ok())
         .as_ref()
         .map(|re| re.replace_all(text, "Bearer [REDACTED]").to_string())
         .unwrap_or_else(|| text.to_string());
@@ -23,7 +23,7 @@ pub fn redact_secrets(text: &str) -> String {
         .map(|re| re.replace_all(&bearer, "[HASH_REDACTED]").to_string())
         .unwrap_or(bearer);
     let credential = CREDENTIAL_REDACTION_RE
-        .get_or_init(|| Regex::new(r"(?i)(?:token|key|secret|password)\s*[:=]\s*\S+").ok())
+        .get_or_init(|| Regex::new(r#"(?i)["']?\b(?:token|key|secret|password)\b["']?\s*[:=]\s*["']?\S+"#).ok())
         .as_ref()
         .map(|re| re.replace_all(&hashes, "[CREDENTIAL_REDACTED]").to_string())
         .unwrap_or(hashes);
@@ -49,7 +49,7 @@ pub fn redact_secrets(text: &str) -> String {
         .unwrap_or(slack);
     let generic = GENERIC_SECRET_REDACTION_RE
         .get_or_init(|| {
-            Regex::new(r#"(?i)(?:api[_-]?key|secret|token)\s*[:=]\s*["']?[A-Za-z0-9_\-]{20,}"#).ok()
+            Regex::new(r#"(?i)["']?\b(?:api[_-]?key|secret|token)\b["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]{20,}"#).ok()
         })
         .as_ref()
         .map(|re| re.replace_all(&aws, "[redacted]").to_string())

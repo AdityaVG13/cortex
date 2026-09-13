@@ -29,7 +29,7 @@ pub(crate) fn mcp_resources() -> Vec<Value> {
 pub(crate) fn mcp_tool_cluster(tool_name: &str) -> &'static str {
     match tool_name {
         "cortex_boot" => "orient",
-        "cortex_orient" => "orient",
+        "cortex_orient" | "cortex_capabilities" => "orient",
         "cortex_peek" | "cortex_recall" | "cortex_semantic_recall" | "cortex_unfold" | "cortex_query" | "cortex_expand" => "recall",
         "cortex_store" | "cortex_commit" | "cortex_resolve" | "cortex_conflicts_resolve" => "memory-governance",
         "cortex_focus_start" | "cortex_focus_end" | "cortex_checkpoint" => "continuity",
@@ -234,8 +234,18 @@ pub(crate) fn arg_i64(args: &Value, keys: &[&str]) -> Option<i64> {
 }
 pub(crate) fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
     keys.iter().find_map(|key| {
-        args.get(*key)
-            .and_then(Value::as_i64)
-            .and_then(|value| usize::try_from(value).ok())
+        let value = args.get(*key)?;
+        if let Some(n) = value.as_u64() {
+            return usize::try_from(n).ok();
+        }
+        if let Some(n) = value.as_i64() {
+            return usize::try_from(n).ok();
+        }
+        if let Some(n) = value.as_f64() {
+            if n.is_finite() && n >= 0.0 && n.fract() == 0.0 {
+                return usize::try_from(n as u64).ok();
+            }
+        }
+        value.as_str().and_then(|s| s.trim().parse().ok())
     })
 }
