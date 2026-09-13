@@ -109,8 +109,9 @@ pub struct ClockTarget {
 
 pub fn migrate_clock_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(CLOCK_DDL)?;
-    if current_generation(conn).unwrap_or(0) == 0 {
-        set_generation(conn, 1)?;
+    match current_generation(conn)? {
+        0 => set_generation(conn, 1)?,
+        _ => {}
     }
     Ok(())
 }
@@ -588,8 +589,7 @@ pub fn rebuild_clock_projections(conn: &Connection, batch_size: usize) -> rusqli
             .query_map(params![last_id, batch_size as i64], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?
-            .filter_map(Result::ok)
-            .collect();
+            .collect::<Result<_, _>>()?;
         if rows.is_empty() {
             break;
         }
@@ -628,8 +628,7 @@ pub fn rebuild_clock_projections(conn: &Connection, batch_size: usize) -> rusqli
             .query_map(params![last_id, batch_size as i64], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?
-            .filter_map(Result::ok)
-            .collect();
+            .collect::<Result<_, _>>()?;
         if rows.is_empty() {
             break;
         }
@@ -656,10 +655,7 @@ pub fn rebuild_clock_projections(conn: &Connection, batch_size: usize) -> rusqli
             projected += 1;
         }
     }
-    let next = current_generation(conn)
-        .unwrap_or(0)
-        .saturating_add(1)
-        .max(1);
+    let next = current_generation(conn)?.saturating_add(1).max(1);
     set_generation(conn, next)?;
     Ok(projected)
 }

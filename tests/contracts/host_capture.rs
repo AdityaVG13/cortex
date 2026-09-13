@@ -597,6 +597,48 @@ fn file_tool_reports_keep_exact_path_and_ignore_envelope_keys() {
     });
 }
 #[test]
+fn live_precompact_does_not_collide_with_history_metadata_byte_zero() {
+    run_with_cx(|cx| async move {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = CortexRuntime::open_db(&home.path().join("brain.db")).unwrap();
+        let mut native = grant();
+        native.host_version = "2.1.260".into();
+        native.adapter_version = "claude-code-2.1.260-v1".into();
+        runtime
+            .register_host_capture(&cx, native.clone())
+            .await
+            .unwrap();
+        let mut history_ctx = context("prompt-1", HostOrigin::External);
+        history_ctx.host_version = "2.1.260".into();
+        history_ctx.original_event_key = None;
+        let compact = serde_json::to_vec(&json!({
+            "session_id":"session-a",
+            "hook_event_name":"PreCompact",
+            "trigger":"auto"
+        }))
+        .unwrap();
+        let compacted = runtime
+            .capture_host_event(&cx, &native.key, &history_ctx, &compact)
+            .await
+            .unwrap();
+        assert!(compacted.accepted.is_empty());
+        assert_eq!(compacted.ignored_metadata, 1);
+        let mut history_meta = serde_json::to_vec(&json!({
+            "type":"queue-operation",
+            "operation":"dequeue",
+            "sessionId":"session-a"
+        }))
+        .unwrap();
+        history_meta.push(b'\n');
+        let tail = runtime
+            .tail_host_transcript(&cx, &native.key, &history_ctx, 0, &history_meta)
+            .await
+            .expect("history metadata at byte 0 must not collide with PreCompact");
+        assert!(tail.accepted.is_empty());
+        assert_eq!(tail.ignored_metadata, 1);
+    });
+}
+#[test]
 fn pretool_prepares_from_path_without_storing_the_request() {
     run_with_cx(|cx| async move {
         let home = tempfile::tempdir().unwrap();

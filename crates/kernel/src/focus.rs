@@ -55,7 +55,8 @@ pub fn focus_end(
         .query_row("SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'", params![label, agent], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
-        .ok();
+        .optional()
+        .map_err(|e| format!("Failed to look up focus: {e}"))?;
     let (id, raw_json) =
         session.ok_or_else(|| format!("No open focus session with label '{label}'"))?;
     let entries: Vec<String> = match serde_json::from_str(&raw_json) {

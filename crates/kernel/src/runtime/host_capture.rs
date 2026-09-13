@@ -1396,9 +1396,13 @@ impl CortexRuntime {
                     return Err("host_session_mismatch".into());
                 }
                 field(&value, "trigger")?;
+                // Live PreCompact is not a transcript byte. History metadata
+                // uses non-negative line starts; MAX+1 collides with the
+                // first history line (offset 0) or a later line at MAX+1.
+                // Negative offsets keep the two writers in disjoint keyspaces.
                 let next: i64 = tx
                     .query_row(
-                        "SELECT COALESCE(MAX(byte_offset),-1)+1 FROM host_capture_metadata WHERE principal=?1 AND grant_key=?2 AND generation=?3",
+                        "SELECT COALESCE(MIN(byte_offset), 0) - 1 FROM host_capture_metadata WHERE principal=?1 AND grant_key=?2 AND generation=?3 AND byte_offset < 0",
                         params![principal, grant_key, generation],
                         |r| r.get(0),
                     )

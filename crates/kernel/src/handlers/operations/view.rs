@@ -575,12 +575,21 @@ impl View {
         };
         match ChangeCursor::decode(&raw).and_then(|c| c.validate(restore_epoch, &scope_filter)) {
             Ok(since) => {
-                if let Ok(mut stmt) = conn.prepare("SELECT v.id, v.target_type, v.target_id, v.op FROM versions v WHERE v.id > ?1 ORDER BY v.id LIMIT 200") {
-                    if let Ok(rows) = stmt.query_map(params![since], |r| Ok(json!({"sequence": r.get::<_, i64>(0)?, "target": format!("{}::{}", r.get::<_, Option<String>>(1)?.unwrap_or_default(), r.get::<_, Option<i64>>(2)?.unwrap_or(0)), "action": r.get::<_, String>(3)?}))) {
-                        self.changes = rows.flatten().collect();
-                    }
+                // A failed versions read is not "nothing changed": that would
+                // hide durable work behind an Ok empty delta.
+                match conn.prepare("SELECT v.id, v.target_type, v.target_id, v.op FROM versions v WHERE v.id > ?1 ORDER BY v.id LIMIT 200") {
+                    Ok(mut stmt) => match stmt.query_map(params![since], |r| Ok(json!({"sequence": r.get::<_, i64>(0)?, "target": format!("{}::{}", r.get::<_, Option<String>>(1)?.unwrap_or_default(), r.get::<_, Option<i64>>(2)?.unwrap_or(0)), "action": r.get::<_, String>(3)?}))) {
+                        Ok(rows) => match rows.collect::<Result<Vec<_>, _>>() {
+                            Ok(changes) => {
+                                self.changes = changes;
+                                self.cursor_status = Some(ResponseStatus::Ok);
+                            }
+                            Err(_) => self.cursor_status = Some(ResponseStatus::Unavailable),
+                        },
+                        Err(_) => self.cursor_status = Some(ResponseStatus::Unavailable),
+                    },
+                    Err(_) => self.cursor_status = Some(ResponseStatus::Unavailable),
                 }
-                self.cursor_status = Some(ResponseStatus::Ok);
             }
             Err(CursorError::Malformed) => {
                 self.cursor_status = Some(ResponseStatus::InvalidRequest)
