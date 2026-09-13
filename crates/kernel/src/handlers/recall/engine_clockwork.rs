@@ -145,11 +145,11 @@ pub fn run_clock_quorum_recall(
         ctx.as_of.clone(),
         traces::current_head(conn),
     );
-    if let Some(prefix) = source_prefix.map(str::trim).filter(|s| !s.is_empty()) {
-        if !frame.paths.iter().any(|p| p == prefix) {
-            frame.paths.push(prefix.to_string());
-        }
-    }
+    // `source_prefix` is a provenance filter (memories.source / decision
+    // identity), not a filesystem path. Pushing it onto `frame.paths` made
+    // the task arm LIKE-match children of the prefix — including after FTS
+    // skipped an empty/stop-word query — and treated trailing `*` as a glob.
+    let source_prefix = source_prefix.map(str::trim).filter(|s| !s.is_empty());
     frame.entity_ids = graph::resolve_query(conn, query_text);
     expand_query_frame(conn, &mut frame);
     let _signature = query_signature(&frame);
@@ -159,7 +159,7 @@ pub fn run_clock_quorum_recall(
     collect_anchor_arm(conn, &frame, ctx, &mut by_key)?;
     collect_truth_arm(conn, &frame, ctx, &mut by_key)?;
     collect_task_arm(conn, &frame, ctx, &mut by_key)?;
-    collect_history_arm(conn, &frame, ctx, &mut by_key)?;
+    collect_history_arm(conn, &frame, ctx, source_prefix, &mut by_key)?;
     collect_hop_arm(conn, &frame, ctx, &mut by_key)?;
 
     let mut trace = RouteTrace { rank_tuple: crate::clockwork::RANK_TUPLE_VERSION, ..RouteTrace::default() };
@@ -168,7 +168,7 @@ pub fn run_clock_quorum_recall(
     let total = by_key.len();
     let mut admitted: Vec<ScoredCandidate> = Vec::new();
     for candidate in by_key.into_values() {
-        if !row_eligible(conn, &candidate, ctx, &frame)? {
+        if !row_eligible(conn, &candidate, ctx, &frame, source_prefix)? {
             continue;
         }
         let evidence = candidate.evidence();
@@ -319,6 +319,9 @@ fn collect_write_arm(
         .collect();
     let quoted = !frame.quoted_phrases.is_empty();
     for kind in ["decision", "memory"] {
+        if !source_prefix_applies_to_kind(kind, source_prefix) {
+            continue;
+        }
         let rows = fts_rows(conn, kind, &fts_query, FTS_CANDIDATE_CAP, source_prefix, ctx)?;
         for row in rows {
             let hay = row.excerpt.to_ascii_lowercase();
@@ -327,7 +330,12 @@ fn collect_write_arm(
             // variant, or closed lexicon mate. Ordinary BM25 without one of those
             // stays write=1 and cannot admit alone.
             let unique = exact_rare >= 1;
-            let quoted_hit = quoted && frame.quoted_phrases.iter().any(|p| hay.contains(p));
+            // FTS already stripped `*`/`^` inside quotes; a raw contains()
+            // still treats `foo*` as a glob needle and misses the hit.
+            let quoted_hit = quoted
+                && frame.quoted_phrases.iter().any(|p| {
+                    lexical_needle(p).is_some_and(|needle| hay.contains(&needle))
+                });
             let write = if quoted_hit || unique { 2 } else { 1 };
             let strong_lexical = write == 2;
             let mut candidate = loaded_candidate(conn, &row, 0, write, 0, 0, 0, false, strong_lexical, if write == 2 { 2 } else { 1 })?;
@@ -355,20 +363,17 @@ fn clock_fts_query(frame: &QueryFrame) -> Option<String> {
     }
     terms.sort();
     terms.dedup();
-    if terms.is_empty() {
-        return None;
-    }
-    let or_terms = terms.join(" OR ");
     let phrases: Vec<String> = frame
         .quoted_phrases
         .iter()
-        .filter(|phrase| phrase.len() >= 2 && !phrase.contains('/'))
+        .filter(|phrase| phrase.len() >= 2)
         .filter_map(|phrase| quote_fts_match_term(phrase))
         .collect();
-    if phrases.is_empty() {
-        Some(or_terms)
-    } else {
-        Some(format!("({}) AND ({})", phrases.join(" AND "), or_terms))
+    match (phrases.is_empty(), terms.is_empty()) {
+        (true, true) => None,
+        (true, false) => Some(terms.join(" OR ")),
+        (false, true) => Some(phrases.join(" AND ")),
+        (false, false) => Some(format!("({}) AND ({})", phrases.join(" AND "), terms.join(" OR "))),
     }
 }
 
@@ -538,7 +543,10 @@ fn normalize_task_path(raw: &str) -> String {
     value.trim_end_matches('/').to_string()
 }
 
-fn collect_history_arm(conn: &Connection, frame: &QueryFrame, ctx: &RecallContext, out: &mut HashMap<(String, i64), ScoredCandidate>) -> Result<(), String> {
+fn collect_history_arm(
+    conn: &Connection, frame: &QueryFrame, ctx: &RecallContext, source_prefix: Option<&str>,
+    out: &mut HashMap<(String, i64), ScoredCandidate>,
+) -> Result<(), String> {
     match frame.temporal_mode {
         TemporalMode::Current | TemporalMode::Any => return Ok(()),
         TemporalMode::Historical | TemporalMode::ExplicitAsOf => {}
@@ -573,6 +581,9 @@ fn collect_history_arm(conn: &Connection, frame: &QueryFrame, ctx: &RecallContex
         .map_err(|e| e.to_string())?;
     for (target_type, target_id, excerpt, source, owner_id, visibility, ts, status, valid_from, valid_until) in rows.flatten() {
         if !is_visible(owner_id, visibility.as_deref(), ctx) {
+            continue;
+        }
+        if !candidate_matches_source_scope(&target_type, target_id, &source, source_prefix) {
             continue;
         }
         let mut row = ScoredCandidate {
@@ -705,8 +716,92 @@ fn qualified_acl(alias: &str, bind: &str) -> String {
     format!(" AND ({b} IS NULL OR {a}.owner_id IS NULL OR {a}.owner_id = {b} OR {a}.visibility IN ('shared','team','public'))", a = alias, b = bind)
 }
 
+/// FTS MATCH already quotes `*`/`^` away; lexical contains() must use the
+/// same needle or a quoted glob never scores as a quoted hit.
+fn lexical_needle(raw: &str) -> Option<String> {
+    let t = raw
+        .chars()
+        .map(|ch| if ch == '*' || ch == '^' { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if t.is_empty() || t.replace('"', "").is_empty() {
+        None
+    } else {
+        Some(t)
+    }
+}
+
+fn source_prefix_is_path(prefix: &str) -> bool {
+    prefix.contains('/') && !prefix.contains("::")
+}
+
+fn source_prefix_applies_to_kind(kind: &str, prefix: Option<&str>) -> bool {
+    let Some(prefix) = prefix.map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    let lower = prefix.to_ascii_lowercase();
+    if lower.starts_with("memory::") {
+        return matches!(kind, "memory" | "memories");
+    }
+    if lower.starts_with("decision::") {
+        return matches!(kind, "decision" | "decisions");
+    }
+    true
+}
+
+fn starts_with_ascii_ignore_case(source: &str, prefix: &str) -> bool {
+    let pb = prefix.as_bytes();
+    let sb = source.as_bytes();
+    sb.len() >= pb.len() && sb[..pb.len()].eq_ignore_ascii_case(pb)
+}
+
+fn scoped_source_matches(source: &str, prefix: Option<&str>) -> bool {
+    let Some(prefix) = prefix.map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    if !starts_with_ascii_ignore_case(source, prefix) {
+        return false;
+    }
+    if source_prefix_is_path(prefix) {
+        let rest = &source.as_bytes()[prefix.len()..];
+        return rest.is_empty() || rest.first() == Some(&b'/');
+    }
+    true
+}
+
+fn candidate_matches_source_scope(kind: &str, id: i64, source: &str, prefix: Option<&str>) -> bool {
+    if !source_prefix_applies_to_kind(kind, prefix) {
+        return false;
+    }
+    if scoped_source_matches(source, prefix) {
+        return true;
+    }
+    let ident = if kind == "decision" || kind == "decisions" {
+        format!("decision::{id}")
+    } else {
+        format!("memory::{id}")
+    };
+    scoped_source_matches(&ident, prefix)
+}
+
+/// LIKE `prefix%` plus a slash-boundary guard so `src/app` does not fill
+/// FTS LIMIT with `src/application`. Identity prefixes skip the guard (`?6`).
+/// Synthetic `{kind}::{id}` still matches when the display source is context.
+fn source_scope_sql(col: &str, ident: &str) -> String {
+    format!(
+        "(?3 IS NULL OR (({col} LIKE ?3 ESCAPE '\\' AND (?6 IS NULL OR instr('/' || lower({col}) || '/', '/' || lower(?6) || '/') > 0)) OR {ident} LIKE ?3 ESCAPE '\\'))"
+    )
+}
+
 fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source_prefix: Option<&str>, ctx: &RecallContext) -> Result<Vec<LoadedRow>, String> {
+    if !source_prefix_applies_to_kind(kind, source_prefix) {
+        return Ok(Vec::new());
+    }
     let source_like = source_prefix.map(like_prefix);
+    let path_guard = source_prefix.filter(|p| source_prefix_is_path(p));
     let caller = caller_acl_param(ctx);
     let is_decision = kind == "decision";
     let alias = if is_decision { "d" } else { "m" };
@@ -718,13 +813,18 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
         format!("{} AND (?5 IS NULL OR 1)", qualified_current_gates(alias))
     };
     let acl = qualified_acl(alias, "?4");
+    let scope = if is_decision {
+        source_scope_sql("COALESCE(d.context, 'decision::' || d.id)", "'decision::' || d.id")
+    } else {
+        source_scope_sql("COALESCE(m.source, 'memory::' || m.id)", "'memory::' || m.id")
+    };
     let sql = if is_decision {
         format!(
             "SELECT d.id, d.decision, COALESCE(d.context, 'decision::' || d.id), d.owner_id, d.visibility,
                     d.created_at, d.status, d.valid_from, d.valid_until
              FROM decisions_fts fts JOIN decisions d ON d.id = fts.rowid
              WHERE decisions_fts MATCH ?1 AND {gates}
-               AND (?3 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?3 ESCAPE '\\')
+               AND {scope}
                {acl}
              ORDER BY bm25(decisions_fts, 6.6, 1.0) LIMIT ?2"
         )
@@ -734,7 +834,7 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
                     m.created_at, m.status, m.valid_from, m.valid_until
              FROM memories_fts fts JOIN memories m ON m.id = fts.rowid
              WHERE memories_fts MATCH ?1 AND {gates}
-               AND (?3 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?3 ESCAPE '\\')
+               AND {scope}
                {acl}
              ORDER BY bm25(memories_fts, 4.6, 1.7, 2.2) LIMIT ?2"
         )
@@ -742,7 +842,7 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
     let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
     let as_of = ctx.as_of.clone();
     let rows = stmt
-        .query_map(params![fts_query, limit as i64, source_like, caller, as_of], |row| {
+        .query_map(params![fts_query, limit as i64, source_like, caller, as_of, path_guard], |row| {
             Ok(LoadedRow {
                 target_type: if is_decision { "decision".to_string() } else { "memory".to_string() },
                 target_id: row.get(0)?,
@@ -762,7 +862,7 @@ fn fts_rows(conn: &Connection, kind: &str, fts_query: &str, limit: usize, source
         if !is_visible(row.owner_id, row.visibility.as_deref(), ctx) {
             continue;
         }
-        if !source_matches_prefix(&row.source, source_prefix) {
+        if !candidate_matches_source_scope(&row.target_type, row.target_id, &row.source, source_prefix) {
             continue;
         }
         out.push(row);
@@ -896,7 +996,12 @@ fn load_target(conn: &Connection, target_type: &str, target_id: i64, ctx: &Recal
     }))
 }
 
-fn row_eligible(conn: &Connection, candidate: &ScoredCandidate, ctx: &RecallContext, frame: &QueryFrame) -> Result<bool, String> {
+fn row_eligible(
+    conn: &Connection, candidate: &ScoredCandidate, ctx: &RecallContext, frame: &QueryFrame, source_prefix: Option<&str>,
+) -> Result<bool, String> {
+    if !candidate_matches_source_scope(&candidate.target_type, candidate.target_id, &candidate.source, source_prefix) {
+        return Ok(false);
+    }
     if !is_visible(candidate.owner_id, candidate.visibility.as_deref(), ctx) {
         return Ok(false);
     }

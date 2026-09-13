@@ -2,7 +2,7 @@
 
 use cortex_logic::clockwork::{
     parse_query_frame, project_target, rebuild_clock_projections, record_used_with,
-    reject_used_with, traverse_hops, ClockOrigin, ClockTarget,
+    reject_used_with, traverse_hops, AnchorKind, ClockOrigin, ClockTarget, QueryAnchor,
 };
 
 use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
@@ -887,6 +887,148 @@ fn contract_21_shared_context_resolve_source_cut_is_min_id() {
             "resolve_source cut must be data-defined (minimum id): the context-only \
      row must never surface; its presence means the unordered LIMIT picked \
      id {id_ctx_only}: {texts:?}"
+        );
+    });
+}
+
+async fn seed_memory(
+    cx: &asupersync::Cx,
+    state: &cortex_kernel::state::RuntimeState,
+    text: &str,
+    source: &str,
+) -> i64 {
+    let conn = state.db.lock(cx).await.expect("lock");
+    conn.execute(
+        "INSERT INTO memories (text, source, type, source_agent, status) VALUES (?1, ?2, 'memory', ?3, 'active')",
+        rusqlite::params![text, source, AGENT],
+    )
+    .expect("insert memory");
+    let id = conn.last_insert_rowid();
+    let extra = [QueryAnchor {
+        kind: AnchorKind::Source,
+        value: cortex_logic::clockwork::normalize_anchor_value(AnchorKind::Source, source),
+        specificity: 1,
+    }];
+    project_target(
+        &conn,
+        text,
+        &extra,
+        "memory",
+        id,
+        ClockOrigin::DeterministicExtract,
+        None,
+    )
+    .expect("project memory");
+    id
+}
+
+async fn recall_with_prefix(
+    cx: &asupersync::Cx,
+    state: &cortex_kernel::state::RuntimeState,
+    query: &str,
+    source_prefix: &str,
+) -> Vec<Value> {
+    let payload = execute_unified_recall(
+        cx,
+        state,
+        query,
+        320,
+        8,
+        AGENT,
+        &RecallContext::solo(),
+        Some(source_prefix),
+    )
+    .await
+    .unwrap_or_else(|err| panic!("recall {query:?} prefix {source_prefix:?}: {err}"));
+    payload["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("results missing: {payload}"))
+        .clone()
+}
+
+/// `src/app` must not LIKE-match sibling `src/application` after FTS.
+#[test]
+fn contract_22_source_prefix_does_not_admit_sibling_path() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let app = "PREFIXAPP-token kernel recall keeps the widget cache on the app path";
+        let sibling =
+            "PREFIXAPP-token kernel recall keeps the widget cache on the application path";
+        seed_memory(&cx, &state, app, "src/app/foo.rs").await;
+        seed_memory(&cx, &state, sibling, "src/application/bar.rs").await;
+        let texts = excerpts(&recall_with_prefix(&cx, &state, "PREFIXAPP-token", "src/app").await);
+        assert!(
+            texts.iter().any(|t| t.contains("on the app path")),
+            "path prefix must keep src/app, got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("on the application path")),
+            "path prefix must not admit sibling src/application, got {texts:?}"
+        );
+    });
+}
+
+/// `decision::` is a table selector. A memory whose source starts with that
+/// string must not leak in, and a decision with non-matching context must
+/// still match its synthetic `decision::{id}`.
+#[test]
+fn contract_23_source_prefix_decision_identity_skips_memory_table() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let decision = "DECTABLE-token we keep the ledger retry bound at three attempts";
+        let planted = "DECTABLE-token planted memory must not ride a decision identity prefix";
+        let id = store_contextual(&cx, &state, decision, Some("unrelated-context".into())).await;
+        seed_memory(&cx, &state, planted, "decision::planted").await;
+        let texts =
+            excerpts(&recall_with_prefix(&cx, &state, "DECTABLE-token", "decision::").await);
+        assert!(
+            texts.iter().any(|t| t.contains("ledger retry bound")),
+            "decision:: prefix must find the decision via synthetic id, got {texts:?} (id {id})"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("planted memory")),
+            "decision:: prefix must not search the memories table, got {texts:?}"
+        );
+    });
+}
+
+/// Stop-word queries skip FTS; source_prefix must not then LIKE-match every
+/// child of that prefix via the task arm.
+#[test]
+fn contract_24_stop_word_query_does_not_dump_source_prefix_children() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let dump = "DUMPKID-token this file lives under the dump tree for clockwork LIKE";
+        seed_memory(&cx, &state, dump, "src/dump/alpha.rs").await;
+        let texts = excerpts(&recall_with_prefix(&cx, &state, "the the the", "src/dump").await);
+        assert!(
+            !texts.iter().any(|t| t.contains("DUMPKID-token")),
+            "empty/stop-word query must not LIKE-match all source_prefix children, got {texts:?}"
+        );
+    });
+}
+
+/// Quoted path in the query must not reverse-LIKE sibling files that share
+/// a parent after FTS already selected one path.
+#[test]
+fn contract_25_quoted_path_does_not_admit_sibling_file() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let alpha = "ALPHAPATH-token documented in src/pkg/alpha.rs implementation details for the clockwork path matcher";
+        let beta = "BETAPATH-token documented in src/pkg/beta.rs implementation details for the clockwork path matcher";
+        store_text(&cx, &state, alpha).await;
+        store_text(&cx, &state, beta).await;
+        let texts = excerpts(
+            &recall_results(&cx, &state, "ALPHAPATH-token \"src/pkg/alpha.rs\"", &RecallContext::solo())
+                .await,
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("ALPHAPATH-token")),
+            "quoted path must still retrieve the named file, got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("BETAPATH-token")),
+            "quoted path must not reverse-LIKE sibling src/pkg/beta.rs, got {texts:?}"
         );
     });
 }

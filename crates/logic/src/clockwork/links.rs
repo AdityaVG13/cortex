@@ -396,6 +396,10 @@ pub fn lookup_targets_for_anchors(
     let mut seen: BTreeSet<ClockTarget> = BTreeSet::new();
     for anchor in anchors {
         if anchor.kind == AnchorKind::Path {
+            // Reverse parent match is only for paths extracted from text
+            // (specificity >= 3). Spec-2 ancestors are projected onto every
+            // descendant; using them here pulls sibling files that share a
+            // parent after FTS already chose one path.
             let mut stmt = conn.prepare_cached(
                 "SELECT e.target_type, e.target_id
                  FROM clock_anchor_evidence e
@@ -403,7 +407,8 @@ pub fn lookup_targets_for_anchors(
                  WHERE a.kind = 'path'
                    AND (a.value = ?1
                         OR a.value LIKE ?2 ESCAPE '\\'
-                        OR ?1 LIKE replace(replace(replace(a.value, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '/%' ESCAPE '\\')
+                        OR (a.specificity >= 3
+                            AND ?1 LIKE replace(replace(replace(a.value, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '/%' ESCAPE '\\'))
                  ORDER BY a.specificity DESC, e.target_type ASC, e.target_id ASC
                  LIMIT ?3",
             )?;
