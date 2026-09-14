@@ -94,3 +94,36 @@ fn agent_feedback_record_parses_stringified_scores_and_sources() {
         assert_eq!(parsed, vec!["memory::1".to_string(), "decision::2".to_string()]);
     });
 }
+
+#[test]
+fn query_budget_parses_json_float_and_decimal_string() {
+    run_with_cx(|cx| async move {
+        let state = solo_state();
+        for (id, budget) in [(21, json!(100.0)), (22, json!("100"))] {
+            let reply = handle_mcp_message_with_caller(
+                &cx,
+                &state,
+                &json!({
+                    "jsonrpc":"2.0",
+                    "id":id,
+                    "method":"tools/call",
+                    "params":{
+                        "name":"cortex_query",
+                        "arguments":{"need":"pass64 budget parse","budget":budget}
+                    }
+                }),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(reply.get("error").is_none(), "{reply}");
+            let payload = mcp_tool_text(&reply);
+            assert_eq!(
+                payload["budget"]["bytes"],
+                json!(100),
+                "budget={budget} must not fall through to the 2000 default: {payload}"
+            );
+        }
+    });
+}

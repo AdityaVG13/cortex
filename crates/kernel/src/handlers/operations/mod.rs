@@ -85,12 +85,23 @@ fn arg_str<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
 }
+/// MCP JSON-RPC clients send integers as i64, u64, whole floats, or decimal
+/// strings. `as_i64()` alone dropped `"100"` / `100.0`, so `budget` silently
+/// fell through to the 2000-byte default.
+fn json_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|n| i64::try_from(n).ok()))
+        .or_else(|| {
+            value.as_f64().and_then(|x| {
+                (x.is_finite() && x.fract() == 0.0).then_some(x as i64)
+            })
+        })
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+}
 fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
-    keys.iter().find_map(|k| {
-        args.get(k)
-            .and_then(Value::as_i64)
-            .and_then(|v| usize::try_from(v).ok())
-    })
+    keys.iter()
+        .find_map(|k| args.get(*k).and_then(json_i64).and_then(|v| usize::try_from(v).ok()))
 }
 fn arg_bool(args: &Value, keys: &[&str]) -> Option<bool> {
     keys.iter()
@@ -1695,22 +1706,26 @@ async fn resolve(cx: &asupersync::Cx, state: &RuntimeState, caller: &Caller<'_>,
         };
     }
     // Legacy conflict resolution (keepId + action) is retained as an alias.
-    let keep_id = args
-        .get("keepId")
-        .and_then(Value::as_i64)
-        .or_else(|| args.get("keep_id").and_then(Value::as_i64));
+    // Advertised MCP names include winnerId/loserId; JSON-RPC may send
+    // those ids as floats or decimal strings, same as budget/horizonDays.
+    let keep_id = ["keepId", "keep_id", "winnerId", "winner_id"]
+        .iter()
+        .find_map(|k| args.get(*k).and_then(json_i64));
     let action = arg_str(args, &["action"]).unwrap_or("");
     let Some(keep_id) = keep_id else {
         return Ok(
             json!({"status": ResponseStatus::InvalidRequest.as_str(), "error": "resolve needs record+rationale (or legacy keepId+action)", "field": "record"}),
         );
     };
+    let superseded_id = ["supersededId", "superseded_id", "loserId", "loser_id"]
+        .iter()
+        .find_map(|k| args.get(*k).and_then(json_i64));
     let mut conn = state.db.lock(cx).await.map_err(|e| e.to_string())?;
     match crate::handlers::mutate::resolve_decision_with_metadata(
         &mut conn,
         keep_id,
         action,
-        args.get("supersededId").and_then(Value::as_i64),
+        superseded_id,
         crate::handlers::mutate::ResolutionMetadata,
     ) {
         Ok(mut payload) => {
