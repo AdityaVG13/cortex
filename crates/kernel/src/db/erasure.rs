@@ -110,14 +110,27 @@ pub fn erasure_floor(conn: &Connection) -> i64 {
     .unwrap_or(0)
 }
 
-fn legacy_target(conn: &Connection, record_id: &str) -> Option<(String, i64)> {
-    conn.query_row("SELECT namespace, address FROM addresses WHERE record_id = ?1 AND scheme = 'legacy' LIMIT 1", [record_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })
-    .optional()
-    .ok()
-    .flatten()
-    .and_then(|(ns, addr)| addr.parse::<i64>().ok().map(|id| (ns, id)))
+fn legacy_target(conn: &Connection, record_id: &str) -> Result<Option<(String, i64)>, String> {
+    // SQL error is not "no legacy row": that would tombstone the record while
+    // leaving memories/decisions plaintext in place. Unreadable or
+    // non-integer locators fail closed so erase cannot report success.
+    let row = conn
+        .query_row(
+            "SELECT namespace, address FROM addresses WHERE record_id = ?1 AND scheme = 'legacy' LIMIT 1",
+            [record_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("legacy address lookup failed: {e}"))?;
+    match row {
+        None => Ok(None),
+        Some((namespace, addr)) => {
+            let id = addr.parse::<i64>().map_err(|_| {
+                format!("legacy address `{addr}` for {record_id} is not an integer id")
+            })?;
+            Ok(Some((namespace, id)))
+        }
+    }
 }
 
 /// Apply the erasure to every derived and retained representation. Idempotent.
@@ -141,7 +154,7 @@ fn apply(
         .map_err(|e| e.to_string())?;
     let mut legacy_rows = 0usize;
     let mut projections = 0usize;
-    if let Some((namespace, id)) = legacy_target(conn, record_id) {
+    if let Some((namespace, id)) = legacy_target(conn, record_id)? {
         let (table, col) = match namespace.as_str() {
             "decision" => ("decisions", "decision"),
             "memory" => ("memories", "text"),
@@ -379,7 +392,17 @@ pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconci
         Ok(None) => Vec::new(),
         Err(err) => return Err(err),
     };
-    let floor_before = erasure_floor(conn);
+    let floor_before = match conn.query_row(
+        "SELECT erasure_floor FROM brain_meta WHERE singleton = 1",
+        [],
+        |r| r.get::<_, String>(0),
+    ) {
+        Ok(raw) => raw
+            .parse::<i64>()
+            .map_err(|_| "erasure floor is not an integer".to_string())?,
+        Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+        Err(err) => return Err(format!("erasure floor unreadable: {err}")),
+    };
     let db_has_ledger: i64 = conn
         .query_row("SELECT COUNT(*) FROM erasures", [], |r| r.get(0))
         .map_err(|e| format!("erasures table unreadable: {e}"))?;
