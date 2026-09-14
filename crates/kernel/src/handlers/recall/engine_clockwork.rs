@@ -145,6 +145,17 @@ pub fn run_clock_quorum_recall(
         ctx.as_of.clone(),
         traces::current_head(conn),
     );
+    // Query-text `as of YYYY-MM-DD` lives on the frame. FTS, load_target,
+    // and row_eligible only read ctx.as_of, so inferred as-of used to
+    // report valid_at while still ranking under current gates (later
+    // knowledge leaked; why.filters.valid_at lied).
+    let mut ctx = ctx.clone();
+    if as_of_bind(&ctx).is_none() {
+        if let Some(as_of) = frame.as_of.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            ctx.as_of = Some(as_of.to_string());
+        }
+    }
+    let ctx = &ctx;
     // `source_prefix` is a provenance filter (memories.source / decision
     // identity), not a filesystem path. Pushing it onto `frame.paths` made
     // the task arm LIKE-match children of the prefix — including after FTS
@@ -559,20 +570,27 @@ fn collect_history_arm(
         TemporalMode::Current | TemporalMode::Any => return Ok(()),
         TemporalMode::Historical | TemporalMode::ExplicitAsOf => {}
     }
-    let as_of = frame.as_of.as_deref();
-    let mut stmt = conn
-        .prepare_cached(
-            "SELECT 'decision', id, decision, COALESCE(context, 'decision::' || id), owner_id, visibility,
-                    created_at, status, valid_from, valid_until
-             FROM decisions
-             WHERE (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')
-                    OR ?1 IS NOT NULL)
-             ORDER BY id DESC
-             LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
+    let as_of = as_of_bind(ctx);
+    let caller = caller_acl_param(ctx);
+    let gates = if as_of.is_some() {
+        qualified_as_of_gates("d", "?1")
+    } else {
+        // Historical with no timestamp: archived/superseded stay
+        // eligible. Current-time valid_until would hide a closed window.
+        "(d.version_id IS NULL OR d.version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) AND (?1 IS NULL OR 1)".to_string()
+    };
+    let acl = qualified_acl("d", "?3");
+    let sql = format!(
+        "SELECT 'decision', d.id, d.decision, COALESCE(d.context, 'decision::' || d.id), d.owner_id, d.visibility,
+                d.created_at, d.status, d.valid_from, d.valid_until
+         FROM decisions d
+         WHERE {gates} {acl}
+         ORDER BY d.id DESC
+         LIMIT ?2"
+    );
+    let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![as_of, HISTORY_CANDIDATE_CAP as i64], |row| {
+        .query_map(params![as_of, HISTORY_CANDIDATE_CAP as i64, caller], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,

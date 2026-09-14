@@ -289,6 +289,33 @@ fn contract_5_current_truth_and_as_of() {
 }
 
 #[test]
+fn inferred_as_of_phrase_does_not_leak_later_knowledge() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let live = "Never ship ASOFPHRASECQR tokens after the cutover";
+        store_owned_with_confidence(&cx, &state, live, None, 0.99).await;
+        let now = excerpts(&recall_results(&cx, &state, "ASOFPHRASECQR tokens", &RecallContext::solo()).await);
+        assert!(
+            now.iter().any(|e| e == live),
+            "current recall must find the live fact, got {now:?}"
+        );
+        let inferred = excerpts(
+            &recall_results(
+                &cx,
+                &state,
+                "ASOFPHRASECQR tokens as of 2000-01-01",
+                &RecallContext::solo(),
+            )
+            .await,
+        );
+        assert!(
+            !inferred.iter().any(|e| e.contains("ASOFPHRASECQR")),
+            "query-text as-of must not leak a fact created decades later: {inferred:?}"
+        );
+    });
+}
+
+#[test]
 fn contract_6_rollback_hides_later_store() {
     cortex_tests::support::run_with_cx(|cx| async move {
         let state = solo_state();
