@@ -42,8 +42,11 @@ impl RetentionClass {
     }
     pub fn from_entry_type(entry_type: &str) -> Option<Self> {
         match entry_type.trim().to_ascii_lowercase().as_str() {
-            "decision" | "policy" | "rule" | "convention" | "contract" | "procedure"
-            | "playbook" | "runbook" => Some(Self::Durable),
+            // Same kinds the boot Constraints capsule and required-role
+            // recall treat as durable identity: a typed constraint must not
+            // fall through to text heuristics and expire in 90 days.
+            "decision" | "policy" | "rule" | "convention" | "contract" | "constraint"
+            | "preference" | "procedure" | "playbook" | "runbook" => Some(Self::Durable),
             "trace" | "security" | "rollback" | "permission" | "audit" => Some(Self::Audit),
             "chatter" | "scratch" | "transient" | "temporary" | "ephemeral" => {
                 Some(Self::Ephemeral)
@@ -72,6 +75,8 @@ impl RetentionClass {
             }
             _ => text.trim().to_ascii_lowercase(),
         };
+        // Consecutive tokens, not substrings: `whenever` is not `never`,
+        // `do nothing` is not `do not`, `mustard` is not `must`.
         if [
             "architectural",
             "architecture",
@@ -79,28 +84,48 @@ impl RetentionClass {
             "always",
             "never",
             "api contract",
-            "must ",
+            "must",
             "do not",
         ]
         .iter()
-        .any(|needle| combined.contains(needle))
+        .any(|needle| hay_has_phrase(&combined, needle))
         {
             return Self::Durable;
         }
         if ["rollback", "permission", "security event", "audit"]
             .iter()
-            .any(|needle| combined.contains(needle))
+            .any(|needle| hay_has_phrase(&combined, needle))
         {
             return Self::Audit;
         }
         if ["throwaway", "temporary", "transient", "scratch"]
             .iter()
-            .any(|needle| combined.contains(needle))
+            .any(|needle| hay_has_phrase(&combined, needle))
         {
             return Self::Ephemeral;
         }
         Self::Operational
     }
+}
+
+/// Word-boundary phrase match for retention cues. Split on non-alnum so
+/// hyphenated `always-on` still sees `always`, without `never` inside
+/// `whenever`.
+fn hay_has_phrase(hay_lower: &str, needle: &str) -> bool {
+    let parts: Vec<&str> = needle
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return false;
+    }
+    let hay_toks: Vec<&str> = hay_lower
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|tok| !tok.is_empty())
+        .collect();
+    hay_toks
+        .windows(parts.len())
+        .any(|window| window.iter().copied().eq(parts.iter().copied()))
 }
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct StoreRequest {

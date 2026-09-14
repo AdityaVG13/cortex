@@ -959,9 +959,11 @@ pub fn count_matching_term_groups(haystacks: &[String], term_groups: &[Vec<Strin
     term_groups
         .iter()
         .filter(|group| {
-            group
-                .iter()
-                .any(|term| haystacks.iter().any(|haystack| haystack.contains(term)))
+            group.iter().any(|term| {
+                haystacks
+                    .iter()
+                    .any(|haystack| crate::clockwork::hay_has_lexical(haystack, term))
+            })
         })
         .count() as i64
 }

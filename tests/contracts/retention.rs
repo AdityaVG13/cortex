@@ -11,6 +11,7 @@ use cortex_kernel::compiler::{
 use cortex_kernel::db::cold::{cold_count, decode, encode, hydrate, move_to_cold};
 use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
 use cortex_kernel::handlers::recall::{unfold_source, RecallContext};
+use cortex_logic::api_types::RetentionClass;
 use cortex_tests::support::{solo_state, test_conn};
 use serde_json::json;
 
@@ -20,6 +21,38 @@ fn caller() -> Caller<'static> {
         agent: "retention",
         principal: "solo".into(),
     }
+}
+
+#[test]
+fn typed_constraints_are_durable_and_whenever_is_not_never() {
+    assert_eq!(
+        RetentionClass::classify(None, "constraint", "retries stop at the ledger commit", None),
+        RetentionClass::Durable,
+        "constraint kinds must not expire as operational"
+    );
+    assert_eq!(
+        RetentionClass::classify(None, "preference", "prefer the existing idempotency header", None),
+        RetentionClass::Durable
+    );
+    assert_eq!(
+        RetentionClass::classify(
+            None,
+            "comment",
+            "whenever we merge we rebuild the index",
+            None
+        ),
+        RetentionClass::Operational,
+        "whenever is not the token never"
+    );
+    assert_eq!(
+        RetentionClass::classify(None, "comment", "never store secrets in git", None),
+        RetentionClass::Durable
+    );
+    assert_eq!(
+        RetentionClass::classify(None, "comment", "do nothing special, just log it", None),
+        RetentionClass::Operational,
+        "do nothing is not do not"
+    );
 }
 
 #[test]
