@@ -222,3 +222,48 @@ fn agent_feedback_stats_match_model_suffixed_agent() {
         );
     });
 }
+
+#[test]
+fn last_call_does_not_hide_older_agent_behind_newer_others() {
+    run_with_cx(|cx| async move {
+        let state = solo_state();
+        {
+            let conn = state.db.lock(&cx).await.expect("database lock");
+            conn.execute(
+                "INSERT INTO memories (text, type, source_agent, status) VALUES (?1, 'note', ?2, 'active')",
+                rusqlite::params!["cli last-call needle", "cli"],
+            )
+            .expect("insert cli memory");
+            for i in 0..40 {
+                conn.execute(
+                    "INSERT INTO memories (text, type, source_agent, status) VALUES (?1, 'note', ?2, 'active')",
+                    rusqlite::params![format!("other last-call decoy {i}"), "other-agent"],
+                )
+                .expect("insert decoy memory");
+            }
+        }
+        let reply = handle_mcp_message_with_caller(
+            &cx,
+            &state,
+            &json!({
+                "jsonrpc":"2.0",
+                "id":34,
+                "method":"tools/call",
+                "params":{
+                    "name":"cortex_lastCall",
+                    "arguments":{"kind":"memory","agent":"cli"}
+                }
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+        let payload = mcp_tool_text(&reply);
+        assert_eq!(payload["found"], json!(true), "{payload}");
+        assert_eq!(payload["kind"], json!("memory"), "{payload}");
+        assert_eq!(payload["sourceAgent"], json!("cli"), "{payload}");
+        assert_eq!(payload["summary"], json!("cli last-call needle"), "{payload}");
+    });
+}

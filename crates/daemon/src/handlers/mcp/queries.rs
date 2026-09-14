@@ -1,5 +1,5 @@
 use cortex_kernel::handlers::recall::RecallContext;
-use cortex_kernel::handlers::store::same_agent;
+use cortex_kernel::handlers::store::{agent_match_params, same_agent};
 use serde_json::{json, Value};
 pub(crate) fn can_view_last_call(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallContext) -> bool {
     if !ctx.team_mode {
@@ -28,8 +28,20 @@ pub(crate) fn table_has_column(conn: &rusqlite::Connection, table: &str, column:
     found
 }
 pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, agent_filter: Option<&str>, ctx: &RecallContext) -> Result<Value, String> {
+    if ctx.team_mode && ctx.caller_id.is_none() {
+        return Ok(json!({"found": false}));
+    }
     let normalized_kind = kind.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("any");
     let agent_filter = agent_filter.map(str::trim).filter(|value| !value.is_empty());
+    // Filter in SQL. A LIMIT-then-filter window hid the matching row when
+    // 32 newer other-agent (or unowned event) rows came first.
+    let agent_params = agent_filter.and_then(agent_match_params);
+    let (agent_ident, agent_like) = match agent_params.as_ref() {
+        Some((ident, like)) => (Some(ident.as_str()), Some(like.as_str())),
+        None if agent_filter.is_some() => (Some("\u{0}"), Some("\u{0} (%")),
+        None => (None, None),
+    };
+    let team_owner = if ctx.team_mode { ctx.caller_id } else { None };
     let owner_scoped_entries = table_has_column(conn, "memories", "owner_id")
         && table_has_column(conn, "memories", "visibility")
         && table_has_column(conn, "decisions", "owner_id")
@@ -59,6 +71,9 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
               FROM events
             )
             WHERE (?1 = 'any' OR kind = ?1)
+              AND (?2 IS NULL OR lower(trim(COALESCE(source_agent, ''))) = ?2
+                   OR lower(trim(COALESCE(source_agent, ''))) LIKE ?3 ESCAPE '\\')
+              AND (?4 IS NULL OR owner_id = ?4 OR visibility IN ('shared', 'team'))
             ORDER BY julianday(NULLIF(TRIM(created_at), '')) DESC, id DESC
             LIMIT 32
         "
@@ -87,13 +102,16 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
               FROM events
             )
             WHERE (?1 = 'any' OR kind = ?1)
+              AND (?2 IS NULL OR lower(trim(COALESCE(source_agent, ''))) = ?2
+                   OR lower(trim(COALESCE(source_agent, ''))) LIKE ?3 ESCAPE '\\')
+              AND (?4 IS NULL OR owner_id = ?4 OR visibility IN ('shared', 'team'))
             ORDER BY julianday(NULLIF(TRIM(created_at), '')) DESC, id DESC
             LIMIT 32
         "
     };
     let mut stmt = conn.prepare(sql).map_err(|err| err.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params![normalized_kind], |row| {
+        .query_map(rusqlite::params![normalized_kind, agent_ident, agent_like, team_owner], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,
