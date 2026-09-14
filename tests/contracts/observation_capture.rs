@@ -3,7 +3,7 @@ use cortex_kernel::runtime::{
     CortexRuntime,
     observation::{ObservationEvent, SourceSpec},
 };
-use cortex_tests::support::run_with_cx;
+use cortex_tests::support::{run_with_cx, solo_state};
 
 fn event(key: &str, text: &str) -> ObservationEvent {
     ObservationEvent {
@@ -463,6 +463,52 @@ fn source_authority_is_principal_scoped_and_limits_precede_writes() {
                 .await
                 .unwrap()
                 .duplicate
+        );
+    });
+}
+
+#[test]
+fn host_capture_keeps_git_object_ids() {
+    run_with_cx(|cx| async move {
+        let runtime = CortexRuntime::from_state(solo_state());
+        runtime
+            .register_source(&cx, SourceSpec::document("notes", "repo-a"))
+            .await
+            .unwrap();
+        let sha = "5f20a1830da05e7cfe44b93eb0170c31ba5dfcdc";
+        let text = format!("HEAD is {sha}");
+        assert_eq!(
+            cortex_kernel::handlers::redact_secrets(&text),
+            text,
+            "git object ids must remain in stored and captured text"
+        );
+        let receipt = runtime
+            .observe(&cx, "notes", "g1", event("one", &text))
+            .await
+            .expect("git object ids are not capture_secret_rejected");
+        let conn = runtime.state().db.lock(&cx).await.unwrap();
+        let payload: Vec<u8> = conn
+            .query_row(
+                "SELECT inline_payload FROM sources WHERE source_id=?1",
+                [&receipt.source_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(payload, text.as_bytes());
+        assert!(
+            runtime
+                .observe(
+                    &cx,
+                    "notes",
+                    "g1",
+                    event(
+                        "secret",
+                        "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz1234567890"
+                    )
+                )
+                .await
+                .unwrap_err()
+                .contains("secret")
         );
     });
 }

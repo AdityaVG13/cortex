@@ -2,7 +2,6 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 static BEARER_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
-static HASH_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static CREDENTIAL_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static SK_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static GITHUB_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
@@ -17,16 +16,16 @@ pub fn redact_secrets(text: &str) -> String {
         .as_ref()
         .map(|re| re.replace_all(text, "Bearer [REDACTED]").to_string())
         .unwrap_or_else(|| text.to_string());
-    let hashes = HASH_REDACTION_RE
-        .get_or_init(|| Regex::new(r"[a-f0-9]{40,}").ok())
-        .as_ref()
-        .map(|re| re.replace_all(&bearer, "[HASH_REDACTED]").to_string())
-        .unwrap_or(bearer);
+    // Bare 40+ hex is a git object id in this product (`git log`, HEAD,
+    // GitHub commit URLs). Treating it as a secret made store replace SHAs
+    // with `[HASH_REDACTED]` and made observation capture reject the whole
+    // occurrence (`capture_secret_rejected`). Labeled secret patterns below
+    // still catch Bearer / token:= / sk- / ghp_ / xox / AKIA material.
     let credential = CREDENTIAL_REDACTION_RE
         .get_or_init(|| Regex::new(r#"(?i)["']?\b(?:token|key|secret|password)\b["']?\s*[:=]\s*["']?\S+"#).ok())
         .as_ref()
-        .map(|re| re.replace_all(&hashes, "[CREDENTIAL_REDACTED]").to_string())
-        .unwrap_or(hashes);
+        .map(|re| re.replace_all(&bearer, "[CREDENTIAL_REDACTED]").to_string())
+        .unwrap_or(bearer);
     let sk = SK_REDACTION_RE
         .get_or_init(|| Regex::new(r"sk-[A-Za-z0-9_-]{16,}").ok())
         .as_ref()
