@@ -15,6 +15,7 @@ use crate::{
 use asupersync::Cx;
 use serde_json::json;
 use std::io::{Read, Write};
+use std::path::Path;
 
 const USAGE: &str = "Usage: cortex capture <register|enable|disable|put|tail|file|get|inventory|bootstrap|reconcile|subscribe|prepare|query|require|retract|rebuild|learn|learn-reset|learn-explain|assess|unassess|assemble|assembly-get|assembly-expand|learn-event|learn-retract|learn-erase|routes-rebuild|routes-reset|why|host-register|host-put|host-tail|host-cycle>";
 
@@ -29,6 +30,29 @@ fn input() -> Result<Vec<u8>, String> {
         return Err("capture_batch_byte_limit".into());
     }
     Ok(bytes)
+}
+
+/// Inventory snapshot requires the registered `file:` path to already be
+/// canonical (`/tmp` vs `/private/tmp` on macOS). Rewrite using the parent
+/// directory so a not-yet-created leaf still lands on the real volume.
+fn canonical_file_source_key(source: &str) -> Result<String, String> {
+    let Some(raw) = source.strip_prefix("file:") else {
+        return Ok(source.to_string());
+    };
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return Err("source_not_authorized".into());
+    }
+    let Some(name) = path.file_name() else {
+        return Err("source_not_authorized".into());
+    };
+    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Err("source_not_authorized".into());
+    };
+    match parent.canonicalize() {
+        Ok(parent) => Ok(format!("file:{}", parent.join(name).display())),
+        Err(_) => Ok(source.to_string()),
+    }
 }
 
 pub async fn run_capture_cli(cx: &Cx, paths: &CortexPaths, args: &[String]) -> Result<(), String> {
@@ -294,11 +318,14 @@ async fn run_source_command(
     flags: &[String],
     required: &dyn Fn(&str) -> Result<String, String>,
 ) -> Result<(), String> {
-    let source = match command {
+    let mut source = match command {
         "get" => required("--id")?,
         "file" => required("--path")?,
         _ => required("--source")?,
     };
+    if !matches!(command, "get" | "file") {
+        source = canonical_file_source_key(&source)?;
+    }
     let generation = if matches!(command, "put" | "tail") {
         Some(required("--generation")?)
     } else {

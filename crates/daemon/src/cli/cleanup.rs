@@ -163,7 +163,7 @@ pub fn run_backup_cli(paths: &auth::CortexPaths) {
 
 pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
     let rest = args.get(2..).unwrap_or_default();
-    validate_cli_options_allowing_one_positional_or_exit(rest, &[], &["--skip-verification"]);
+    validate_cli_options_allowing_one_positional_or_exit(rest, &[], &[]);
     let restore_file = match first_positional(rest, &[]) {
         Some(path) if !is_cli_option_token(path) => path,
         _ => {

@@ -17,6 +17,6 @@ function normalizeSessionAgent(agent) { return String(agent || "")
 function sessionMatchesAgent(session, agent) { const rawSessionAgent = String(session?.agent || "").trim(), rawAgent = String(agent || "").trim();
   return !rawSessionAgent || !rawAgent
     ? !1
-    : sameAgent(rawSessionAgent, rawAgent) || normalizeSessionAgent(rawSessionAgent) === rawAgent.toLowerCase();
+    : sameAgent(rawSessionAgent, rawAgent) || normalizeSessionAgent(rawSessionAgent) === normalizeSessionAgent(rawAgent);
 }
 export { normalizeSession, sessionMatchesAgent };

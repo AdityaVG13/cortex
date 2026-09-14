@@ -180,7 +180,26 @@ fn open_capture(path: &Path, follow: bool) -> Result<(fs::File, PathBuf), String
 }
 
 fn skip_unusable_source(err: &str) -> bool {
-    err == "source_not_found" || err == "source_symlink_requires_explicit_path"
+    // Discovery must not abort siblings. Unregistered, binary, oversize,
+    // stale-policy, or transient IO on one path still leaves the rest of
+    // `index_all` replayable. Explicit `index_file` / `observe_file` do
+    // not use this skip list.
+    matches!(
+        err,
+        "source_not_found"
+            | "source_symlink_requires_explicit_path"
+            | "source_not_authorized"
+            | "source_disabled_or_policy_stale"
+            | "capture_disabled"
+            | "source_not_utf8"
+            | "source_not_regular_file"
+            | "source_path_not_utf8"
+            | "capture_byte_limit"
+            | "source_changed"
+            | "invalid_capture_limit"
+    ) || err.starts_with("source_unavailable:")
+        || err.starts_with("source_changed:")
+        || err.starts_with("permission_required:")
 }
 
 fn index_discovered_file(

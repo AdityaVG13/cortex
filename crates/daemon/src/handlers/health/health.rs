@@ -25,15 +25,18 @@ async fn brain_health_snapshot(cx: &asupersync::Cx, state: &RuntimeState) -> Res
 pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, include_private_runtime: bool) -> Result<Value, String> {
     let now_unix_secs = Utc::now().timestamp();
     let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
-    let (memories, decisions, embeddings_count, events, db_freelist_pages, retrieval) = {
+    let (memories, decisions, embeddings_count, events, db_freelist_pages, retrieval, db_size_bytes) = {
         let conn = state.db_read.lock(cx).await.map_err(|err| err.to_string())?;
-        let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         let ev: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         let retrieval = cortex_kernel::handlers::recall::clock_health_payload(&conn);
-        (m, d, e, ev, freelist, retrieval)
+        // Same census as the compaction governor. A failed `stat` of the
+        // `.db` path used to report 0 bytes / "normal" pressure.
+        let size = crate::compaction::db_size_bytes(&conn).max(0) as u64;
+        (m, d, e, ev, freelist, retrieval, size)
     };
     let (storage_bytes, backup_count, log_bytes, heavy_metrics_source, cache_age_secs) = {
         let cached = match health_heavy_metrics_cache().lock() {
@@ -67,7 +70,6 @@ pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, inc
             (storage_bytes, backup_count, log_bytes, "live", 0)
         }
     };
-    let db_size_bytes = std::fs::metadata(&state.db_path).map(|meta| meta.len()).unwrap_or(0);
     let db_soft_limit_bytes = crate::compaction::STORAGE_SOFT_LIMIT_BYTES.max(1) as u64;
     let db_hard_limit_bytes = crate::compaction::STORAGE_HARD_LIMIT_BYTES.max(1) as u64;
     let db_pressure = crate::compaction::classify_storage_pressure(db_size_bytes as i64);
