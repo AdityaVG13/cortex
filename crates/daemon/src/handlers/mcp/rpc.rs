@@ -229,23 +229,24 @@ pub(crate) fn arg_str<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
 }
+/// MCP JSON-RPC clients send integers as i64, u64, whole floats, or decimal
+/// strings. `as_i64()` alone dropped `"7"` / `7.0`, so `horizonDays` silently
+/// fell through to the 30-day default.
+fn json_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|n| i64::try_from(n).ok()))
+        .or_else(|| {
+            value.as_f64().and_then(|x| {
+                (x.is_finite() && x.fract() == 0.0).then_some(x as i64)
+            })
+        })
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+}
 pub(crate) fn arg_i64(args: &Value, keys: &[&str]) -> Option<i64> {
-    keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_i64()))
+    keys.iter().find_map(|key| args.get(*key).and_then(json_i64))
 }
 pub(crate) fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
-    keys.iter().find_map(|key| {
-        let value = args.get(*key)?;
-        if let Some(n) = value.as_u64() {
-            return usize::try_from(n).ok();
-        }
-        if let Some(n) = value.as_i64() {
-            return usize::try_from(n).ok();
-        }
-        if let Some(n) = value.as_f64() {
-            if n.is_finite() && n >= 0.0 && n.fract() == 0.0 {
-                return usize::try_from(n as u64).ok();
-            }
-        }
-        value.as_str().and_then(|s| s.trim().parse().ok())
-    })
+    keys.iter()
+        .find_map(|key| args.get(*key).and_then(json_i64).and_then(|n| usize::try_from(n).ok()))
 }
