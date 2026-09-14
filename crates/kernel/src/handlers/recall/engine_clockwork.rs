@@ -337,9 +337,12 @@ fn collect_write_arm(
             let unique = exact_rare >= 1;
             // FTS already stripped `*`/`^` inside quotes; a raw contains()
             // still treats `foo*` as a glob needle and misses the hit.
+            // Multi-word needles also cannot use contains: `end to end`
+            // misses hyphenated `end-to-end` (write stays 1, cannot admit
+            // alone) and `log file` fires inside `catalog file`.
             let quoted_hit = quoted
                 && frame.quoted_phrases.iter().any(|p| {
-                    lexical_needle(p).is_some_and(|needle| hay.contains(&needle))
+                    lexical_needle(p).is_some_and(|needle| hay_has_quoted_phrase(&hay, &needle))
                 });
             let write = if quoted_hit || unique { 2 } else { 1 };
             let strong_lexical = write == 2;
@@ -725,6 +728,26 @@ fn qualified_as_of_gates(alias: &str, bind: &str) -> String {
 
 fn qualified_acl(alias: &str, bind: &str) -> String {
     format!(" AND ({b} IS NULL OR {a}.owner_id IS NULL OR {a}.owner_id = {b} OR {a}.visibility IN ('shared','team','public'))", a = alias, b = bind)
+}
+
+/// Consecutive tokens, not a substring. FTS MATCH already tokenizes
+/// hyphens; `contains("end to end")` then fails on `end-to-end` and
+/// would never promote the hit to write=2 / strong_lexical.
+fn hay_has_quoted_phrase(hay_lower: &str, needle: &str) -> bool {
+    let parts: Vec<&str> = needle
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return false;
+    }
+    let hay_toks: Vec<&str> = hay_lower
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|tok| !tok.is_empty())
+        .collect();
+    hay_toks
+        .windows(parts.len())
+        .any(|window| window.iter().copied().eq(parts.iter().copied()))
 }
 
 /// FTS MATCH already quotes `*`/`^` away; lexical contains() must use the
