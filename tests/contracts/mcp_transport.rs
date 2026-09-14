@@ -120,10 +120,105 @@ fn query_budget_parses_json_float_and_decimal_string() {
             assert!(reply.get("error").is_none(), "{reply}");
             let payload = mcp_tool_text(&reply);
             assert_eq!(
-                payload["budget"]["bytes"],
-                json!(100),
-                "budget={budget} must not fall through to the 2000 default: {payload}"
-            );
+        assert_eq!(
+            payload["budget"]["bytes"],
+            json!(100),
+            "budget={budget} must not fall through to the 2000 default: {payload}"
+        );
         }
+    });
+}
+
+#[test]
+fn last_call_matches_model_suffixed_source_agent() {
+    run_with_cx(|cx| async move {
+        let state = solo_state();
+        {
+            let conn = state.db.lock(&cx).await.expect("database lock");
+            conn.execute(
+                "INSERT INTO memories (text, type, source_agent, status) VALUES (?1, 'note', ?2, 'active')",
+                rusqlite::params!["last-call suffix marker", "cli (opus)"],
+            )
+            .expect("insert suffixed memory");
+        }
+        let reply = handle_mcp_message_with_caller(
+            &cx,
+            &state,
+            &json!({
+                "jsonrpc":"2.0",
+                "id":31,
+                "method":"tools/call",
+                "params":{
+                    "name":"cortex_lastCall",
+                    "arguments":{"kind":"memory","agent":"cli"}
+                }
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+        let payload = mcp_tool_text(&reply);
+        assert_eq!(payload["found"], json!(true), "{payload}");
+        assert_eq!(payload["kind"], json!("memory"), "{payload}");
+        assert_eq!(
+            payload["sourceAgent"],
+            json!("cli (opus)"),
+            "lastCall agent=cli must include rows stored as cli (opus): {payload}"
+        );
+        assert_eq!(payload["summary"], json!("last-call suffix marker"), "{payload}");
+    });
+}
+
+#[test]
+fn agent_feedback_stats_match_model_suffixed_agent() {
+    run_with_cx(|cx| async move {
+        let state = solo_state();
+        let record = handle_mcp_message_with_caller(
+            &cx,
+            &state,
+            &json!({
+                "jsonrpc":"2.0",
+                "id":32,
+                "method":"tools/call",
+                "params":{
+                    "name":"cortex_agent_feedback_record",
+                    "arguments":{
+                        "agent":"cli (opus)",
+                        "outcome":"success",
+                        "outcomeScore":1.0
+                    }
+                }
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(record.get("error").is_none(), "{record}");
+        let reply = handle_mcp_message_with_caller(
+            &cx,
+            &state,
+            &json!({
+                "jsonrpc":"2.0",
+                "id":33,
+                "method":"tools/call",
+                "params":{
+                    "name":"cortex_agent_feedback_stats",
+                    "arguments":{"agent":"cli","horizonDays":30}
+                }
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+        let payload = mcp_tool_text(&reply);
+        assert!(
+            payload["sampled"].as_i64().unwrap_or(0) >= 1,
+            "stats agent=cli must include rows recorded as cli (opus): {payload}"
+        );
     });
 }

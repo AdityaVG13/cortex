@@ -264,16 +264,22 @@ pub fn build_agent_feedback_stats_payload(
         .map(str::to_ascii_lowercase);
     let agent_filter = agent_filter
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase);
+        .filter(|value| !value.is_empty());
+    let agent_params = agent_filter.and_then(crate::handlers::store::agent_match_params);
+    let (agent_ident, agent_like) = match agent_params.as_ref() {
+        Some((ident, like)) => (Some(ident.as_str()), Some(like.as_str())),
+        None if agent_filter.is_some() => (Some("\u{0}"), Some("\u{0} (%")),
+        None => (None, None),
+    };
     let mut stmt = conn
         .prepare(
             "SELECT agent, task_class, outcome, outcome_score, quality_score, latency_ms, retries, tokens_used, memory_sources_json,
                     julianday('now') - julianday(created_at)
              FROM agent_feedback
              WHERE owner_id = ?1 AND julianday('now') - julianday(created_at) <= ?2
-               AND (?3 IS NULL OR task_class = ?3) AND (?4 IS NULL OR lower(agent) = ?4)
-             ORDER BY datetime(created_at) DESC, id DESC LIMIT ?5",
+               AND (?3 IS NULL OR task_class = ?3)
+               AND (?4 IS NULL OR lower(trim(agent)) = ?4 OR lower(trim(agent)) LIKE ?5 ESCAPE '\\')
+             ORDER BY datetime(created_at) DESC, id DESC LIMIT ?6",
         )
         .map_err(|err| err.to_string())?;
     let rows = stmt
@@ -282,7 +288,8 @@ pub fn build_agent_feedback_stats_payload(
                 owner_id,
                 horizon_days,
                 task_filter,
-                agent_filter,
+                agent_ident,
+                agent_like,
                 limit as i64
             ],
             |row| {
@@ -402,17 +409,21 @@ pub fn recommend_recall_k(
     base_k: usize,
 ) -> Result<Option<Value>, String> {
     let task_class = normalize_task_class(task_class);
-    let agent = agent.trim().to_ascii_lowercase();
+    let Some((ident, like)) = crate::handlers::store::agent_match_params(agent) else {
+        return Ok(None);
+    };
     let mut stmt = conn
         .prepare(
             "SELECT outcome, quality_score FROM agent_feedback
-             WHERE owner_id = ?1 AND lower(agent) = ?2 AND task_class = ?3
+             WHERE owner_id = ?1
+               AND (lower(trim(agent)) = ?2 OR lower(trim(agent)) LIKE ?3 ESCAPE '\\')
+               AND task_class = ?4
                AND julianday('now') - julianday(created_at) <= 30
              ORDER BY datetime(created_at) DESC, id DESC LIMIT 40",
         )
         .map_err(|err| err.to_string())?;
     let rows = stmt
-        .query_map(params![owner_id, agent, task_class], |row| {
+        .query_map(params![owner_id, ident, like, task_class], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
         })
         .map_err(|err| err.to_string())?

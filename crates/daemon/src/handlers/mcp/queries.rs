@@ -1,4 +1,5 @@
 use cortex_kernel::handlers::recall::RecallContext;
+use cortex_kernel::handlers::store::same_agent;
 use serde_json::{json, Value};
 pub(crate) fn can_view_last_call(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallContext) -> bool {
     if !ctx.team_mode {
@@ -28,7 +29,7 @@ pub(crate) fn table_has_column(conn: &rusqlite::Connection, table: &str, column:
 }
 pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, agent_filter: Option<&str>, ctx: &RecallContext) -> Result<Value, String> {
     let normalized_kind = kind.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("any");
-    let agent_filter = agent_filter.map(str::trim).filter(|value| !value.is_empty()).map(str::to_lowercase);
+    let agent_filter = agent_filter.map(str::trim).filter(|value| !value.is_empty());
     let owner_scoped_entries = table_has_column(conn, "memories", "owner_id")
         && table_has_column(conn, "memories", "visibility")
         && table_has_column(conn, "decisions", "owner_id")
@@ -111,9 +112,8 @@ pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, a
         // Missing created_at is display-only. Skipping it hid the newest
         // row when every candidate in the window lacked a timestamp.
         let created_at = created_at.filter(|value| !value.trim().is_empty());
-        if let Some(filter) = agent_filter.as_deref() {
-            let current = source_agent.as_deref().map(str::to_lowercase).unwrap_or_default();
-            if current != filter {
+        if let Some(filter) = agent_filter {
+            if !same_agent(source_agent.as_deref().unwrap_or(""), filter) {
                 continue;
             }
         }

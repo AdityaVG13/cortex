@@ -292,9 +292,14 @@ pub fn handle_refinement_policy(
     // Same agent may refine in place. A different agent supersedes only with
     // strictly higher trust -- equal default 0.8 must not silently replace
     // another writer's related (not agreeing) decision. Contradiction
-    // policy uses the same `>` rule.
-    let should_supersede =
-        relation.matched_agent.as_deref() == Some(source_agent) || trust_score > target_trust;
+    // policy uses the same `>` rule. Identity ignores a trailing
+    // ` (model)` suffix: hook rows are `claude-code (opus)` while MCP
+    // often sends `claude-code`.
+    let should_supersede = relation
+        .matched_agent
+        .as_deref()
+        .is_some_and(|matched| same_agent(matched, source_agent))
+        || trust_score > target_trust;
     let tx = conn
         .savepoint()
         .map_err(|e| StoreError::Internal(e.to_string()))?;

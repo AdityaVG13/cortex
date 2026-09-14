@@ -19,6 +19,53 @@ pub fn is_benchmark_source_agent(source_agent: &str) -> bool {
     let prefix = BENCHMARK_SOURCE_AGENT_PREFIX.as_bytes();
     trimmed.len() >= prefix.len() && trimmed.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
+
+/// Operator identity matches Control Center `sessionMatchesAgent` and boot
+/// capsules: trim, drop a trailing ` (model)` suffix, then ASCII-lowercase.
+/// Exact `==` treated `claude-code` and `claude-code (opus)` as different
+/// writers, so a later refinement left both rows active.
+fn strip_trailing_model_suffix(raw: &str) -> &str {
+    let s = raw.trim();
+    if !s.ends_with(')') {
+        return s;
+    }
+    let Some(open) = s.rfind('(') else {
+        return s;
+    };
+    if open == 0 {
+        return s;
+    }
+    let inner = &s[open + 1..s.len() - 1];
+    if inner.is_empty() || inner.contains(')') {
+        return s;
+    }
+    s[..open].trim()
+}
+
+pub fn agent_identity(raw: &str) -> String {
+    strip_trailing_model_suffix(raw).to_ascii_lowercase()
+}
+
+pub fn same_agent(left: &str, right: &str) -> bool {
+    let a = left.trim();
+    let b = right.trim();
+    !a.is_empty() && !b.is_empty() && agent_identity(a) == agent_identity(b)
+}
+
+fn like_literal(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Exact identity plus trailing ` (model)` for SQL `LIKE ? ESCAPE '\'`.
+pub fn agent_match_params(agent: &str) -> Option<(String, String)> {
+    let ident = agent_identity(agent);
+    if ident.is_empty() {
+        return None;
+    }
+    Some((ident.clone(), format!("{} (%", like_literal(&ident))))
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionProvenance {
     pub source_client: String,

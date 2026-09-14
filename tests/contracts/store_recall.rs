@@ -1,6 +1,9 @@
 use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
 use cortex_kernel::handlers::store::store_decision_with_ttl;
-use cortex_tests::support::solo_state;
+use cortex_tests::support::{solo_state, test_conn};
+
+const MARKER: &str =
+    "UNIQUE_STORE_RECALL_MARKER_7f3c2a91 persist FTS5 porter tokens in handlers/recall/engine.rs";
 
 const MARKER: &str =
     "UNIQUE_STORE_RECALL_MARKER_7f3c2a91 persist FTS5 porter tokens in handlers/recall/engine.rs";
@@ -88,4 +91,57 @@ fn store_then_recall_returns_exact_decision_text() {
             "decision source is the stored context when present, got {source} for id {id}"
         );
     });
+}
+
+#[test]
+fn model_suffixed_agent_refines_in_place() {
+    let mut conn = test_conn();
+    const FIRST: &str = "Always persist sqlite wal checkpoints in cortex-daemon/src/db/maintenance.rs after every store_decision write";
+    const SECOND: &str = "Always persist sqlite wal checkpoints in cortex-daemon/src/db/maintenance.rs after every store_decision flush";
+    let (first, first_id) = store_decision_with_ttl(
+        &mut conn,
+        FIRST,
+        Some("suffix-refine".into()),
+        Some("decision".into()),
+        "oracle-agent".into(),
+        Some(0.9),
+        None,
+        None,
+    )
+    .unwrap_or_else(|err| panic!("first store: {err}"));
+    assert_eq!(first["action"], "inserted", "first JSON: {first}");
+    let first_id = first_id.expect("first id");
+    let (second, second_id) = store_decision_with_ttl(
+        &mut conn,
+        SECOND,
+        Some("suffix-refine".into()),
+        Some("decision".into()),
+        "oracle-agent (opus)".into(),
+        Some(0.9),
+        None,
+        None,
+    )
+    .unwrap_or_else(|err| panic!("suffix store: {err}"));
+    assert_eq!(
+        second["classification"], "REFINES",
+        "the pair must be a refinement, not a merge or insert: {second}"
+    );
+    assert_eq!(
+        second["status"], "superseded_old",
+        "the same operator under a (model) suffix must refine in place: {second}"
+    );
+    assert_eq!(second["supersedes"], first_id, "suffix JSON: {second}");
+    let second_id = second_id.expect("second id");
+    assert_ne!(first_id, second_id);
+    let old_status: String = conn
+        .query_row(
+            "SELECT status FROM decisions WHERE id = ?1",
+            [first_id],
+            |row| row.get(0),
+        )
+        .expect("old status");
+    assert_eq!(
+        old_status, "superseded",
+        "exact agent == treated claude-code and claude-code (opus) as different writers"
+    );
 }
