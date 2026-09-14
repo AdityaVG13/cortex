@@ -154,3 +154,62 @@ fn stored_max_timestamp_is_chronological_across_rfc3339_and_sqlite_datetime() {
         "earlier RFC3339 updated_at must not be selected as newest: {max}"
     );
 }
+
+#[test]
+fn boot_own_session_is_not_listed_as_another_agent() {
+    let conn = test_conn();
+    let far = "2099-01-01T00:00:00Z";
+    let started = ts(1);
+    conn.execute(
+        "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at) \
+         VALUES (?1, 's-self', 'mine', '[]', 'self session', ?2, ?2, ?3)",
+        rusqlite::params!["B8-Agent", started, far],
+    )
+    .expect("insert same-agent session with different case");
+    conn.execute(
+        "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at) \
+         VALUES (?1, 's-self-model', 'mine', '[]', 'self with model', ?2, ?2, ?3)",
+        rusqlite::params!["b8-agent (opus)", started, far],
+    )
+    .expect("insert same-agent session with model suffix");
+    conn.execute(
+        "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at) \
+         VALUES (?1, 's-peer', 'theirs', '[]', 'peer session', ?2, ?2, ?3)",
+        rusqlite::params!["peer-agent", started, far],
+    )
+    .expect("insert other-agent session");
+    let home = temp_home();
+    let result = compiler::compile(&conn, &home, AGENT, 4000);
+    let section = section_between(&result.boot_prompt, "## Active Agents");
+    assert!(
+        section.contains("peer-agent"),
+        "other agents must still appear: {section}"
+    );
+    assert!(
+        !section.contains("B8-Agent") && !section.contains("b8-agent (opus)"),
+        "the booting agent must not be listed as another agent: {section}"
+    );
+}
+
+#[test]
+fn boot_shows_open_focus_when_raw_entries_are_corrupt() {
+    let conn = test_conn();
+    conn.execute(
+        "INSERT INTO focus_sessions (label, agent, status, raw_entries, started_at) \
+         VALUES ('hunt', ?1, 'open', '{not-json', ?2)",
+        rusqlite::params![AGENT, ts(1)],
+    )
+    .expect("insert corrupt open focus");
+    let home = temp_home();
+    let result = compiler::compile(&conn, &home, AGENT, 4000);
+    assert!(
+        result.boot_prompt.contains("## Active Focus"),
+        "open focus must still render when raw_entries is not a JSON array: {}",
+        result.boot_prompt
+    );
+    assert!(
+        result.boot_prompt.contains("hunt"),
+        "corrupt open focus must keep its label in the boot capsule: {}",
+        result.boot_prompt
+    );
+}

@@ -123,8 +123,8 @@ fn normalize_agent(value: Option<&str>, fallback_agent: &str) -> String {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(fallback_agent)
-        .to_string()
+        .unwrap_or(fallback_agent.trim())
+        .to_ascii_lowercase()
 }
 
 pub fn normalize_horizon_days(value: Option<i64>) -> i64 {
@@ -265,14 +265,14 @@ pub fn build_agent_feedback_stats_payload(
     let agent_filter = agent_filter
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string);
+        .map(str::to_ascii_lowercase);
     let mut stmt = conn
         .prepare(
             "SELECT agent, task_class, outcome, outcome_score, quality_score, latency_ms, retries, tokens_used, memory_sources_json,
                     julianday('now') - julianday(created_at)
              FROM agent_feedback
              WHERE owner_id = ?1 AND julianday('now') - julianday(created_at) <= ?2
-               AND (?3 IS NULL OR task_class = ?3) AND (?4 IS NULL OR agent = ?4)
+               AND (?3 IS NULL OR task_class = ?3) AND (?4 IS NULL OR lower(agent) = ?4)
              ORDER BY datetime(created_at) DESC, id DESC LIMIT ?5",
         )
         .map_err(|err| err.to_string())?;
@@ -321,6 +321,7 @@ pub fn build_agent_feedback_stats_payload(
             sources_json,
             age_days,
         ) = row;
+        let agent = agent.trim().to_ascii_lowercase();
         for agg in [
             &mut overall,
             by_agent.entry(agent).or_default(),
@@ -401,10 +402,11 @@ pub fn recommend_recall_k(
     base_k: usize,
 ) -> Result<Option<Value>, String> {
     let task_class = normalize_task_class(task_class);
+    let agent = agent.trim().to_ascii_lowercase();
     let mut stmt = conn
         .prepare(
             "SELECT outcome, quality_score FROM agent_feedback
-             WHERE owner_id = ?1 AND agent = ?2 AND task_class = ?3
+             WHERE owner_id = ?1 AND lower(agent) = ?2 AND task_class = ?3
                AND julianday('now') - julianday(created_at) <= 30
              ORDER BY datetime(created_at) DESC, id DESC LIMIT 40",
         )

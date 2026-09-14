@@ -50,9 +50,40 @@ pub fn stored_max_timestamp(conn: &Connection) -> Option<String> {
     }
 }
 
+/// Boot identity matches Control Center `sessionMatchesAgent`: trim, drop a
+/// trailing ` (model)` suffix, then ASCII-lowercase. Exact SQL `!=` treated
+/// `claude-code` and `Claude-Code` / `claude-code (opus)` as other agents.
+fn strip_trailing_model_suffix(raw: &str) -> &str {
+    let s = raw.trim();
+    if !s.ends_with(')') {
+        return s;
+    }
+    let Some(open) = s.rfind('(') else {
+        return s;
+    };
+    if open == 0 {
+        return s;
+    }
+    let inner = &s[open + 1..s.len() - 1];
+    if inner.is_empty() || inner.contains(')') {
+        return s;
+    }
+    s[..open].trim()
+}
+
+fn agent_identity(raw: &str) -> String {
+    strip_trailing_model_suffix(raw).to_ascii_lowercase()
+}
+
+fn same_boot_agent(left: &str, right: &str) -> bool {
+    let a = left.trim();
+    let b = right.trim();
+    !a.is_empty() && !b.is_empty() && agent_identity(a) == agent_identity(b)
+}
+
 pub fn get_last_boot_time(conn: &Connection, agent: &str) -> Option<String> {
     conn.query_row(
-        "SELECT created_at FROM events WHERE type = 'agent_boot' AND source_agent = ?1 ORDER BY id DESC LIMIT 1",
+        "SELECT created_at FROM events WHERE type = 'agent_boot' AND lower(trim(source_agent)) = lower(trim(?1)) ORDER BY id DESC LIMIT 1",
         params![agent],
         |r| r.get::<_, String>(0),
     )
@@ -122,7 +153,7 @@ pub fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
         "SELECT sender, message FROM ( \
              SELECT sender, message, timestamp, id FROM messages \
-             WHERE recipient = ?1{scope} \
+             WHERE lower(trim(recipient)) = lower(trim(?1)){scope} \
              ORDER BY julianday(timestamp) DESC, id DESC LIMIT 10 \
          ) ORDER BY julianday(timestamp) ASC, id ASC"
     )) {
@@ -194,7 +225,7 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
     let ack = match conn
         .query_row(
             &format!(
-                "SELECT last_seen_id FROM feed_acks WHERE agent = ?1{}",
+                "SELECT last_seen_id FROM feed_acks WHERE lower(trim(agent)) = lower(trim(?1)){}",
                 owner_clause(conn, "feed_acks", boot_owner())
             ),
             params![agent],
@@ -227,7 +258,7 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
         // Lexicographic `>` skips a later space-format row after an RFC3339 ack.
         if let Ok(mut stmt) = conn.prepare_cached(&format!(
             "SELECT agent, kind, summary FROM feed \
-             WHERE agent != ?1 AND (julianday(timestamp) > julianday(?2) OR (julianday(timestamp) = julianday(?2) AND rowid > (SELECT rowid FROM feed WHERE id = ?3))){} \
+             WHERE lower(trim(agent)) != lower(trim(?1)) AND (julianday(timestamp) > julianday(?2) OR (julianday(timestamp) = julianday(?2) AND rowid > (SELECT rowid FROM feed WHERE id = ?3))){} \
              ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?4",
             owner_clause(conn, "feed", boot_owner())
         )) {
@@ -238,6 +269,7 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
                 newest.reverse();
                 return newest
                     .into_iter()
+                    .filter(|(entry_agent, ..)| !same_boot_agent(entry_agent, agent))
                     .map(|(entry_agent, kind, summary)| json!({"kind":kind,"agent":entry_agent,"summary":summary}))
                     .collect();
             }
@@ -246,13 +278,16 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
     }
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT agent, kind, summary FROM feed WHERE agent != ?1{} ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?2",
+        "SELECT agent, kind, summary FROM feed WHERE lower(trim(agent)) != lower(trim(?1)){} ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?2",
         owner_clause(conn, "feed", boot_owner())
     )) {
         if let Ok(rows) = stmt.query_map(params![agent, FEED_CAPSULE_LINES], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
             let mut newest: Vec<(String, String, String)> = rows.flatten().collect();
             newest.reverse();
             for (entry_agent, kind, summary) in newest {
+                if same_boot_agent(&entry_agent, agent) {
+                    continue;
+                }
                 out.push(json!({"kind":kind,"agent":entry_agent,"summary":summary}));
             }
         }
@@ -281,7 +316,7 @@ unwrap_or(json!([]))}))
 pub fn fetch_claimed_tasks_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT task_id, title, priority, claimed_at FROM tasks WHERE status = 'claimed' AND claimed_by = ?1{} ORDER BY julianday(claimed_at) ASC, task_id ASC",
+        "SELECT task_id, title, priority, claimed_at FROM tasks WHERE status = 'claimed' AND lower(trim(claimed_by)) = lower(trim(?1)){} ORDER BY julianday(claimed_at) ASC, task_id ASC",
         owner_clause(conn, "tasks", boot_owner())
     )) {
         if let Ok(rows) = stmt.query_map(params![agent], |r| {
@@ -314,7 +349,12 @@ pub fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, St
     let sessions = fetch_sessions(conn);
     let other_sessions: Vec<&Value> = sessions
         .iter()
-        .filter(|s| s.get("agent").and_then(|v| v.as_str()) != Some(agent))
+        .filter(|s| {
+            !same_boot_agent(
+                s.get("agent").and_then(|v| v.as_str()).unwrap_or(""),
+                agent,
+            )
+        })
         .collect();
     if !other_sessions.is_empty() {
         let lines: Vec<String> = other_sessions

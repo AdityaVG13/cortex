@@ -1,10 +1,29 @@
 use crate::handlers::estimate_tokens;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+
+/// Pass 45 recovered a corrupt `raw_entries` blob on append so later
+/// deposits still land. `focus_current` used to fail the JSON parse and
+/// return None, so boot omitted ## Active Focus while `focus_start` still
+/// reported already_open. Treat unreadable JSON the same way append does.
+fn parse_focus_entries(raw_json: &str) -> Vec<String> {
+    match serde_json::from_str::<Vec<String>>(raw_json) {
+        Ok(entries) => entries,
+        Err(_) => {
+            let trimmed = raw_json.trim();
+            if trimmed.is_empty() || trimmed == "[]" || trimmed == "null" {
+                Vec::new()
+            } else {
+                vec![raw_json.to_string()]
+            }
+        }
+    }
+}
+
 pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {
     let existing: Option<(i64, String)> = conn
         .query_row(
-            "SELECT id, label FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
+            "SELECT id, label FROM focus_sessions WHERE lower(trim(agent)) = lower(trim(?1)) AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
             params![agent],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -24,7 +43,7 @@ format!("Focus session already open with label '{open_label}'")}),
 }
 pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
     let result = conn.query_row(
-        "SELECT id, raw_entries FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
+        "SELECT id, raw_entries FROM focus_sessions WHERE lower(trim(agent)) = lower(trim(?1)) AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
         params![agent],
         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
     );
@@ -36,17 +55,7 @@ pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
     // Corrupt raw_entries used to make every later append no-op while the
     // session stayed "open". Keep the unreadable blob as one entry so the
     // session can still capture new deposits until focus_end.
-    let mut entries = match serde_json::from_str::<Vec<String>>(&raw_json) {
-        Ok(entries) => entries,
-        Err(_) => {
-            let trimmed = raw_json.trim();
-            if trimmed.is_empty() || trimmed == "[]" || trimmed == "null" {
-                Vec::new()
-            } else {
-                vec![raw_json]
-            }
-        }
-    };
+    let mut entries = parse_focus_entries(&raw_json);
     entries.push(entry.to_string());
     let Ok(updated) = serde_json::to_string(&entries) else {
         return false;
@@ -65,7 +74,7 @@ pub fn focus_end(
     owner_id: Option<i64>,
 ) -> Result<Value, String> {
     let session: Option<(i64, String)> = conn
-        .query_row("SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'", params![label, agent], |row| {
+        .query_row("SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND lower(trim(agent)) = lower(trim(?2)) AND status = 'open'", params![label, agent], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
         .optional()
@@ -139,17 +148,11 @@ pub fn focus_end(
 pub fn focus_current(conn: &Connection, agent: &str, owner: Option<i64>) -> Option<Value> {
     let scope = crate::db::owner_and_clause(conn, "focus_sessions", owner);
     conn.query_row(
-        &format!("SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE agent = ?1 AND status = 'open'{scope} ORDER BY julianday(started_at) DESC, id DESC LIMIT 1"),
+        &format!("SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE lower(trim(agent)) = lower(trim(?1)) AND status = 'open'{scope} ORDER BY julianday(started_at) DESC, id DESC LIMIT 1"),
         params![agent],
         |row| {
             let raw: String = row.get(2)?;
-            let entries: Vec<String> = serde_json::from_str(&raw).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    2,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
+            let entries = parse_focus_entries(&raw);
             Ok(json!({
 "id":row.get::<_,i64>(0)?,"label":row.get::<_,String>(1)?,"entries":entries.len(),"startedAt":row.get::<_,String>(3)?,}))
         },
