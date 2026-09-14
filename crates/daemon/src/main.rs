@@ -85,8 +85,19 @@ async fn run(cx: &Cx, paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
         }
         "prompt-inject" => prompt_inject::run(cx, rest).await,
         "setup" => {
-            cli::validate_cli_options_or_exit(rest, &[], &[]);
-            setup::run_setup(cx).await;
+            // `--team` has a full migrate implementation; rejecting it as an
+            // unknown option left README / doctor recovery with no CLI entry.
+            if rest.iter().any(|arg| arg == "--team") {
+                cli::validate_cli_options_or_exit(
+                    rest,
+                    &["--owner", "--display-name"],
+                    &["--team", "--dry-run"],
+                );
+                setup::run_setup_team(args, rest.iter().any(|arg| arg == "--dry-run")).await;
+            } else {
+                cli::validate_cli_options_or_exit(rest, &[], &[]);
+                setup::run_setup(cx).await;
+            }
         }
         "doctor" => cli::run_doctor_cli(paths),
         "backup" => {

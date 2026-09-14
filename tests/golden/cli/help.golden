@@ -5,7 +5,7 @@ Usage: cortex <command> [--home <path>] [--db <path>]
   capture <register|enable|disable|put|tail|get> [--quiet]
   capabilities --json      Discover local operations
   status [--json]           Open and inspect the local brain
-  setup                    Configure MCP clients and initialize memory
+  setup [--team] [--owner <name>] [--display-name <name>] [--dry-run]
   mcp [--agent <name>]      MCP stdio, in-process
   boot [--agent <name>] [--budget <n>] [--json]
   op <operation> [--args '<json>'] [--agent <name>]
