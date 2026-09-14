@@ -36,6 +36,21 @@ pub const TEMPLATES: [Template; 7] = [
     Template { name: "handoff", purpose: "latest checkpoint plus open work and failed attempts", parameters: &[] },
 ];
 
+/// Open work matches `agent_open_work`: every obligation that is not
+/// `verified_complete` or `cancelled`. `observed_complete` is still open —
+/// the checker has not verified it, and `verify_obligation` treats that
+/// state as unfinished work.
+fn open_obligation_states() -> Vec<Value> {
+    vec![
+        json!("proposed"),
+        json!("ready"),
+        json!("in_progress"),
+        json!("blocked"),
+        json!("observed_complete"),
+        json!("reopened"),
+    ]
+}
+
 pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> {
     let p = |k: &str| params.get(k).cloned();
     Some(match name {
@@ -137,13 +152,7 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
                     input: "o".into(),
                     field: "state".into(),
                     predicate: Predicate::In {
-                        values: vec![
-                            json!("proposed"),
-                            json!("ready"),
-                            json!("in_progress"),
-                            json!("blocked"),
-                            json!("reopened"),
-                        ],
+                        values: open_obligation_states(),
                     },
                 },
                 Step::Project {
@@ -185,6 +194,11 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
             let since = p("since_seq").and_then(|v| {
                 v.as_i64()
                     .or_else(|| v.as_u64().and_then(|n| i64::try_from(n).ok()))
+                    .or_else(|| {
+                        v.as_f64().and_then(|x| {
+                            (x.is_finite() && x.fract() == 0.0).then_some(x as i64)
+                        })
+                    })
                     .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
             }).unwrap_or(0);
             (
@@ -199,6 +213,14 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
                         valid_at: i64::MAX / 2,
                         known_seq: since,
                     },
+                    Step::Filter {
+                        id: "after".into(),
+                        input: "d".into(),
+                        field: "known_seq".into(),
+                        predicate: Predicate::Gt {
+                            value: since as f64,
+                        },
+                    },
                     Step::Count {
                         id: "known_before".into(),
                         input: "before".into(),
@@ -209,7 +231,7 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
                     },
                     Step::Project {
                         id: "out".into(),
-                        input: "d".into(),
+                        input: "after".into(),
                         fields: vec!["record".into(), "text".into()],
                     },
                 ],
@@ -236,13 +258,7 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
                     input: "o".into(),
                     field: "state".into(),
                     predicate: Predicate::In {
-                        values: vec![
-                            json!("proposed"),
-                            json!("ready"),
-                            json!("in_progress"),
-                            json!("blocked"),
-                            json!("reopened"),
-                        ],
+                        values: open_obligation_states(),
                     },
                 },
                 Step::Project {

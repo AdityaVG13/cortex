@@ -6,6 +6,7 @@
 
 use cortex_kernel::db::compiled::{bump_guard, guard_epoch, run_compiled};
 use cortex_kernel::db::records::{append_commit, append_revision, NewRevision};
+use cortex_kernel::handlers::operations::recipes;
 use cortex_logic::recipe::{evaluate, Fact, Limits, Predicate, RecipeError, Snapshot, Step};
 use cortex_tests::support::test_conn;
 use serde_json::{json, Value};
@@ -206,6 +207,45 @@ fn interpreter_is_bounded_and_rejects_cycles_unknown_inputs_and_overwork() {
 }
 
 #[test]
+fn open_work_and_handoff_keep_observed_complete() {
+    // `observed_complete` is unfinished: the checker has not verified it.
+    // Dropping it from open_work hid work the inspection view still lists.
+    let mut snap = Snapshot {
+        brain_epoch: "b1".into(),
+        policy_epoch: "p1".into(),
+        environment: "e1".into(),
+        ..Snapshot::default()
+    };
+    snap.put(fact(
+        "oc",
+        "obligation",
+        json!({"state": "observed_complete", "title": "awaiting checker", "record": "oc"}),
+    ));
+    snap.put(fact(
+        "done",
+        "obligation",
+        json!({"state": "verified_complete", "title": "shipped", "record": "done"}),
+    ));
+    snap.put(fact(
+        "nope",
+        "obligation",
+        json!({"state": "cancelled", "title": "dropped", "record": "nope"}),
+    ));
+    let (steps, outputs) = recipes::template("open_work", &json!({})).unwrap();
+    let ok = evaluate(&snap, "default", &steps, &outputs, Limits::default()).unwrap();
+    let out = ok.values["out"].as_array().expect("out");
+    assert_eq!(out.len(), 1, "{ok:?}");
+    assert_eq!(out[0]["fields"]["title"], "awaiting checker");
+    assert_eq!(ok.values["count"], 1);
+
+    let (h_steps, h_outputs) = recipes::template("handoff", &json!({})).unwrap();
+    let handoff = evaluate(&snap, "default", &h_steps, &h_outputs, Limits::default()).unwrap();
+    let open = handoff.values["open_work"].as_array().expect("open_work");
+    assert_eq!(open.len(), 1, "{handoff:?}");
+    assert_eq!(open[0]["fields"]["record"], "oc");
+}
+
+#[test]
 fn new_exception_invalidates_without_touching_the_rule_and_unrelated_scope_preserves_reuse() {
     let mut snap = Snapshot {
         brain_epoch: "b1".into(),
@@ -351,6 +391,63 @@ fn temporal_slice_conflict_join_and_compare_are_typed() {
         "two applicable heads with different values are a conflict, not an average"
     );
     assert_eq!(r.values["cmp"][0]["field"], "value");
+}
+
+#[test]
+fn what_changed_lists_only_decisions_recorded_after_since_seq() {
+    let conn = test_conn();
+    let seq1 = append_commit(&conn, "solo", None, "process_crash").unwrap();
+    append_revision(
+        &conn,
+        seq1,
+        NewRevision {
+            record_id: "decision:old",
+            kind: "decision",
+            retention: "durable",
+            body: json!({"text": "before-cursor"}),
+            epistemic_status: "asserted",
+            parents: &[],
+            replace_parents: true,
+            representation_version: "t",
+        },
+    )
+    .unwrap();
+    let seq2 = append_commit(&conn, "solo", None, "process_crash").unwrap();
+    append_revision(
+        &conn,
+        seq2,
+        NewRevision {
+            record_id: "decision:new",
+            kind: "decision",
+            retention: "durable",
+            body: json!({"text": "after-cursor"}),
+            epistemic_status: "asserted",
+            parents: &[],
+            replace_parents: true,
+            representation_version: "t",
+        },
+    )
+    .unwrap();
+    // JSON-RPC often sends numbers as floats; `as_i64()` alone would default
+    // `since` to 0 and list every decision.
+    let params = json!({"since_seq": seq1 as f64});
+    let (steps, outputs) = recipes::template("what_changed", &params).expect("template");
+    let (value, _, _) = run_compiled(
+        &conn,
+        "solo",
+        "what_changed",
+        &steps,
+        &outputs,
+        &params,
+        "branch:main",
+        Limits::default(),
+    )
+    .unwrap();
+    let out = value["values"]["out"].as_array().expect("out");
+    assert_eq!(out.len(), 1, "{value}");
+    assert_eq!(out[0]["fields"]["text"], "after-cursor", "{value}");
+    assert_eq!(value["values"]["known_before"], 1, "{value}");
+    assert_eq!(value["values"]["known_now"], 2, "{value}");
 }
 
 #[test]

@@ -34,6 +34,21 @@ fn thread_slug(thread_id: &str) -> &str {
     thread_id.strip_prefix("thread:").unwrap_or(thread_id)
 }
 
+/// MCP/JSON clients send `exit_status` as i64, u64, float, or a decimal
+/// string. `as_i64()` alone classified `"1"` / `1.0` as a successful outcome
+/// so `failed_attempts` never saw the row.
+fn json_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|n| i64::try_from(n).ok()))
+        .or_else(|| {
+            value.as_f64().and_then(|x| {
+                (x.is_finite() && x.fract() == 0.0).then_some(x as i64)
+            })
+        })
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
 pub fn ensure_thread(conn: &Connection, sequence: i64, label: &str) -> rusqlite::Result<String> {
     let thread_id = thread_id_for(label);
     conn.execute(
@@ -290,11 +305,11 @@ pub fn record_attempt(
             attempt[key] = v.clone();
         }
     }
-    let status = if attempt["exit_status"]
-        .as_i64()
-        .map(|s| s != 0)
-        .unwrap_or(false)
-        || attempt["outcome"].as_str() == Some("failure")
+    let status = if json_i64(&attempt["exit_status"]).is_some_and(|s| s != 0)
+        || attempt["outcome"]
+            .as_str()
+            .map(str::trim)
+            .is_some_and(|s| s.eq_ignore_ascii_case("failure"))
     {
         "failure"
     } else {

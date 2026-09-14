@@ -75,6 +75,10 @@ pub fn snapshot(conn: &Connection, environment: &str) -> rusqlite::Result<Snapsh
         fields.insert("record".into(), json!(record));
         fields.insert("revision".into(), json!(revision));
         fields.insert("epistemic".into(), json!(epistemic));
+        // Recipe Filter/Gt can only see `fields`. Without this, `what_changed`
+        // cannot name records recorded after `since_seq` (TemporalSlice is
+        // as-of / `known_seq <=`, never a delta).
+        fields.insert("known_seq".into(), json!(seq));
         snap.facts.insert(
             revision.clone(),
             Fact {
