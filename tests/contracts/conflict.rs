@@ -169,3 +169,58 @@ fn typed_policy_is_a_separate_observation_not_a_jaccard_collapse() {
         .expect("count policies");
     assert_eq!(stored, 2, "both policy rows must remain");
 }
+
+#[test]
+fn later_decision_does_not_jaccard_collapse_an_existing_policy() {
+    let mut conn = test_conn();
+    let text = "Always persist sqlite wal checkpoints in cortex-daemon/src/db/maintenance.rs after store_decision";
+    let (policy, policy_id) = store_decision_with_ttl(
+        &mut conn,
+        text,
+        Some("typed-kind-oracle".into()),
+        Some("policy".into()),
+        "oracle-agent".into(),
+        Some(0.9),
+        None,
+        None,
+    )
+    .unwrap_or_else(|err| panic!("policy store: {err}"));
+    assert_eq!(policy["action"], "inserted", "policy JSON: {policy}");
+    let policy_id = policy_id.expect("policy id");
+    let (note, note_id) = store_decision_with_ttl(
+        &mut conn,
+        text,
+        Some("typed-kind-oracle".into()),
+        Some("decision".into()),
+        "oracle-agent".into(),
+        Some(0.9),
+        None,
+        None,
+    )
+    .unwrap_or_else(|err| panic!("decision store: {err}"));
+    assert_eq!(
+        note["action"], "inserted",
+        "a later decision must not merge into or duplicate-reject the policy: {note}"
+    );
+    let note_id = note_id.expect("decision id");
+    assert_ne!(policy_id, note_id, "policy and decision must be distinct rows");
+    let policy_status: String = conn
+        .query_row(
+            "SELECT status FROM decisions WHERE id = ?1",
+            [policy_id],
+            |row| row.get(0),
+        )
+        .expect("policy status");
+    assert_eq!(
+        policy_status, "active",
+        "a later note must not supersede the policy"
+    );
+    let kinds: Vec<String> = conn
+        .prepare("SELECT type FROM decisions WHERE id IN (?1, ?2) ORDER BY type")
+        .unwrap()
+        .query_map([policy_id, note_id], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(kinds, vec!["decision".to_string(), "policy".to_string()]);
+}

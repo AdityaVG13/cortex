@@ -3,6 +3,34 @@ use rustc_hash::{FxBuildHasher, FxHashSet};
 const RELATED_THRESHOLD: f64 = 0.40;
 const AGREEMENT_THRESHOLD: f64 = 0.84;
 const CORE_CONTRADICTION_OVERLAP_THRESHOLD: f64 = 0.35;
+/// Deposit copies `decisions.type` onto these kinds. They are separate
+/// observations: Jaccard must not merge a later note into them, supersede
+/// them, or spend the recent-50 conflict window on them. The SQL `NOT IN`
+/// lists in this file must match.
+pub fn is_typed_evidence_kind(entry_type: &str) -> bool {
+    matches!(
+        entry_type.trim().to_ascii_lowercase().as_str(),
+        "case"
+            | "counterexample"
+            | "attempt"
+            | "failure"
+            | "outcome"
+            | "procedure"
+            | "playbook"
+            | "runbook"
+            | "exception"
+            | "constraint"
+            | "policy"
+            | "rule"
+            | "convention"
+            | "contract"
+            | "obligation"
+            | "checkpoint"
+            | "preference"
+            | "lesson"
+            | "verified_result"
+    )
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictClassification {
     Agrees,
@@ -215,6 +243,7 @@ pub fn fetch_recent_decision_candidates(
                      AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
                      AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
                      AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
+                     AND lower(trim(COALESCE(type, 'decision'))) NOT IN ('case','counterexample','attempt','failure','outcome','procedure','playbook','runbook','exception','constraint','policy','rule','convention','contract','obligation','checkpoint','preference','lesson','verified_result') \
                      ORDER BY id DESC \
                      LIMIT 50 \
                  ) \
@@ -228,6 +257,7 @@ pub fn fetch_recent_decision_candidates(
                      AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
                      AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
                      AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
+                     AND lower(trim(COALESCE(type, 'decision'))) NOT IN ('case','counterexample','attempt','failure','outcome','procedure','playbook','runbook','exception','constraint','policy','rule','convention','contract','obligation','checkpoint','preference','lesson','verified_result') \
                      ORDER BY julianday(created_at) DESC \
                      LIMIT 50 \
                  ) \
@@ -248,6 +278,7 @@ pub fn fetch_recent_decision_candidates(
                      AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
                      AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
                      AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
+                     AND lower(trim(COALESCE(type, 'decision'))) NOT IN ('case','counterexample','attempt','failure','outcome','procedure','playbook','runbook','exception','constraint','policy','rule','convention','contract','obligation','checkpoint','preference','lesson','verified_result') \
                      ORDER BY id DESC \
                      LIMIT 50 \
                  ) \
@@ -260,6 +291,7 @@ pub fn fetch_recent_decision_candidates(
                      AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
                      AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
                      AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
+                     AND lower(trim(COALESCE(type, 'decision'))) NOT IN ('case','counterexample','attempt','failure','outcome','procedure','playbook','runbook','exception','constraint','policy','rule','convention','contract','obligation','checkpoint','preference','lesson','verified_result') \
                      ORDER BY julianday(created_at) DESC \
                      LIMIT 50 \
                  ) \
@@ -364,6 +396,7 @@ pub fn detect_conflict(
              AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
              AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
              AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
+                     AND lower(trim(COALESCE(type, 'decision'))) NOT IN ('case','counterexample','attempt','failure','outcome','procedure','playbook','runbook','exception','constraint','policy','rule','convention','contract','obligation','checkpoint','preference','lesson','verified_result') \
              ORDER BY id DESC \
              LIMIT 50",
             true,
@@ -376,6 +409,7 @@ pub fn detect_conflict(
              AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
              AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
              AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
+                     AND lower(trim(COALESCE(type, 'decision'))) NOT IN ('case','counterexample','attempt','failure','outcome','procedure','playbook','runbook','exception','constraint','policy','rule','convention','contract','obligation','checkpoint','preference','lesson','verified_result') \
              ORDER BY id DESC \
              LIMIT 50",
             false,

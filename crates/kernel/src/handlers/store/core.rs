@@ -255,28 +255,7 @@ pub fn store_decision_internal(
     )
 }
 pub fn is_typed_evidence_kind(entry_type: &str) -> bool {
-    matches!(
-        entry_type.trim().to_ascii_lowercase().as_str(),
-        "case"
-            | "counterexample"
-            | "attempt"
-            | "failure"
-            | "outcome"
-            | "procedure"
-            | "playbook"
-            | "runbook"
-            | "exception"
-            | "constraint"
-            | "policy"
-            | "rule"
-            | "convention"
-            | "contract"
-            | "obligation"
-            | "checkpoint"
-            | "preference"
-            | "lesson"
-            | "verified_result"
-    )
+    crate::conflict::is_typed_evidence_kind(entry_type)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -326,8 +305,11 @@ pub fn store_decision_legacy(
     // superseded by a lexically similar row. Constraint-like kinds
     // (policy/rule/convention/contract) are the same family as constraint
     // and preference: Jaccard must not collapse two distinct rules.
-    // Only plain decisions/notes take part in agreement/refinement/
-    // contradiction policy *or* the surprise duplicate gate below.
+    // The recent-window query already omits those kinds as *targets*, so a
+    // later plain decision cannot merge into or retire a policy. Incoming
+    // typed rows still skip the policy engine here. Only plain
+    // decisions/notes take part in agreement/refinement/contradiction
+    // *or* the surprise duplicate gate below.
     if is_typed_evidence_kind(entry_type) {
         recent_scan.relation.classification = ConflictClassification::Unrelated;
     }
