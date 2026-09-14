@@ -96,7 +96,7 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
                 std::process::exit(1);
             }
         }
-        if fail_on_regression && regression_gate.as_ref().and_then(|gate| gate.get("ok")).and_then(Value::as_bool) == Some(false) {
+        if fail_on_regression && regression_gate.as_ref().and_then(|gate| gate.get("ok")).and_then(Value::as_bool) != Some(true) {
             std::process::exit(2);
         }
         return;
@@ -138,7 +138,7 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
         signals.get("consensusPromotionPrecision").and_then(serde_json::Value::as_f64).unwrap_or(0.0)
     );
     if let Some(gate) = regression_gate {
-        let gate_ok = gate.get("ok").and_then(Value::as_bool).unwrap_or(true);
+        let gate_ok = gate.get("ok").and_then(Value::as_bool).unwrap_or(false);
         println!("regression_gate: ok={}, max_regression={:.3}", gate_ok, max_regression);
         if fail_on_regression && !gate_ok {
             std::process::exit(2);

@@ -269,24 +269,31 @@ assisted_tasks.task_success_rate(),"firstPassSuccess":assisted_tasks.first_pass_
 assisted_tasks.median_time_to_valid_result_ms(),"retryCount":assisted_tasks.retry_count(),"staleMemoryHitRate":
 stale_memory_hit_rate,"lowTrustHitRate":low_trust_hit_rate,"consensusPromotionPrecision":consensus_promotion_precision}}))
 }
+fn json_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_i64().map(|n| n as f64))
+        .or_else(|| value.as_u64().map(|n| n as f64))
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+        .filter(|x| x.is_finite())
+}
+
+fn signal_f64(root: &Value, metric: &str) -> Option<f64> {
+    root.get("signals")
+        .and_then(|signals| signals.get(metric))
+        .and_then(json_f64)
+}
+
 pub fn build_eval_regression_gate(current: &Value, baseline: &Value, max_regression: f64) -> Value {
     let max_regression = max_regression.clamp(0.0, 1.0);
     let mut checks = Vec::new();
     let mut failed = Vec::new();
     for (metric, higher_is_better) in RATE_GATED_METRICS {
-        let current_value = current
-            .get("signals")
-            .and_then(|signals| signals.get(metric))
-            .and_then(Value::as_f64);
-        let baseline_value = baseline
-            .get("signals")
-            .and_then(|signals| signals.get(metric))
-            .and_then(Value::as_f64);
         let status = evaluate_regression(
             metric,
             higher_is_better,
-            current_value,
-            baseline_value,
+            signal_f64(current, metric),
+            signal_f64(baseline, metric),
             max_regression,
         );
         if status.get("regressed").and_then(Value::as_bool) == Some(true) {
@@ -305,9 +312,11 @@ fn evaluate_regression(
     max_regression: f64,
 ) -> Value {
     let (Some(current), Some(baseline)) = (current_value, baseline_value) else {
+        // A regression gate that skips a missing metric fail-opens under
+        // `--fail-on-regression`. Incomplete baselines cannot prove stability.
         return json!({"metric":metric
-,"direction":if higher_is_better{"higher_is_better"}else{"lower_is_better"},"status":"skipped_missing_value","current":
-current_value,"baseline":baseline_value,"regressed":false});
+,"direction":if higher_is_better{"higher_is_better"}else{"lower_is_better"},"status":"missing_value","current":
+current_value,"baseline":baseline_value,"regressed":true});
     };
     let raw_delta = current - baseline;
     let relative_delta = if baseline.abs() > f64::EPSILON {

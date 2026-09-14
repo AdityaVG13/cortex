@@ -35,11 +35,12 @@ function buildKnownAgents(sessions = [], extras = []) { const allAgents = new Ma
 function filterFeedEntries(entries = [], agentFilter = "") { const needle = String(agentFilter || "")
     .trim()
     .toLowerCase();
-  return needle
-    ? entries.filter((entry) => String(entry?.agent || "")
-          .toLowerCase()
-          .includes(needle), )
-    : [...entries];
+  if (!needle) return [...entries];
+  return entries.filter((entry) => {
+    const agent = String(entry?.agent || "").trim().toLowerCase();
+    const stripped = stripAgentModel(entry?.agent);
+    return agent === needle || stripped === needle || agent.startsWith(needle) || stripped.startsWith(needle);
+  });
 }
 function canClaimTask(task, operator = "") { return normalizeTask(task).status === "pending" && String(operator || "").trim().length > 0;
 }
