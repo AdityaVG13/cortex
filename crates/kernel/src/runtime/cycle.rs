@@ -281,13 +281,15 @@ fn close_evidence(
     }
     let mut seen: BTreeSet<String> = evidence.iter().map(|item| item.source_id.clone()).collect();
     let mut todo: Vec<String> = seen.iter().cloned().collect();
+    if seen.len() > 128 {
+        return Ok((Vec::new(), Some("closure_limit")));
+    }
     while let Some(parent) = todo.pop() {
-        if seen.len() > 128 {
-            return Ok((Vec::new(), Some("closure_limit")));
-        }
         let mut stmt = conn
             .prepare(
-                "SELECT child_id FROM observation_requirements WHERE principal=?1 AND parent_id=?2",
+                // Fetch one extra row so a star of 129+ required children
+                // cannot silently omit a child and still claim ready.
+                "SELECT child_id FROM observation_requirements WHERE principal=?1 AND parent_id=?2 ORDER BY child_id LIMIT 129",
             )
             .map_err(|e| e.to_string())?;
         let children = stmt
@@ -299,6 +301,12 @@ fn close_evidence(
         for child in children {
             if !seen.insert(child.clone()) {
                 continue;
+            }
+            // The previous check sat *before* this parent's children were
+            // loaded, so one parent with >128 required children blew past
+            // the closure cap and still returned a ready-looking bundle.
+            if seen.len() > 128 {
+                return Ok((Vec::new(), Some("closure_limit")));
             }
             match load_evidence(conn, principal, &spec.scope, &child, "required")? {
                 Some(item) => {
@@ -444,6 +452,12 @@ fn materialize(
         "ready"
     };
     // No partial bundle can masquerade as an absence/exception-complete result.
+    // `source_refs` used to be taken *before* the clear, so a quota-blocked
+    // View still named the overflowing sources and a later expand could
+    // fetch the prefix `merge_prepared` / `materialize_recent` refuse.
+    if bounded {
+        evidence.clear();
+    }
     let payload = if status == "ready" && !evidence.is_empty() {
         rendered
     } else {
@@ -454,9 +468,6 @@ fn materialize(
         .take(spec.max_results)
         .map(|e| e.source_id.clone())
         .collect();
-    if bounded {
-        evidence.clear();
-    }
     let fingerprint = cortex_logic::traces::content_hash(
         &serde_json::json!([principal, spec, restore, policy, status, &payload]).to_string(),
     );

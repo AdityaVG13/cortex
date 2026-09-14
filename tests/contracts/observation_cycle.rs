@@ -300,6 +300,11 @@ fn bounded_views_disclose_incomplete_results_instead_of_delivering_prefixes() {
         assert_eq!(view.status, "quota_blocked");
         assert_eq!(view.payload_bytes, 0);
         assert!(view.evidence.is_empty());
+        assert!(
+            view.source_refs.is_empty(),
+            "quota_blocked must not name overflowing sources for later expand: {:?}",
+            view.source_refs
+        );
     });
 }
 
