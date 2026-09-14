@@ -152,6 +152,34 @@ fn import_redacts_like_store_and_reports_it() {
 }
 
 #[test]
+fn import_preserves_policy_kind() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let payload = serde_json::from_value(json!({
+            "decisions": [{
+                "decision": "Always require TLS 1.3 on the imported payments webhook in src/payments/webhook.rs",
+                "type": "policy"
+            }]
+        }))
+        .unwrap();
+        let mut conn = state.db.lock(&cx).await.expect("database lock");
+        cortex_kernel::export_data::import_payload(&mut conn, &payload, &Default::default())
+            .expect("import");
+        let kind: String = conn
+            .query_row(
+                "SELECT type FROM decisions WHERE decision LIKE 'Always require TLS 1.3%'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("imported policy");
+        assert_eq!(
+            kind, "policy",
+            "import must not collapse policy into decision"
+        );
+    });
+}
+
+#[test]
 fn import_empty_temporal_fields_are_unbounded_not_present() {
     cortex_tests::support::run_with_cx(|cx| async move {
         let state = solo_state();

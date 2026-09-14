@@ -125,3 +125,47 @@ fn detect_conflict_classifies_agree_contradict_unrelated() {
     assert_eq!(unrelated.classification, ConflictClassification::Unrelated);
     assert!(!unrelated.is_conflict);
 }
+
+#[test]
+fn typed_policy_is_a_separate_observation_not_a_jaccard_collapse() {
+    let mut conn = test_conn();
+    let text = "Always require TLS 1.3 on the payments webhook in src/payments/webhook.rs including retry headers";
+    let (first, id1) = store_decision_with_ttl(
+        &mut conn,
+        text,
+        Some("typed-kind-oracle".into()),
+        Some("policy".into()),
+        "oracle-agent".into(),
+        Some(0.9),
+        None,
+        None,
+    )
+    .unwrap_or_else(|err| panic!("first policy store: {err}"));
+    assert_eq!(first["action"], "inserted", "first policy JSON: {first}");
+    let id1 = id1.expect("first policy id");
+    let (second, id2) = store_decision_with_ttl(
+        &mut conn,
+        text,
+        Some("typed-kind-oracle".into()),
+        Some("policy".into()),
+        "oracle-agent".into(),
+        Some(0.9),
+        None,
+        None,
+    )
+    .unwrap_or_else(|err| panic!("second policy store: {err}"));
+    assert_eq!(
+        second["action"], "inserted",
+        "a second policy must insert, not merge or duplicate-reject: {second}"
+    );
+    let id2 = id2.expect("second policy id");
+    assert_ne!(id1, id2, "each typed policy is its own row");
+    let stored: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM decisions WHERE type = 'policy' AND decision = ?1",
+            [text],
+            |row| row.get(0),
+        )
+        .expect("count policies");
+    assert_eq!(stored, 2, "both policy rows must remain");
+}

@@ -263,8 +263,14 @@ pub fn is_typed_evidence_kind(entry_type: &str) -> bool {
             | "failure"
             | "outcome"
             | "procedure"
+            | "playbook"
+            | "runbook"
             | "exception"
             | "constraint"
+            | "policy"
+            | "rule"
+            | "convention"
+            | "contract"
             | "obligation"
             | "checkpoint"
             | "preference"
@@ -317,8 +323,11 @@ pub fn store_decision_legacy(
     );
     // Typed evidence records are separate observations: a case, a
     // counterexample, an attempt or an exception is never merged into or
-    // superseded by a lexically similar row. Only plain decisions/notes
-    // take part in Jaccard agreement/refinement/contradiction policy.
+    // superseded by a lexically similar row. Constraint-like kinds
+    // (policy/rule/convention/contract) are the same family as constraint
+    // and preference: Jaccard must not collapse two distinct rules.
+    // Only plain decisions/notes take part in agreement/refinement/
+    // contradiction policy *or* the surprise duplicate gate below.
     if is_typed_evidence_kind(entry_type) {
         recent_scan.relation.classification = ConflictClassification::Unrelated;
     }
@@ -375,7 +384,10 @@ pub fn store_decision_legacy(
         ConflictClassification::Unrelated => {}
     }
     let surprise = 1.0 - recent_scan.max_jaccard;
-    if surprise < 0.25 {
+    // Typed kinds already skipped merge/refine. Dropping them here as
+    // "duplicate" still collapsed a second attempt, exception, or policy
+    // whose text overlapped the first (surprise is 1 - Jaccard).
+    if !is_typed_evidence_kind(entry_type) && surprise < 0.25 {
         let _ = log_event(
             conn,
             "decision_rejected_duplicate",

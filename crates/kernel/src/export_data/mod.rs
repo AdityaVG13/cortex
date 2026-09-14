@@ -31,7 +31,6 @@ fn normalize_memory_entry_type(raw: Option<&str>) -> String {
                 "procedure",
             ),
             (&["evidence", "citation", "reference"], "evidence"),
-            (&["decision", "policy", "rule"], "decision"),
         ],
     )
 }
@@ -40,7 +39,9 @@ fn normalize_decision_entry_type(raw: Option<&str>) -> String {
         raw,
         "decision",
         &[
-            (&["decision", "policy", "rule"], "decision"),
+            // policy/rule/convention/contract/constraint/preference are their
+            // own kinds (boot Constraints, required-role recall, coverage).
+            // Mapping them to "decision" dropped that identity on import.
             (&["procedure", "playbook", "runbook"], "procedure"),
             (&["evidence", "citation", "reference"], "evidence"),
             (&["fact", "memory", "note"], "fact"),

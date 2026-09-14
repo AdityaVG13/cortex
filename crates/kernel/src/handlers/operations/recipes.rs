@@ -57,7 +57,11 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
         "current_constraints" => {
             let mut steps = vec![Step::Select {
                 id: "rules".into(),
-                relation: "constraint".into(),
+                // Same family as agent_constraints / boot Constraints /
+                // required-role recall. Deposit stores the entry type as
+                // records.kind; omitting policy/rule here dropped those
+                // rows and skipped their guard epochs.
+                relation: "constraint|policy|rule|convention|contract|preference".into(),
             }];
             let mut input = "rules".to_string();
             let mut exception_input = "exceptions".to_string();

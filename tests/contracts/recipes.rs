@@ -63,6 +63,39 @@ fn retry_recipe() -> (Vec<Step>, Vec<String>) {
 }
 
 #[test]
+fn current_constraints_template_includes_policy_kind() {
+    let mut snap = Snapshot {
+        brain_epoch: "b1".into(),
+        policy_epoch: "p1".into(),
+        environment: "e1".into(),
+        ..Snapshot::default()
+    };
+    snap.put(fact(
+        "p1",
+        "policy",
+        json!({"subject": "tls", "text": "require TLS 1.3 on the payments webhook"}),
+    ));
+    snap.put(fact(
+        "d1",
+        "decision",
+        json!({"subject": "other", "text": "a plain decision is not a constraint"}),
+    ));
+    let (steps, outputs) = recipes::template("current_constraints", &json!({})).unwrap();
+    let ok = evaluate(&snap, "default", &steps, &outputs, Limits::default()).unwrap();
+    let out = ok.values["out"].as_array().expect("out rows");
+    assert_eq!(out.len(), 1, "plain decisions must not appear: {ok:?}");
+    assert_eq!(
+        out[0]["fields"]["text"],
+        "require TLS 1.3 on the payments webhook",
+        "{ok:?}"
+    );
+    assert!(
+        ok.guards.contains_key(&("default".into(), "policy".into())),
+        "compiled reads must watch the policy guard epoch: {ok:?}"
+    );
+}
+
+#[test]
 fn interpreter_is_bounded_and_rejects_cycles_unknown_inputs_and_overwork() {
     let mut snap = Snapshot {
         brain_epoch: "b1".into(),

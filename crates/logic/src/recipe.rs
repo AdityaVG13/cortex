@@ -149,6 +149,23 @@ pub enum Step {
     },
 }
 
+/// Select names one relation, or several joined by `|`.
+/// Constraint-like kinds (`policy`/`rule`/…) are distinct record relations
+/// (deposit copies `decisions.type`); a Select of only `constraint` both
+/// misses those rows and fails to watch their guard epochs.
+fn select_relation_names(relation: &str) -> Vec<&str> {
+    let names: Vec<&str> = relation
+        .split('|')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    if names.is_empty() {
+        vec![relation]
+    } else {
+        names
+    }
+}
+
 impl Step {
     pub fn id(&self) -> &str {
         match self {
@@ -359,12 +376,15 @@ pub fn evaluate(
         spend(1, &mut work)?;
         match step {
             Step::Select { id, relation } => {
-                let key = (scope.to_string(), relation.clone());
-                guards.insert(key.clone(), snapshot.epochs.get(&key).copied().unwrap_or(0));
+                let relations = select_relation_names(relation);
+                for rel in &relations {
+                    let key = (scope.to_string(), (*rel).to_string());
+                    guards.insert(key.clone(), snapshot.epochs.get(&key).copied().unwrap_or(0));
+                }
                 let mut rows = Vec::new();
                 for fact in snapshot.facts.values() {
                     spend(1, &mut work)?;
-                    if fact.scope == scope && &fact.relation == relation {
+                    if fact.scope == scope && relations.iter().any(|rel| fact.relation == *rel) {
                         rows.push(fact.clone());
                     }
                 }
