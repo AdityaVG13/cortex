@@ -241,9 +241,13 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
         || out.contains("test result:")
     {
         let (p, f) = count_tests(&out);
+        // Parsed "0 failed" from an earlier crate (or a partial summary)
+        // must not override a failed process. Workspace `cargo test`
+        // prints `N passed; 0 failed` then `error: could not compile`.
         let passed = match (f, ok) {
-            (Some(f), _) => f == 0,
-            (None, Some(ok)) => ok,
+            (_, Some(false)) => false,
+            (Some(count), _) => count == 0,
+            (None, Some(true)) => true,
             (None, None) => !out.contains("failed"),
         };
         checks.push(TypedCheck {

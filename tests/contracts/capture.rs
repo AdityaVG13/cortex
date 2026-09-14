@@ -309,3 +309,25 @@ fn budget_config_rejects_unknown_endpoints_and_preserves_valid_bounds() {
             .is_err()
     );
 }
+
+#[test]
+fn cargo_test_nonzero_exit_is_not_recorded_as_passed() {
+    use cortex_logic::capture::{parse_tool_result, CheckKind};
+    // First crate printed a clean summary; a later crate failed to compile.
+    // Parsed "0 failed" must not override the process exit.
+    let out = "     Running unittests src/lib.rs (target/debug/deps/foo)\n\
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n\
+error: could not compile `bar` (lib) due to 1 previous error\n";
+    let facts = parse_tool_result("Bash", Some("cargo test --workspace"), out, Some(101));
+    let test = facts
+        .checks
+        .iter()
+        .find(|c| c.kind == CheckKind::Test)
+        .expect("test check");
+    assert!(
+        !test.passed,
+        "a later crate compile failure must not be stored as a passing test: {test:?}"
+    );
+    assert_eq!(test.passed_count, Some(5));
+    assert_eq!(test.failed_count, Some(0));
+}
