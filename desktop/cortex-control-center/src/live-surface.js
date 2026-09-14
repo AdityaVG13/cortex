@@ -1,10 +1,12 @@
 function normalizeTask(task) { return { ...task, status: { in_progress: "claimed", done: "completed" }[task?.status] || task?.status || "pending", };
 }
-function sameAgent(left, right) { const normalizedLeft = String(left || "")
-      .trim()
-      .toLowerCase(), normalizedRight = String(right || "")
-      .trim()
-      .toLowerCase();
+function stripAgentModel(agent) { return String(agent || "")
+    .replace(/\s*\([^)]*\)\s*$/, "")
+    .trim()
+    .toLowerCase();
+}
+function sameAgent(left, right) {
+  const normalizedLeft = stripAgentModel(left), normalizedRight = stripAgentModel(right);
   return normalizedLeft.length > 0 && normalizedLeft === normalizedRight;
 }
 function resolveAgentName(agent, knownAgents = []) { const trimmed = String(agent || "").trim();
@@ -12,16 +14,13 @@ function resolveAgentName(agent, knownAgents = []) { const trimmed = String(agen
   const canonical = knownAgents.find((knownAgent) => sameAgent(knownAgent, trimmed));
   return canonical ? String(canonical).trim() : trimmed;
 }
-function stripAgentModel(agent) { return String(agent || "")
-    .replace(/\s*\([^)]*\)\s*$/, "")
-    .trim()
-    .toLowerCase();
-}
 function isTransportSession(session) { return stripAgentModel(session?.agent) === "mcp";
 }
 function buildKnownAgents(sessions = [], extras = []) { const allAgents = new Map(), registerAgent = (value) => { const agent = String(value || "").trim();
       if (!agent) return;
-      const key = agent.toLowerCase(), existing = allAgents.get(key);
+      const key = stripAgentModel(agent);
+      if (!key) return;
+      const existing = allAgents.get(key);
       if (!existing) { allAgents.set(key, agent);
         return;
       }

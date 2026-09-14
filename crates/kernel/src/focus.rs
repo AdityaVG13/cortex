@@ -20,15 +20,27 @@ fn parse_focus_entries(raw_json: &str) -> Vec<String> {
     }
 }
 
+fn sql_same_agent() -> &'static str {
+    "(lower(trim(agent)) = ?1 OR lower(trim(agent)) LIKE ?2 ESCAPE '\\')"
+}
+
 pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {
-    let existing: Option<(i64, String)> = conn
-        .query_row(
-            "SELECT id, label FROM focus_sessions WHERE lower(trim(agent)) = lower(trim(?1)) AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
-            params![agent],
+    let existing: Option<(i64, String)> = if let Some((ident, like)) =
+        crate::compiler::capsules::boot_agent_match_params(agent)
+    {
+        conn.query_row(
+            &format!(
+                "SELECT id, label FROM focus_sessions WHERE {} AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
+                sql_same_agent()
+            ),
+            params![ident, like],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .map_err(|e| format!("Failed to look up focus: {e}"))?;
+        .map_err(|e| format!("Failed to look up focus: {e}"))?
+    } else {
+        None
+    };
     if let Some((id, open_label)) = existing {
         return Ok(
             json!({"id":id,"label":open_label,"status":"already_open","message":
@@ -42,9 +54,15 @@ format!("Focus session already open with label '{open_label}'")}),
 "message":format!("Focus started: '{label}'. Store decisions normally — they'll be tracked. Call focus_end when done.")}))
 }
 pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
+    let Some((ident, like)) = crate::compiler::capsules::boot_agent_match_params(agent) else {
+        return false;
+    };
     let result = conn.query_row(
-        "SELECT id, raw_entries FROM focus_sessions WHERE lower(trim(agent)) = lower(trim(?1)) AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
-        params![agent],
+        &format!(
+            "SELECT id, raw_entries FROM focus_sessions WHERE {} AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
+            sql_same_agent()
+        ),
+        params![ident, like],
         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
     );
     let (id, raw_json) = match result {
@@ -73,10 +91,15 @@ pub fn focus_end(
     agent: &str,
     owner_id: Option<i64>,
 ) -> Result<Value, String> {
+    let Some((ident, like)) = crate::compiler::capsules::boot_agent_match_params(agent) else {
+        return Err(format!("No open focus session with label '{label}'"));
+    };
     let session: Option<(i64, String)> = conn
-        .query_row("SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND lower(trim(agent)) = lower(trim(?2)) AND status = 'open'", params![label, agent], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
+        .query_row(
+            "SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND (lower(trim(agent)) = ?2 OR lower(trim(agent)) LIKE ?3 ESCAPE '\\') AND status = 'open'",
+            params![label, ident, like],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .optional()
         .map_err(|e| format!("Failed to look up focus: {e}"))?;
     let (id, raw_json) =
@@ -146,10 +169,11 @@ pub fn focus_end(
 "message":format!("Focus '{label}' consolidated: {} entries → {} tokens ({}% reduction)",entries.len(),tokens_after,savings)}))
 }
 pub fn focus_current(conn: &Connection, agent: &str, owner: Option<i64>) -> Option<Value> {
+    let (ident, like) = crate::compiler::capsules::boot_agent_match_params(agent)?;
     let scope = crate::db::owner_and_clause(conn, "focus_sessions", owner);
     conn.query_row(
-        &format!("SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE lower(trim(agent)) = lower(trim(?1)) AND status = 'open'{scope} ORDER BY julianday(started_at) DESC, id DESC LIMIT 1"),
-        params![agent],
+        &format!("SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE (lower(trim(agent)) = ?1 OR lower(trim(agent)) LIKE ?2 ESCAPE '\\') AND status = 'open'{scope} ORDER BY julianday(started_at) DESC, id DESC LIMIT 1"),
+        params![ident, like],
         |row| {
             let raw: String = row.get(2)?;
             let entries = parse_focus_entries(&raw);

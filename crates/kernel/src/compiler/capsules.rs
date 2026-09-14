@@ -81,10 +81,32 @@ fn same_boot_agent(left: &str, right: &str) -> bool {
     !a.is_empty() && !b.is_empty() && agent_identity(a) == agent_identity(b)
 }
 
+fn like_literal(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Exact identity plus trailing ` (model)` so SQL can match without a
+/// full-table scan. `LIKE` wildcards in the agent name are escaped.
+pub(crate) fn boot_agent_match_params(agent: &str) -> Option<(String, String)> {
+    let ident = agent_identity(agent);
+    if ident.is_empty() {
+        return None;
+    }
+    Some((ident.clone(), format!("{} (%", like_literal(&ident))))
+}
+
 pub fn get_last_boot_time(conn: &Connection, agent: &str) -> Option<String> {
+    // `lower(trim(source_agent)) =` treated `claude-code (opus)` as a
+    // different booter than `claude-code`, so the delta capsule missed the
+    // last boot and replayed "new since boot" on every SessionStart.
+    let (ident, like) = boot_agent_match_params(agent)?;
     conn.query_row(
-        "SELECT created_at FROM events WHERE type = 'agent_boot' AND lower(trim(source_agent)) = lower(trim(?1)) ORDER BY id DESC LIMIT 1",
-        params![agent],
+        "SELECT created_at FROM events WHERE type = 'agent_boot' \
+         AND (lower(trim(source_agent)) = ?1 OR lower(trim(source_agent)) LIKE ?2 ESCAPE '\\') \
+         ORDER BY id DESC LIMIT 1",
+        params![ident, like],
         |r| r.get::<_, String>(0),
     )
     .ok()
@@ -148,16 +170,21 @@ pub fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     // The messages table has no runtime writer or pruner (auto_repair salvage
     // repopulates it whole), so an unbounded SELECT rendered one capsule line
     // per message ever salvaged on every boot. Bound the capsule to the newest
-    // messages, rendered oldest-first as before.
+    // messages, rendered oldest-first as before. Identity matching must stay in
+    // SQL: a global newest-N scan then Rust filter drops this agent's mail when
+    // other recipients are more recent.
+    let Some((ident, like)) = boot_agent_match_params(agent) else {
+        return out;
+    };
     let scope = owner_clause(conn, "messages", boot_owner());
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
         "SELECT sender, message FROM ( \
              SELECT sender, message, timestamp, id FROM messages \
-             WHERE lower(trim(recipient)) = lower(trim(?1)){scope} \
+             WHERE (lower(trim(recipient)) = ?1 OR lower(trim(recipient)) LIKE ?2 ESCAPE '\\'){scope} \
              ORDER BY julianday(timestamp) DESC, id DESC LIMIT 10 \
          ) ORDER BY julianday(timestamp) ASC, id ASC"
     )) {
-        if let Ok(rows) = stmt.query_map(params![agent], |r| {
+        if let Ok(rows) = stmt.query_map(params![ident, like], |r| {
             Ok(json!({"from":r.get::<_,String>(0)?,"message":r.get::<_,String>(1)?}))
         }) {
             for row in rows.flatten() {
@@ -221,18 +248,12 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
     // yields no unread entries (it marked a position, not a filter).
     const FEED_CAPSULE_LINES: i64 = 10;
     // SQL error is not "never acked": swallowing it showed the newest 10 as
-    // unread. Missing ack still means unread-from-start.
-    let ack = match conn
-        .query_row(
-            &format!(
-                "SELECT last_seen_id FROM feed_acks WHERE lower(trim(agent)) = lower(trim(?1)){}",
-                owner_clause(conn, "feed_acks", boot_owner())
-            ),
-            params![agent],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-    {
+    // unread. Missing ack still means unread-from-start. Exact `lower(trim)`
+    // missed an ack stored as `claude-code (opus)` when boot is `claude-code`.
+    let Some((ident, like)) = boot_agent_match_params(agent) else {
+        return Vec::new();
+    };
+    let ack = match feed_ack_last_seen(conn, agent) {
         Ok(ack) => ack,
         Err(_) => return Vec::new(),
     };
@@ -258,11 +279,12 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
         // Lexicographic `>` skips a later space-format row after an RFC3339 ack.
         if let Ok(mut stmt) = conn.prepare_cached(&format!(
             "SELECT agent, kind, summary FROM feed \
-             WHERE lower(trim(agent)) != lower(trim(?1)) AND (julianday(timestamp) > julianday(?2) OR (julianday(timestamp) = julianday(?2) AND rowid > (SELECT rowid FROM feed WHERE id = ?3))){} \
-             ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?4",
+             WHERE NOT (lower(trim(agent)) = ?1 OR lower(trim(agent)) LIKE ?2 ESCAPE '\\') \
+               AND (julianday(timestamp) > julianday(?3) OR (julianday(timestamp) = julianday(?3) AND rowid > (SELECT rowid FROM feed WHERE id = ?4))){} \
+             ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?5",
             owner_clause(conn, "feed", boot_owner())
         )) {
-            if let Ok(rows) = stmt.query_map(params![agent, anchor_ts, ack_id, FEED_CAPSULE_LINES], |r| {
+            if let Ok(rows) = stmt.query_map(params![ident, like, anchor_ts, ack_id, FEED_CAPSULE_LINES], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
             }) {
                 let mut newest: Vec<(String, String, String)> = rows.flatten().collect();
@@ -278,10 +300,10 @@ pub fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
     }
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT agent, kind, summary FROM feed WHERE lower(trim(agent)) != lower(trim(?1)){} ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?2",
+        "SELECT agent, kind, summary FROM feed WHERE NOT (lower(trim(agent)) = ?1 OR lower(trim(agent)) LIKE ?2 ESCAPE '\\'){} ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?3",
         owner_clause(conn, "feed", boot_owner())
     )) {
-        if let Ok(rows) = stmt.query_map(params![agent, FEED_CAPSULE_LINES], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
+        if let Ok(rows) = stmt.query_map(params![ident, like, FEED_CAPSULE_LINES], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
             let mut newest: Vec<(String, String, String)> = rows.flatten().collect();
             newest.reverse();
             for (entry_agent, kind, summary) in newest {
@@ -313,15 +335,36 @@ unwrap_or(json!([]))}))
     }
     out
 }
+fn feed_ack_last_seen(conn: &Connection, agent: &str) -> rusqlite::Result<Option<String>> {
+    let Some((ident, like)) = boot_agent_match_params(agent) else {
+        return Ok(None);
+    };
+    conn.query_row(
+        &format!(
+            "SELECT last_seen_id FROM feed_acks \
+             WHERE (lower(trim(agent)) = ?1 OR lower(trim(agent)) LIKE ?2 ESCAPE '\\'){} \
+             ORDER BY rowid DESC LIMIT 1",
+            owner_clause(conn, "feed_acks", boot_owner())
+        ),
+        params![ident, like],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+}
 pub fn fetch_claimed_tasks_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
+    let Some((ident, like)) = boot_agent_match_params(agent) else {
+        return out;
+    };
     if let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT task_id, title, priority, claimed_at FROM tasks WHERE status = 'claimed' AND lower(trim(claimed_by)) = lower(trim(?1)){} ORDER BY julianday(claimed_at) ASC, task_id ASC",
+        "SELECT task_id, title, priority, claimed_at FROM tasks \
+         WHERE status = 'claimed' AND (lower(trim(claimed_by)) = ?1 OR lower(trim(claimed_by)) LIKE ?2 ESCAPE '\\'){} \
+         ORDER BY julianday(claimed_at) ASC, task_id ASC",
         owner_clause(conn, "tasks", boot_owner())
     )) {
-        if let Ok(rows) = stmt.query_map(params![agent], |r| {
-            Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"priority":r.get
-::<_,String>(2)?,"claimedAt":r.get::<_,Option<String>>(3)?}))
+        if let Ok(rows) = stmt.query_map(params![ident, like], |r| {
+            Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,
+"priority":r.get::<_,String>(2)?,"claimedAt":r.get::<_,Option<String>>(3)?}))
         }) {
             for row in rows.flatten() {
                 out.push(row);

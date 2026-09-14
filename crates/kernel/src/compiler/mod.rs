@@ -1,5 +1,5 @@
 mod cache;
-mod capsules;
+pub(crate) mod capsules;
 mod compile;
 mod packing;
 mod ranking;

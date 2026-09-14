@@ -192,6 +192,77 @@ fn boot_own_session_is_not_listed_as_another_agent() {
 }
 
 #[test]
+fn boot_identity_includes_model_suffixed_mail_and_claimed_tasks() {
+    let conn = test_conn();
+    conn.execute(
+        "INSERT INTO messages (id, sender, recipient, message, timestamp) \
+         VALUES ('msg-self', 'peer', 'b8-agent (opus)', 'hello from peer', ?1)",
+        rusqlite::params![ts(1)],
+    )
+    .expect("insert message to model-suffixed recipient");
+    for i in 0..12 {
+        conn.execute(
+            "INSERT INTO messages (id, sender, recipient, message, timestamp) \
+             VALUES (?1, 'peer', 'other-agent', ?2, ?3)",
+            rusqlite::params![format!("msg-other-{i:02}"), format!("other {i:02}"), ts(10 + i)],
+        )
+        .expect("insert newer mail for another recipient");
+    }
+    conn.execute(
+        "INSERT INTO tasks (task_id, title, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at) \
+         VALUES ('t-self', 'finish hunt', '[]', 'high', 'any', 'claimed', 'B8-Agent (opus)', ?1, ?1)",
+        rusqlite::params![ts(1)],
+    )
+    .expect("insert claimed task under model-suffixed agent");
+    conn.execute(
+        "INSERT INTO events (type, data, source_agent, created_at) \
+         VALUES ('agent_boot', '{}', 'b8-agent (opus)', ?1)",
+        rusqlite::params![ts(2)],
+    )
+    .expect("insert last boot under model suffix");
+    conn.execute(
+        "INSERT INTO feed (id, agent, kind, summary, timestamp) \
+         VALUES ('feed-self', 'worker', 'status', 'after ack', ?1)",
+        rusqlite::params![ts(4)],
+    )
+    .expect("insert feed after ack");
+    conn.execute(
+        "INSERT INTO feed_acks (agent, last_seen_id, updated_at) \
+         VALUES ('b8-agent (opus)', 'feed-self', ?1)",
+        rusqlite::params![ts(3)],
+    )
+    .expect("insert ack under model suffix");
+    conn.execute(
+        "INSERT INTO focus_sessions (label, agent, status, raw_entries, started_at) \
+         VALUES ('suffixed-hunt', 'b8-agent (opus)', 'open', '[]', ?1)",
+        rusqlite::params![ts(1)],
+    )
+    .expect("insert open focus under model suffix");
+    let home = temp_home();
+    let result = compiler::compile(&conn, &home, AGENT, 4000);
+    assert!(
+        result.boot_prompt.contains("hello from peer"),
+        "mail to `b8-agent (opus)` must appear when booting as `{AGENT}`: {}",
+        result.boot_prompt
+    );
+    assert!(
+        result.boot_prompt.contains("finish hunt"),
+        "a task claimed by `B8-Agent (opus)` must appear as the booter's work: {}",
+        result.boot_prompt
+    );
+    assert!(
+        !result.boot_prompt.contains("after ack"),
+        "a feed ack stored as `b8-agent (opus)` must still hide that row on boot as `{AGENT}`: {}",
+        result.boot_prompt
+    );
+    assert!(
+        result.boot_prompt.contains("suffixed-hunt"),
+        "open focus stored as `b8-agent (opus)` must appear when booting as `{AGENT}`: {}",
+        result.boot_prompt
+    );
+}
+
+#[test]
 fn boot_shows_open_focus_when_raw_entries_are_corrupt() {
     let conn = test_conn();
     conn.execute(
