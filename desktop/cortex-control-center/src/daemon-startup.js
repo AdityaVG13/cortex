@@ -27,7 +27,7 @@ function daemonUtilityPill(daemonState) { return daemonState?.reachable
       : { className: "offline", label: "Wait" };
 }
 function daemonSystemStatus(daemonState) { return daemonState?.reachable
-    ? { toneClass: "sys-ok", daemonLabel: "RUNNING", embeddingsLabel: "ONNX ACTIVE", }
+    ? { toneClass: "sys-ok", daemonLabel: "RUNNING", embeddingsLabel: "CLOCK-QUORUM", }
     : isDaemonStartingState(daemonState)
       ? { toneClass: "sys-warn", daemonLabel: "STARTING", embeddingsLabel: "WARMING", }
       : { toneClass: "sys-err", daemonLabel: "OFFLINE", embeddingsLabel: "OFFLINE", };

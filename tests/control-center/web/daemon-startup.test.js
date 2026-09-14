@@ -116,7 +116,7 @@ describe("daemon startup state helpers", () => {
     expect(daemonSystemStatus(daemonState)).toEqual({
       toneClass: "sys-ok",
       daemonLabel: "RUNNING",
-      embeddingsLabel: "ONNX ACTIVE",
+      embeddingsLabel: "CLOCK-QUORUM",
     });
   });
 

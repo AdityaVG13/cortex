@@ -119,12 +119,10 @@ pub fn ingest(conn: &Connection, commit: &ReplicatedCommit) -> Result<Ingest, St
         missing.dedup();
         return Ok(Ingest::Pending { missing });
     }
-    let sequence = apply(conn, commit)?;
-    let revision_id = super::records::heads(conn, &commit.record_id)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .last()
-        .unwrap_or_default();
+    // `append_revision` returns this commit's id. `heads()` is ordered by
+    // the revision_id string, so `.last()` is not the newest ordinal once
+    // `@10` sorts before `@9` and concurrent heads remain.
+    let (sequence, revision_id) = apply(conn, commit)?;
     let drained = drain_pending(conn)?;
     Ok(Ingest::Applied {
         sequence,
@@ -133,7 +131,7 @@ pub fn ingest(conn: &Connection, commit: &ReplicatedCommit) -> Result<Ingest, St
     })
 }
 
-fn apply(conn: &Connection, commit: &ReplicatedCommit) -> Result<i64, String> {
+fn apply(conn: &Connection, commit: &ReplicatedCommit) -> Result<(i64, String), String> {
     let commit_id = format!("{}:{}", commit.origin_id, commit.origin_counter);
     conn.execute(
         "INSERT INTO commits (commit_id, principal_id, idempotency_key, ack_profile, origin_id, origin_counter) VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
@@ -149,7 +147,7 @@ fn apply(conn: &Connection, commit: &ReplicatedCommit) -> Result<i64, String> {
     let sequence = conn.last_insert_rowid();
     // Concurrent heads stay concurrent: a peer revision never replaces a
     // local head it did not descend from.
-    super::records::append_revision(
+    let revision_id = super::records::append_revision(
         conn,
         sequence,
         super::records::NewRevision {
@@ -164,7 +162,7 @@ fn apply(conn: &Connection, commit: &ReplicatedCommit) -> Result<i64, String> {
         },
     )
     .map_err(|e| e.to_string())?;
-    Ok(sequence)
+    Ok((sequence, revision_id))
 }
 
 /// Replay pending commits whose parents have since arrived. Loops until a

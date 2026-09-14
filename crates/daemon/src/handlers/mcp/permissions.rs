@@ -90,7 +90,8 @@ pub(crate) fn has_client_permission(
         if stored_client != "*" && stored_norm != client_id && stored_client != client_id {
             continue;
         }
-        if permission_satisfies(granted.trim(), required) {
+        let granted = granted.trim().to_ascii_lowercase();
+        if permission_satisfies(&granted, required) {
             return Ok(true);
         }
     }

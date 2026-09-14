@@ -76,7 +76,7 @@ function OverviewPanel() { const { panel, stats, tasks, locks, savings, conflict
               <span className={`sys-value ${daemonSysStatus.toneClass}`}>{daemonSysStatus.daemonLabel}</span>
             </div>
             <div className="sys-item">
-              <span className="sys-label">EMBEDDINGS</span>
+              <span className="sys-label">RECALL</span>
               <span className={`sys-value ${daemonSysStatus.toneClass}`}>{daemonSysStatus.embeddingsLabel}</span>
             </div>
             <div className="sys-item">

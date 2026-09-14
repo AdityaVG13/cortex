@@ -46,6 +46,17 @@ pub fn list_permissions(conn: &Connection, owner_id: i64) -> Result<Vec<Value>, 
     Ok(rows)
 }
 
+fn normalize_client_permission(raw: &str) -> Result<String, String> {
+    let permission = raw.trim().to_ascii_lowercase();
+    if matches!(permission.as_str(), "read" | "write" | "admin") {
+        Ok(permission)
+    } else {
+        Err(format!(
+            "invalid permission `{raw}`; expected read, write, or admin"
+        ))
+    }
+}
+
 pub fn grant_permission(
     conn: &Connection,
     owner_id: i64,
@@ -54,6 +65,9 @@ pub fn grant_permission(
     scope: &str,
     granted_by: &str,
 ) -> Result<(), String> {
+    // The first row closes default-open. Storing `Admin` or `foo` would
+    // report success, trip the configured-row gate, and grant nothing.
+    let permission = normalize_client_permission(permission)?;
     conn.execute(
         "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by, granted_at)
          VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
@@ -71,8 +85,9 @@ pub fn revoke_permission(
     permission: &str,
     scope: &str,
 ) -> Result<usize, String> {
+    let permission = normalize_client_permission(permission)?;
     conn.execute(
-        "DELETE FROM client_permissions WHERE owner_id = ?1 AND client_id = ?2 AND permission = ?3 AND scope = ?4",
+        "DELETE FROM client_permissions WHERE owner_id = ?1 AND client_id = ?2 AND lower(permission) = ?3 AND scope = ?4",
         params![owner_id, client, permission, scope],
     )
     .map_err(|err| err.to_string())

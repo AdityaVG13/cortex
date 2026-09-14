@@ -10,22 +10,22 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
     let total_conflicts: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'disputed'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
     let new_memories: i64 = conn
         .query_row("SELECT COUNT(*) FROM memories WHERE created_at LIKE ?1", params![today_like.clone()], |r| r.get(0))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     let new_decisions: i64 = conn
         .query_row("SELECT COUNT(*) FROM decisions WHERE created_at LIKE ?1", params![today_like.clone()], |r| r.get(0))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     let stores_today: i64 = conn
         .query_row("SELECT COUNT(*) FROM events WHERE type = 'decision_stored' AND created_at LIKE ?1", params![today_like.clone()], |r| r.get(0))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     let conflicts_today: i64 = conn
         .query_row("SELECT COUNT(*) FROM events WHERE type = 'decision_conflict' AND created_at LIKE ?1", params![today_like.clone()], |r| r.get(0))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     let decayed_memories: i64 = conn
         .query_row("SELECT COUNT(*) FROM memories WHERE status = 'active' AND score < 0.5 AND pinned = 0", [], |r| r.get(0))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     let decayed_decisions: i64 = conn
         .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active' AND score < 0.5 AND pinned = 0", [], |r| r.get(0))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     let mut top_stmt = conn
         .prepare(
             "SELECT source, text, retrievals FROM memories \

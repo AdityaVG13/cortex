@@ -35,7 +35,7 @@ function AboutPanel() { const { panel, stats } = useDashboard();
                 owned lifecycle control, live telemetry, and a brain view that can double as a showpiece.
               </p>
               <div className="about-stats-grid">
-                {[ ["Daemon", "Rust + Axum"], ["Desktop shell", "Tauri + React"], ["Embeddings", "ONNX (all-MiniLM-L6-v2)"],
+                {[ ["Daemon", "Rust + Axum"], ["Desktop shell", "Tauri + React"], ["Recall", "Clock-Quorum (model-free)"],
                   ["Storage", "SQLite (WAL)"], ["Transport", "HTTP + MCP stdio"], ["Port", "7437"], ].map(([label, value]) => (
                   <div key={label} className="about-stat-card">
                     <span className="about-stat-label">{label}</span>
