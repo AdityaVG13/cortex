@@ -146,8 +146,17 @@ fn value_str<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
+fn json_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_i64().map(|n| n as f64))
+        .or_else(|| value.as_u64().map(|n| n as f64))
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+        .filter(|x| x.is_finite())
+}
+
 fn value_f64(args: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter().find_map(|key| args.get(*key)?.as_f64())
+    keys.iter().find_map(|key| args.get(*key).and_then(json_f64))
 }
 
 fn value_i64(args: &Value, keys: &[&str]) -> Option<i64> {
@@ -167,17 +176,28 @@ fn value_i64(args: &Value, keys: &[&str]) -> Option<i64> {
 
 fn value_string_array(args: &Value, keys: &[&str]) -> Vec<String> {
     keys.iter()
-        .find_map(|key| args.get(*key)?.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|item| {
-            item.as_str()
+        .find_map(|key| args.get(*key))
+        .map(|v| match v {
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                })
+                .take(crate::clockwork::MAX_QUERY_TOKENS)
+                .collect(),
+            Value::String(s) => s
+                .split(',')
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
+                .take(crate::clockwork::MAX_QUERY_TOKENS)
+                .collect(),
+            _ => Vec::new(),
         })
-        .take(crate::clockwork::MAX_QUERY_TOKENS)
-        .collect()
+        .unwrap_or_default()
 }
 
 pub fn record_agent_feedback_from_value(
