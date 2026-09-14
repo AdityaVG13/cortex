@@ -1,5 +1,5 @@
-//! Retention is not salience: durable rows are never archived by score; an
-//! archived row past hot retention moves to a lossless cold segment (exact
+//! Retention is not salience: durable rows are never archived by score or by
+//! age-tier; an archived row past hot retention moves to a lossless cold segment (exact
 //! roundtrip, dictionary-free deflate, digest-checked); expansion hydrates
 //! it; history/audit profiles search the cold partition and the watermark
 //! says so; other profiles disclose it as not searched.
@@ -133,6 +133,62 @@ fn durable_low_score_rows_are_never_archived_by_the_aging_gc() {
     assert_eq!(
         chatter, "archived",
         "operational rows may be demoted to the archive placement"
+    );
+}
+
+#[test]
+fn durable_rows_are_never_compressed_or_archived_by_age_tier() {
+    let conn = test_conn();
+    conn.execute(
+        "INSERT INTO decisions (decision, type, source_agent, status, retention_class, score, pinned, age_tier, updated_at, created_at) VALUES ('standing durable policy', 'policy', 'a', 'active', 'durable', 0.9, 0, 'old', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memories (text, type, source_agent, status, retention_class, score, pinned, age_tier, updated_at, created_at) VALUES ('standing durable memory', 'architecture', 'a', 'active', 'durable', 0.9, 0, 'fresh', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO decisions (decision, type, source_agent, status, retention_class, score, pinned, age_tier, updated_at, created_at) VALUES ('stale operational decision', 'note', 'a', 'active', 'operational', 0.9, 0, 'old', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    let report = cortex_kernel::aging::run_aging_pass(&conn);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let (status, tier, compressed): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT status, age_tier, compressed_text FROM decisions WHERE decision = 'standing durable policy'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "active", "age-tier must not archive a durable row");
+    assert_eq!(tier, "old", "durable rows stay on their current age tier");
+    assert_eq!(
+        compressed, None,
+        "durable rows must not be compressed to a recall one-liner"
+    );
+    let (mem_status, mem_tier, mem_compressed): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT status, age_tier, compressed_text FROM memories WHERE text = 'standing durable memory'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(mem_status, "active");
+    assert_eq!(mem_tier, "fresh", "durable memories skip fresh→recent");
+    assert_eq!(mem_compressed, None);
+    let operational: String = conn
+        .query_row(
+            "SELECT status FROM decisions WHERE decision = 'stale operational decision'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        operational, "archived",
+        "operational age-tier old rows still archive"
     );
 }
 

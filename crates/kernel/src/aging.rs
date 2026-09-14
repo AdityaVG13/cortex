@@ -11,6 +11,10 @@ const RECENT_DAYS: i64 = 14;
 const OLD_DAYS: i64 = 60;
 const GC_SCORE_THRESHOLD: f64 = 0.15;
 const GC_MIN_DAYS: i64 = 3;
+/// Durable identity is not a compression or archive candidate. Salience GC
+/// already refuses it; time-based aging must too or a standing policy leaves
+/// current recall after one pass per tier (fresh → recent → old → archived).
+const NOT_DURABLE: &str = "COALESCE(retention_class, 'operational') != 'durable'";
 
 fn skip_immune(
     conn: &Connection,
@@ -154,10 +158,13 @@ fn age_memories_to_recent(conn: &Connection, failures: &mut Vec<MaintenanceFailu
         conn,
         failures,
         "age_memories_to_recent SELECT memories",
-        "SELECT id, text, source FROM memories \
-         WHERE status = 'active' AND pinned = 0 \
-         AND age_tier = 'fresh' \
-         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
+        &format!(
+            "SELECT id, text, source FROM memories \
+             WHERE status = 'active' AND pinned = 0 \
+             AND age_tier = 'fresh' \
+             AND {NOT_DURABLE} \
+             AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1"
+        ),
         FRESH_DAYS,
         |row| {
             Ok((
@@ -194,10 +201,13 @@ fn age_memories_to_old(conn: &Connection, failures: &mut Vec<MaintenanceFailure>
         conn,
         failures,
         "age_memories_to_old SELECT memories",
-        "SELECT id, text, source FROM memories \
-         WHERE status = 'active' AND pinned = 0 \
-         AND age_tier = 'recent' \
-         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
+        &format!(
+            "SELECT id, text, source FROM memories \
+             WHERE status = 'active' AND pinned = 0 \
+             AND age_tier = 'recent' \
+             AND {NOT_DURABLE} \
+             AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1"
+        ),
         RECENT_DAYS,
         |row| {
             Ok((
@@ -234,6 +244,7 @@ fn archive_ancient_memories(conn: &Connection, failures: &mut Vec<MaintenanceFai
         "UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'old' \
+         AND {NOT_DURABLE} \
          AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1 \
          AND {}",
         not_immune_sql("memories", "memory::", "source", 2, 3)
@@ -255,10 +266,13 @@ fn age_decisions_to_recent(conn: &Connection, failures: &mut Vec<MaintenanceFail
         conn,
         failures,
         "age_decisions_to_recent SELECT decisions",
-        "SELECT id, decision, context FROM decisions \
-         WHERE status = 'active' AND pinned = 0 \
-         AND age_tier = 'fresh' \
-         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
+        &format!(
+            "SELECT id, decision, context FROM decisions \
+             WHERE status = 'active' AND pinned = 0 \
+             AND age_tier = 'fresh' \
+             AND {NOT_DURABLE} \
+             AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1"
+        ),
         FRESH_DAYS,
         |row| {
             Ok((
@@ -299,10 +313,13 @@ fn age_decisions_to_old(conn: &Connection, failures: &mut Vec<MaintenanceFailure
         conn,
         failures,
         "age_decisions_to_old SELECT decisions",
-        "SELECT id, decision, context FROM decisions \
-         WHERE status = 'active' AND pinned = 0 \
-         AND age_tier = 'recent' \
-         AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1",
+        &format!(
+            "SELECT id, decision, context FROM decisions \
+             WHERE status = 'active' AND pinned = 0 \
+             AND age_tier = 'recent' \
+             AND {NOT_DURABLE} \
+             AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1"
+        ),
         RECENT_DAYS,
         |row| {
             Ok((
@@ -343,6 +360,7 @@ fn archive_ancient_decisions(conn: &Connection, failures: &mut Vec<MaintenanceFa
         "UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'old' \
+         AND {NOT_DURABLE} \
          AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1 \
          AND {}",
         not_immune_sql("decisions", "decision::", "context", 2, 3)
@@ -411,13 +429,14 @@ fn compress_to_one_liner(text: &str) -> String {
     first_sentence.chars().take(120).collect()
 }
 /// Salience is not deletion authority: low score can demote operational
-/// rows to the archive placement, never a durable-retention row.
+/// rows to the archive placement, never a durable-retention row. Time-based
+/// aging uses the same durable skip.
 fn gc_low_score(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
     let mut count = 0usize;
     let mem_sql = format!(
         "UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
-         AND COALESCE(retention_class, 'operational') != 'durable' \
+         AND {NOT_DURABLE} \
          AND score < ?1 \
          AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), ''))) > ?2 \
          AND {}",
@@ -438,7 +457,7 @@ fn gc_low_score(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> us
     let dec_sql = format!(
         "UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
-         AND COALESCE(retention_class, 'operational') != 'durable' \
+         AND {NOT_DURABLE} \
          AND score < ?1 \
          AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(last_accessed), ''), NULLIF(TRIM(created_at), ''))) > ?2 \
          AND {}",
