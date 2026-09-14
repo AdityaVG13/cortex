@@ -197,3 +197,45 @@ fn archived_rows_move_to_a_cold_segment_and_stay_recoverable_and_findable() {
         );
     });
 }
+
+#[test]
+fn blank_updated_at_falls_through_created_at_for_cold_move() {
+    let conn = test_conn();
+    conn.execute(
+        "INSERT INTO memories (text, type, source_agent, status, retention_class, score, pinned, updated_at, created_at) VALUES ('blank-updated archived memory', 'note', 'a', 'archived', 'operational', 0.5, 0, '', '2020-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO decisions (decision, type, source_agent, status, retention_class, score, pinned, updated_at, created_at) VALUES ('blank-updated archived decision', 'constraint', 'a', 'archived', 'operational', 0.5, 0, '   ', '2020-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    let mut failures = Vec::new();
+    let moved = cortex_kernel::compaction::strip_archived_text_with_retention_for_test(
+        &conn,
+        &mut failures,
+        30,
+    );
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(
+        moved, 2,
+        "blank/whitespace updated_at must age from created_at, not skip cold-move"
+    );
+    let mem: String = conn
+        .query_row(
+            "SELECT text FROM memories WHERE text LIKE '[cold:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(mem.starts_with("[cold:"), "{mem}");
+    let dec: String = conn
+        .query_row(
+            "SELECT decision FROM decisions WHERE decision LIKE '[cold:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(dec.starts_with("[cold:"), "{dec}");
+}

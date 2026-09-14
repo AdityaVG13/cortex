@@ -13,7 +13,7 @@ pub fn aggregate_old_feedback_with_window(
         .prepare(
             "SELECT result_source, SUM(signal), COUNT(*) \
              FROM recall_feedback \
-             WHERE julianday('now') - julianday(created_at) > ?1 \
+             WHERE julianday('now') - julianday(NULLIF(TRIM(created_at), '')) > ?1 \
              GROUP BY result_source HAVING COUNT(*) > 1",
         )
         .and_then(|mut stmt| {
@@ -45,7 +45,7 @@ pub fn aggregate_old_feedback_with_window(
             "aggregate_old_feedback DELETE recall_feedback",
             "DELETE FROM recall_feedback \
              WHERE result_source = ?1 \
-             AND julianday('now') - julianday(created_at) > ?2",
+             AND julianday('now') - julianday(NULLIF(TRIM(created_at), '')) > ?2",
             params![source, aggregation_days],
         );
         if deleted == 0 {
@@ -115,7 +115,7 @@ pub fn purge_benchmark_artifacts_with_retention(
                  FROM decisions \
                  WHERE (LOWER(COALESCE(type, '')) = 'benchmark' \
                         OR LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1)) \
-                   AND julianday(created_at) < julianday('now', ?2)",
+                   AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?2)",
                 params![benchmark_source_pattern.clone(), window],
             );
         }
@@ -204,7 +204,7 @@ pub fn purge_benchmark_artifacts_with_retention(
                 "DELETE FROM recall_feedback \
                  WHERE (LOWER(COALESCE(agent, '')) LIKE LOWER(?1) \
                         OR LOWER(COALESCE(result_source, '')) LIKE LOWER(?1)) \
-                   AND julianday(created_at) < julianday('now', ?2)",
+                   AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?2)",
                 params![benchmark_source_pattern.clone(), window],
             );
             result.events_deleted += exec_counted(
@@ -216,7 +216,7 @@ pub fn purge_benchmark_artifacts_with_retention(
                         OR LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) LIKE LOWER(?1) \
                         OR LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE LOWER(?1) \
                         OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark') \
-                   AND julianday(created_at) < julianday('now', ?2)",
+                   AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?2)",
                 params![benchmark_source_pattern.clone(), window],
             );
         }

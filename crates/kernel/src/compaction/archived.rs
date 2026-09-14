@@ -7,6 +7,11 @@ pub fn strip_archived_text(conn: &Connection, failures: &mut Vec<MaintenanceFail
 /// bytes are kept (lossless codec) and a route marker replaces the inline
 /// text. Nothing is discarded; the searchable universe keeps the row's
 /// anchors and the planner discloses the cold partition.
+///
+/// Blank `updated_at` is not NULL. `COALESCE(updated_at, created_at)` sticks
+/// on `''`, `julianday('')` is NULL, and the age predicate never matches, so those
+/// rows skip cold-move forever. Fall through `NULLIF(TRIM(...))` the same way
+/// aging/decay does.
 pub fn strip_archived_text_with_retention(
     conn: &Connection,
     failures: &mut Vec<MaintenanceFailure>,
@@ -23,7 +28,7 @@ pub fn strip_archived_text_with_retention(
         ),
     ] {
         let sql = format!(
-            "SELECT id FROM {table} WHERE {status_clause} AND {text_col} NOT LIKE '[cold:%' AND {text_col} != '[compacted]' AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1 ORDER BY id LIMIT 500"
+            "SELECT id FROM {table} WHERE {status_clause} AND {text_col} NOT LIKE '[cold:%' AND {text_col} != '[compacted]' AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1 ORDER BY id LIMIT 500"
         );
         let ids: Vec<i64> = match conn.prepare(&sql).and_then(|mut stmt| {
             stmt.query_map(params![retention_days], |r| r.get::<_, i64>(0))
