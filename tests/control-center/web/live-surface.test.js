@@ -3,6 +3,7 @@ import {
   buildKnownAgents,
   canFinalizeTask,
   canUnlockLock,
+  dedupeNormalizedSessions,
   nextFeedAckId,
   resolveAgentName,
   sameAgent,
@@ -42,5 +43,15 @@ describe("agent identity", () => {
     const agents = buildKnownAgents([{ agent: "claude-code" }], ["claude-code (opus)"]);
     expect(agents).toEqual(["claude-code (opus)"]);
     expect(resolveAgentName("claude-code", agents)).toBe("claude-code (opus)");
+  });
+
+  it("collapses hook and MCP sessions for the same operator into one row", () => {
+    const rows = dedupeNormalizedSessions([
+      { agent: "claude-code", lastHeartbeatMs: 20, sessionId: "mcp" },
+      { agent: "claude-code (opus)", lastHeartbeatMs: 10, sessionId: "hook" },
+      { agent: "droid (gpt-5)", lastHeartbeatMs: 5, sessionId: "droid-model" },
+      { agent: "droid", lastHeartbeatMs: 4, sessionId: "droid-bare" },
+    ]);
+    expect(rows.map((row) => row.sessionId).sort()).toEqual(["droid-model", "hook"]);
   });
 });

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { summarizeDashboardErrors } from "../../api-client.js";
 import { USD_TO_CURRENCY_RATE } from "../../constants.js";
-import { buildKnownAgents, isTransportSession, resolveAgentName } from "../../live-surface.js";
+import { buildKnownAgents, dedupeNormalizedSessions, resolveAgentName } from "../../live-surface.js";
 import { computeStartupRetryStep, isTransientDaemonFeedback } from "../../daemon-startup.js";
 import { formatCompactNumber, formatSignedCompactNumber } from "../../number-format.js";
 import {
@@ -84,27 +84,7 @@ function useDashboardState() { const browserBootstrap = useMemo(() => readBrowse
         const currentIndex = panelIndex(panel), nextIndex = panelIndex(nextPanel);
         (setPanelMotionDirection( currentIndex >= 0 && nextIndex >= 0 && nextIndex < currentIndex ? "backward" : "forward", ), setPanel(nextPanel));
       }, [panel], ), normalizedSessions = useMemo(() => { if (!Array.isArray(sessions)) return [];
-      const sorted = sessions
-          .map((session, index) => normalizeSession(session, index))
-          .sort((a, b) => b.lastHeartbeatMs - a.lastHeartbeatMs), deduped = new Map();
-      for (const session of sorted) { const agentRaw = String(session?.agent || "").trim();
-        if (!agentRaw) { deduped.set(session.sessionId || `session-${deduped.size}`, session);
-          continue;
-        }
-        const key =
-            agentRaw
-              .replace(/\s*\([^)]*\)\s*$/, "")
-              .trim()
-              .toLowerCase() === "droid"
-              ? "droid"
-              : agentRaw.toLowerCase(), existing = deduped.get(key);
-        if (!existing) { deduped.set(key, session);
-          continue;
-        }
-        const existingHasModel = /\([^)]+\)/.test(String(existing.agent || ""));
-        /\([^)]+\)/.test(agentRaw) && !existingHasModel && deduped.set(key, session);
-      }
-      return Array.from(deduped.values()).filter((session) => !isTransportSession(session));
+      return dedupeNormalizedSessions(sessions.map((session, index) => normalizeSession(session, index)));
     }, [sessions]);
   (useEffect(() => { sessionsRef.current = normalizedSessions;
   }, [normalizedSessions]), useEffect(() => { daemonStateRef.current = daemonState;

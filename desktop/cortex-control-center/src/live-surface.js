@@ -16,6 +16,30 @@ function resolveAgentName(agent, knownAgents = []) { const trimmed = String(agen
 }
 function isTransportSession(session) { return stripAgentModel(session?.agent) === "mcp";
 }
+// Heartbeat-newest session per operator. Hook rows are `claude-code (opus)`
+// while MCP is `claude-code`; a raw-string Map key listed them twice.
+function dedupeNormalizedSessions(sessions = []) {
+  const sorted = [...sessions].sort((a, b) => (b.lastHeartbeatMs || 0) - (a.lastHeartbeatMs || 0));
+  const deduped = new Map();
+  for (const session of sorted) {
+    const agentRaw = String(session?.agent || "").trim();
+    if (!agentRaw) {
+      deduped.set(session.sessionId || `session-${deduped.size}`, session);
+      continue;
+    }
+    const key = stripAgentModel(agentRaw) || agentRaw.toLowerCase();
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, session);
+      continue;
+    }
+    const existingHasModel = /\([^)]+\)/.test(String(existing.agent || ""));
+    if (/\([^)]+\)/.test(agentRaw) && !existingHasModel) {
+      deduped.set(key, session);
+    }
+  }
+  return Array.from(deduped.values()).filter((session) => !isTransportSession(session));
+}
 function buildKnownAgents(sessions = [], extras = []) { const allAgents = new Map(), registerAgent = (value) => { const agent = String(value || "").trim();
       if (!agent) return;
       const key = stripAgentModel(agent);
@@ -52,5 +76,5 @@ function nextFeedAckId(entries = [], operator = "") { const operatorName = Strin
   return (operatorName && entries.find((entry) => entry?.id && !sameAgent(entry?.agent, operatorName))?.id) || "";
 }
 export {
-  buildKnownAgents, canClaimTask, canFinalizeTask, canUnlockLock, filterFeedEntries, isTransportSession, nextFeedAckId, normalizeTask,
+  buildKnownAgents, canClaimTask, canFinalizeTask, canUnlockLock, dedupeNormalizedSessions, filterFeedEntries, isTransportSession, nextFeedAckId, normalizeTask,
   resolveAgentName, sameAgent, };
