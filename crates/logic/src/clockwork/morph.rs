@@ -129,14 +129,14 @@ pub fn morph_variants(token: &str) -> Vec<String> {
     out
 }
 
+/// Token and stem match only. A raw `contains` treated `search` as a hit
+/// inside `research` and `log` inside `catalog`, which the write arm then
+/// scored as exact rare-term evidence (write=2 / strong_lexical).
 pub fn hay_has_lexical(hay_lower: &str, term: &str) -> bool {
     if term.is_empty() {
         return false;
     }
     let needle = term.to_ascii_lowercase();
-    if hay_lower.contains(&needle) {
-        return true;
-    }
     hay_lower
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .any(|tok| !tok.is_empty() && stems_match(tok, &needle))
