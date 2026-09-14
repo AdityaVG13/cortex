@@ -129,6 +129,10 @@ PLAN.md
 
 # Local beads_rust workspace (SQLite + JSONL; do not commit)
 .beads/
+
+# Skill-loop orchestrator progress (local; never commit)
+.skill-loop-progress.md
+
 RECON.md
 cortex-profiles.json
 
