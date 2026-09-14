@@ -200,13 +200,30 @@ fn is_error_code(t: &str) -> bool {
         || (u.starts_with("TS") && u.len() >= 5 && u[2..].chars().all(|c| c.is_ascii_digit()))
 }
 
-/// True when `token` is a command name, not a substring of a longer
-/// identifier. Hyphen splits so `vue-tsc` still matches `tsc` while
-/// `tsconfig.json` does not; `.` stays inside a token so `clippy.toml`
-/// does not match `clippy`. Same class as cmake vs `make`.
-fn cmd_has_token(cmd: &str, token: &str) -> bool {
+/// Split a command the same way `cmd_has_token` / `cmd_has_seq` match.
+/// Hyphen splits so `vue-tsc` still matches `tsc` while `tsconfig.json`
+/// does not; `.` stays inside a token so `clippy.toml` does not match
+/// `clippy`. Same class as cmake vs `make`.
+fn cmd_tokens(cmd: &str) -> impl Iterator<Item = &str> {
     cmd.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
-        .any(|part| part == token)
+        .filter(|part| !part.is_empty())
+}
+
+/// True when `token` is a command name, not a substring of a longer
+/// identifier.
+fn cmd_has_token(cmd: &str, token: &str) -> bool {
+    cmd_tokens(cmd).any(|part| part == token)
+}
+
+/// True when `seq` appears as consecutive command tokens. `contains("cargo
+/// check")` matched `cargo checkout`; `contains("npm test")` matched
+/// `npm testimonial`.
+fn cmd_has_seq(cmd: &str, seq: &[&str]) -> bool {
+    if seq.is_empty() {
+        return false;
+    }
+    let parts: Vec<&str> = cmd_tokens(cmd).collect();
+    parts.windows(seq.len()).any(|window| window == seq)
 }
 
 fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<TypedCheck> {
@@ -214,11 +231,13 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
     let out = output.to_ascii_lowercase();
     let mut checks = Vec::new();
     let ok = exit_status.map(|c| c == 0);
-    if cmd.contains("cargo test")
+    if cmd_has_seq(&cmd, &["cargo", "test"])
         || cmd_has_token(&cmd, "pytest")
         || cmd_has_token(&cmd, "vitest")
-        || cmd.contains("npm test")
-        || cmd.contains("bun test")
+        || cmd_has_seq(&cmd, &["npm", "test"])
+        || cmd_has_seq(&cmd, &["npm", "run", "test"])
+        || cmd_has_seq(&cmd, &["bun", "test"])
+        || cmd_has_seq(&cmd, &["bun", "run", "test"])
         || out.contains("test result:")
     {
         let (p, f) = count_tests(&out);
@@ -234,7 +253,7 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
             failed_count: f,
         });
     }
-    if cmd.contains("cargo check")
+    if cmd_has_seq(&cmd, &["cargo", "check"])
         || cmd_has_token(&cmd, "tsc")
         || cmd_has_token(&cmd, "mypy")
         || cmd_has_token(&cmd, "typecheck")
@@ -258,9 +277,9 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
             failed_count: None,
         });
     }
-    if cmd.contains("cargo build")
-        || cmd.contains("npm run build")
-        || cmd.contains("bun run build")
+    if cmd_has_seq(&cmd, &["cargo", "build"])
+        || cmd_has_seq(&cmd, &["npm", "run", "build"])
+        || cmd_has_seq(&cmd, &["bun", "run", "build"])
         || cmd_has_token(&cmd, "make")
     {
         checks.push(TypedCheck {
@@ -270,7 +289,10 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
             failed_count: None,
         });
     }
-    if cmd.contains("cargo fmt") || cmd_has_token(&cmd, "prettier") || cmd_has_token(&cmd, "black") {
+    if cmd_has_seq(&cmd, &["cargo", "fmt"])
+        || cmd_has_token(&cmd, "prettier")
+        || cmd_has_token(&cmd, "black")
+    {
         checks.push(TypedCheck {
             kind: CheckKind::Format,
             passed: ok.unwrap_or(true),
