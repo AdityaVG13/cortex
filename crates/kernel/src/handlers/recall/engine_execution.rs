@@ -731,20 +731,23 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
             }
         }
     }
-    if let Some((text, ty, owner_id, visibility)) = query_memory_for_unfold(conn, source) {
-        if is_visible(owner_id, visibility.as_deref(), ctx) {
-            if crate::db::cold::is_cold_marker(&text) {
-                if let Some(id) = source.strip_prefix("memory::").and_then(|s| s.parse::<i64>().ok()) {
-                    return match crate::db::cold::hydrate(conn, "memory", id) {
-                        Ok(Some((cold_text, _, intact))) => {
-                            Some(json!({"text":cold_text,"type":ty,"physical_state":"cold_segment","intact":intact}))
-                        }
-                        _ => Some(json!({"text":Value::Null,"type":ty,"physical_state":"unavailable","error":"cold block unreadable"})),
-                    };
+    // Identity keys (`memory::{id}`) are not stored in `memories.source`.
+    // Expand / compare / collapsed fallback must load by id, same as
+    // `decision::{id}`.
+    if let Some(id) = parse_memory_source_id(source) {
+        match query_memory_by_id_for_unfold(conn, id) {
+            Some((id, text, ty, owner_id, visibility)) => {
+                if is_visible(owner_id, visibility.as_deref(), ctx) {
+                    return Some(memory_unfold_value(conn, id, text, ty));
                 }
-                return Some(json!({"text":Value::Null,"type":ty,"physical_state":"unavailable","error":"cold block unreadable"}));
+                return None;
             }
-            return Some(json!({"text":text,"type":ty}));
+            None => {}
+        }
+    }
+    if let Some((id, text, ty, owner_id, visibility)) = query_memory_for_unfold(conn, source) {
+        if is_visible(owner_id, visibility.as_deref(), ctx) {
+            return Some(memory_unfold_value(conn, id, text, ty));
         }
     }
     if let Some(id_str) = source.strip_prefix("decision::") {
@@ -785,19 +788,33 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     }
     let stripped = source.strip_prefix("memory::").unwrap_or(source);
     if stripped != source {
-        if let Some((text, ty, owner_id, visibility)) = query_memory_for_unfold(conn, stripped) {
+        if let Some((id, text, ty, owner_id, visibility)) = query_memory_for_unfold(conn, stripped) {
             if is_visible(owner_id, visibility.as_deref(), ctx) {
-                return Some(json!({"text":text,"type":ty}));
+                return Some(memory_unfold_value(conn, id, text, ty));
             }
         }
     }
     None
 }
+fn parse_memory_source_id(source: &str) -> Option<i64> {
+    source.strip_prefix("memory::").and_then(|s| s.parse().ok())
+}
+fn memory_unfold_value(conn: &Connection, id: i64, text: String, ty: String) -> Value {
+    if crate::db::cold::is_cold_marker(&text) {
+        return match crate::db::cold::hydrate(conn, "memory", id) {
+            Ok(Some((cold_text, _, intact))) => {
+                json!({"text":cold_text,"type":ty,"physical_state":"cold_segment","intact":intact})
+            }
+            _ => json!({"text":Value::Null,"type":ty,"physical_state":"unavailable","error":"cold block unreadable"}),
+        };
+    }
+    json!({"text":text,"type":ty})
+}
 // RFC3339 (`T`) and SQLite `datetime('now')` (space) are not lexicographic.
 // Empty strings mean unbounded (same as NULL); julianday('') is NULL and
 // would otherwise exclude the row.
 const UNFOLD_ACTIVE:&str="status = 'active' AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))";
-pub type MemoryUnfoldRow = (String, String, Option<i64>, Option<String>);
+pub type MemoryUnfoldRow = (i64, String, String, Option<i64>, Option<String>);
 pub type DecisionUnfoldRow = (String, Option<String>, Option<i64>, Option<String>);
 fn query_acl_row<T, F, G>(conn: &Connection, with_sql: &str, without_sql: &str, bind: &[&dyn rusqlite::types::ToSql], map_with: F, map_without: G) -> Option<T>
 where
@@ -814,11 +831,24 @@ pub fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<Memory
     let bind: Vec<&dyn rusqlite::types::ToSql> = vec![&source];
     query_acl_row(
         conn,
-        &format!("SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),
-        &format!("SELECT text, type FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),
+        &format!("SELECT id, text, type, owner_id, visibility FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),
+        &format!("SELECT id, text, type FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),
         &bind,
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        |row| Ok((row.get(0)?, row.get(1)?, None, None)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, None, None)),
+    )
+}
+/// Exact expansion by logical id ignores the active-status gate: an
+/// archived or superseded row is still a retained source (archive is not
+/// erasure). Sibling of `query_decision_by_id_for_unfold`.
+pub fn query_memory_by_id_for_unfold(conn: &Connection, id: i64) -> Option<MemoryUnfoldRow> {
+    query_acl_row(
+        conn,
+        "SELECT id, text, type, owner_id, visibility FROM memories WHERE id = ?1",
+        "SELECT id, text, type FROM memories WHERE id = ?1",
+        &[&id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, None, None)),
     )
 }
 fn query_decision_for_unfold(conn: &Connection, predicate: &str, bind: &[&dyn rusqlite::types::ToSql], order_limit: &str) -> Option<DecisionUnfoldRow> {
