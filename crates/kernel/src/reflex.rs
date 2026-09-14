@@ -94,8 +94,20 @@ pub fn build(
     let mut dictionary = BTreeMap::new();
     let mut automaton = Automaton::default();
     let mut threads: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    // Level-0 is a current-decision surface. `status = 'active'` is not
+    // enough: TTL expiry, valid-time, and orphaned versions already hide a
+    // row from recall and boot capsules. Serving those rows here would
+    // inject stale constraints into the warm hook path.
     let mut stmt = conn
-        .prepare("SELECT id, decision, status FROM decisions WHERE status = 'active' ORDER BY id DESC LIMIT ?1")
+        .prepare(
+            "SELECT id, decision, status FROM decisions \
+             WHERE status = 'active' \
+               AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
+               AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
+               AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
+               AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) \
+             ORDER BY id DESC LIMIT ?1",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([max_records as i64], |r| {
@@ -105,8 +117,10 @@ pub fn build(
                 r.get::<_, String>(2)?,
             ))
         })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    for row in rows.flatten() {
+    for row in rows {
         let (id, text, status) = row;
         let index = views.len();
         views.push(PreRendered {

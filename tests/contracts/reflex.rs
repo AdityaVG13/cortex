@@ -165,6 +165,87 @@ fn snapshot_is_published_atomically_validated_against_the_frontier_and_discardab
 }
 
 #[test]
+fn reflex_snapshot_omits_expired_and_not_yet_valid_decisions() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let cx = &cx;
+        let runtime = CortexRuntime::from_state(solo_state());
+        let texts = [
+            "RFX-101 live reflex ttl row alpha99 bravo88 charlie77 src/live101/x.rs",
+            "RFX-102 expired reflex ttl row delta66 echo55 foxtrot44 src/dead102/x.rs",
+            "RFX-103 future reflex ttl row golf33 hotel22 india11 src/future103/x.rs",
+        ];
+        for text in texts {
+            let caller = Caller {
+                owner_id: None,
+                agent: "reflex-ttl",
+                principal: "solo".into(),
+            };
+            dispatch(
+                cx,
+                runtime.state(),
+                caller,
+                Operation::Commit,
+                &json!({"decision": text}),
+            )
+            .await
+            .unwrap();
+        }
+        {
+            let conn = runtime.state().db.lock(cx).await.unwrap();
+            let expired = conn
+                .execute(
+                    "UPDATE decisions SET expires_at = '2000-01-01T00:00:00Z' WHERE decision LIKE '%RFX-102%'",
+                    [],
+                )
+                .unwrap();
+            let future = conn
+                .execute(
+                    "UPDATE decisions SET valid_from = '2099-01-01T00:00:00Z' WHERE decision LIKE '%RFX-103%'",
+                    [],
+                )
+                .unwrap();
+            assert_eq!(expired, 1, "RFX-102 must exist as its own row before expiry");
+            assert_eq!(future, 1, "RFX-103 must exist as its own row before future valid_from");
+        }
+        let snapshot = {
+            let conn = runtime.state().db_read.lock(cx).await.unwrap();
+            reflex::build(&conn, 1, reflex::DEFAULT_MAX_RECORDS).unwrap()
+        };
+        assert!(
+            snapshot.anchor_dictionary.contains_key("rfx-101"),
+            "current decision must remain in Level-0: {:?}",
+            snapshot.anchor_dictionary.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !snapshot.anchor_dictionary.contains_key("rfx-102"),
+            "TTL-expired active decision must not enter Level-0: {:?}",
+            snapshot.views
+        );
+        assert!(
+            !snapshot.anchor_dictionary.contains_key("rfx-103"),
+            "not-yet-valid active decision must not enter Level-0: {:?}",
+            snapshot.views
+        );
+        let live = reflex::level0(&snapshot, "what is the RFX-101 retry budget?", None, 4);
+        assert!(!live.fallback, "{live:?}");
+        assert!(
+            live.hits.iter().any(|hit| hit.line.contains("RFX-101")),
+            "{live:?}"
+        );
+        let expired = reflex::level0(&snapshot, "what is the RFX-102 retry budget?", None, 4);
+        assert!(
+            expired.fallback && expired.hits.iter().all(|hit| !hit.line.contains("RFX-102")),
+            "expired RFX-102 must not be a warm hit: {expired:?}"
+        );
+        let future = reflex::level0(&snapshot, "what is the RFX-103 retry budget?", None, 4);
+        assert!(
+            future.fallback && future.hits.iter().all(|hit| !hit.line.contains("RFX-103")),
+            "future-valid RFX-103 must not be a warm hit: {future:?}"
+        );
+    });
+}
+
+#[test]
 fn level0_known_thread_does_not_leak_inapplicable_hits() {
     let snapshot = reflex::ReflexSnapshot {
         header: reflex::ReflexHeader {
