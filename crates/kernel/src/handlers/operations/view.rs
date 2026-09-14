@@ -130,17 +130,27 @@ impl View {
                         .collect()
                 })
                 .unwrap_or_default();
+            let reference = item["source"].as_str().unwrap_or("").to_string();
+            // Namespace default only. `close_evidence` replaces this with the
+            // row's `type` (constraint, failure, …); leaving memories as
+            // "decision" made CurrentConstraints / FailedAttempts look uncovered
+            // even when the recalled row was that kind.
+            let kind = match reference.split_once("::") {
+                Some(("memory", _)) => "memory",
+                Some(("decision", _)) => "decision",
+                _ => "decision",
+            };
             cards.push(Card {
                 alias: format!("m{}", index + 1),
                 label: String::new(),
-                kind: "decision".into(),
+                kind: kind.into(),
                 retention: "operational".into(),
                 required: false,
                 expandable: false,
                 exact_text: None,
                 // Free-form source/context without `::` cannot be expanded;
                 // it is still an admitted claim, not a hidden lead.
-                reference: item["source"].as_str().unwrap_or("").to_string(),
+                reference,
                 bytes: statement.len(),
                 statement,
                 epistemic: epistemic_for(item),
@@ -239,18 +249,34 @@ impl View {
                 mark_contested(card, "qualification_unavailable: no record head");
                 continue;
             };
-            let legacy_id = card
-                .reference
-                .split_once("::")
-                .and_then(|(k, id)| (k == "decision").then(|| id.parse::<i64>().ok()).flatten());
-            if let Some(id) = legacy_id {
-                if let Ok((kind, retention)) =
-                    conn.query_row("SELECT COALESCE(type,'decision'), COALESCE(retention_class,'operational') FROM decisions WHERE id = ?1", params![id], |r| {
+            let parsed = card.reference.split_once("::").and_then(|(k, id)| {
+                id.parse::<i64>().ok().map(|n| (k.to_string(), n))
+            });
+            let legacy_id = parsed
+                .as_ref()
+                .filter(|(k, _)| k == "decision")
+                .map(|(_, id)| *id);
+            if let Some((ns, id)) = parsed.as_ref() {
+                let sql = match ns.as_str() {
+                    "decision" => {
+                        "SELECT COALESCE(type,'decision'), COALESCE(retention_class,'operational') FROM decisions WHERE id = ?1"
+                    }
+                    "memory" => {
+                        "SELECT COALESCE(type,'memory'), COALESCE(retention_class,'operational') FROM memories WHERE id = ?1"
+                    }
+                    _ => "",
+                };
+                if !sql.is_empty() {
+                    match conn.query_row(sql, params![id], |r| {
                         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                    })
-                {
-                    card.kind = kind;
-                    card.retention = retention;
+                    }) {
+                        Ok((kind, retention)) => {
+                            card.kind = kind;
+                            card.retention = retention;
+                        }
+                        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
             }
             let Ok((items, contrary)) = close_revision(conn, revision, legacy_id) else {
@@ -728,7 +754,16 @@ fn need_covered(need: &Need, cards: &[Card]) -> bool {
         Need::Unverified => cards.iter().any(|c| c.epistemic != "asserted"),
         Need::Answer | Need::Map => !cards.is_empty(),
         Need::CurrentConstraints => cards.iter().any(|c| is_constraint_kind(&c.kind)),
+        Need::FailedAttempts => cards.iter().any(|c| {
+            matches!(c.kind.as_str(), "attempt" | "failure" | "outcome")
+        }),
+        Need::Procedures => {
+            cards.iter().any(|c| matches!(c.kind.as_str(), "procedure" | "case"))
+        },
         Need::AsKnown | Need::Changes => !cards.is_empty(),
+        // Obligations / verified outcomes / compare / audit / recipes are
+        // not recall Cards; they stay unmet until a recipe or continuation
+        // supplies them (see operations contract: open_obligations named).
         _ => false,
     }
 }

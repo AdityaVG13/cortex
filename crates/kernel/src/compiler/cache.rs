@@ -59,36 +59,50 @@ pub fn cache_set(conn: &Connection, key: &str, hash: &str, compressed: &str, tok
         let _ = stmt.execute(params![key, hash, compressed, tokens as i64]);
     }
 }
-fn identity_feedback_texts(conn: &Connection) -> Vec<(i64, String)> {
+fn identity_feedback_texts(conn: &Connection) -> Result<Vec<(i64, String)>, String> {
     let mem_scope = super::owner_clause(conn, "memories", super::boot_owner());
-    let Ok(mut stmt) = conn.prepare_cached(&format!(
-        "SELECT id, text FROM memories WHERE type = 'feedback' AND status = 'active' \
+    let mut stmt = conn
+        .prepare_cached(&format!(
+            "SELECT id, text FROM memories WHERE type = 'feedback' AND status = 'active' \
          AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
          AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
          AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')){mem_scope} \
          ORDER BY score DESC, id ASC LIMIT 20"
-    )) else {
-        return Vec::new();
-    };
+        ))
+        .map_err(|err| err.to_string())?;
     let rows: Vec<(i64, String)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map(|rows| rows.flatten().collect())
-        .unwrap_or_default();
+        .map_err(|err| err.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|err| err.to_string())?;
     let ids: Vec<i64> = rows.iter().map(|row| row.0).collect();
-    let allow = match super::capsules::boot_scope_allowlist(conn, "memory", &ids) {
-        Ok(allow) => allow,
-        Err(_) => return Vec::new(),
-    };
-    rows.into_iter()
+    let allow = super::capsules::boot_scope_allowlist(conn, "memory", &ids)?;
+    Ok(rows
+        .into_iter()
         .filter(|(id, _)| super::capsules::keep_boot_id(&allow, *id))
-        .collect()
+        .collect())
+}
+
+fn identity_unavailable() -> (String, usize) {
+    let text = format!(
+        "{}\nRules: [unavailable] identity feedback could not be loaded; do not assume this set is empty",
+        detect_identity()
+    );
+    let tokens = estimate_tokens(&text);
+    (text, tokens)
 }
 
 pub fn build_identity_capsule(conn: &Connection) -> (String, usize) {
     // Cache key over exactly the rows the capsule renders (top 20 by score,
     // then path-filtered), not O(all feedback bytes) per boot. Paths belong
     // in the key so a scoped boot cannot reuse an unscoped identity cache.
-    let rows = identity_feedback_texts(conn);
+    let rows = match identity_feedback_texts(conn) {
+        Ok(rows) => rows,
+        // A failed SELECT/allowlist is not "no identity rules". Do not cache
+        // a platform-only capsule under the empty digest — that would look
+        // like a complete identity until the next distinct row set.
+        Err(_) => return identity_unavailable(),
+    };
     let owner_tag = super::boot_owner()
         .map(|id| id.to_string())
         .unwrap_or_default();
