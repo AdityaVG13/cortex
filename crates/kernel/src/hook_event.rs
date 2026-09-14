@@ -140,6 +140,29 @@ pub fn frame_from_host(
     }
 }
 
+/// Hosts send `exit_code` as i64, u64, whole float, or a decimal string.
+/// `as_i64()` alone dropped `"1"` / `1.0`, so a failed command with no
+/// paths/checks/error codes was treated as non-material and never deposited.
+fn json_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|n| i64::try_from(n).ok()))
+        .or_else(|| {
+            value.as_f64().and_then(|x| {
+                (x.is_finite() && x.fract() == 0.0).then_some(x as i64)
+            })
+        })
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+fn tool_exit_status(payload: &Value) -> Option<i32> {
+    payload
+        .get("tool_response")
+        .and_then(|r| r.get("exit_code").or_else(|| r.get("exitCode")))
+        .and_then(json_i64)
+        .and_then(|c| i32::try_from(c).ok())
+}
+
 fn looks_like_fs_path(s: &str) -> bool {
     s.contains('/') || s.contains('\\')
 }
@@ -277,11 +300,7 @@ pub async fn process(
             let command = payload
                 .get("tool_input")
                 .and_then(|i| s(i, &["command", "cmd"]));
-            let exit = payload
-                .get("tool_response")
-                .and_then(|r| r.get("exit_code").or(r.get("exitCode")))
-                .and_then(Value::as_i64)
-                .map(|c| c as i32);
+            let exit = tool_exit_status(payload);
             let facts = parse_tool_result(tool, command, &frame.input, exit);
             if facts.is_material() {
                 let key = facts.idempotency_key();

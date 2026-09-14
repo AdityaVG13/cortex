@@ -220,6 +220,33 @@ fn f05_failing_run_is_never_remembered_as_verified() {
 }
 
 #[test]
+fn f05_string_exit_code_still_captures_a_failed_command() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let runtime = CortexRuntime::from_state(solo_state());
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "f05-str",
+            "tool_name": "Bash",
+            "tool_use_id": "t-str",
+            "tool_input": {"command": "false"},
+            "tool_response": {"stdout": "", "exit_code": "1"}
+        });
+        let frame = cortex_kernel::hook_event::frame_from_host(
+            "PostToolUse",
+            &payload,
+            cortex_logic::adapter::CapabilityManifest::claude_code_plugin(),
+        );
+        let out = cortex_kernel::hook_event::process(&cx, &runtime, "f05-str", &frame, &payload)
+            .await
+            .expect("process host event");
+        assert!(
+            out.capture_receipt.is_some(),
+            "string exit_code 1 must be material: {out:?}"
+        );
+    });
+}
+
+#[test]
 fn f06_savings_are_never_summed_and_bandit_stays_off_without_benefit() {
     let a = Accounting {
         d_task_bytes: 10,
