@@ -4,6 +4,10 @@
 //! it; history/audit profiles search the cold partition and the watermark
 //! says so; other profiles disclose it as not searched.
 
+use cortex_kernel::compiler::{
+    empty_rank_components, fetch_rank_candidates, rank_candidates, rank_components_for,
+    RankedCandidate,
+};
 use cortex_kernel::db::cold::{cold_count, decode, encode, hydrate, move_to_cold};
 use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
 use cortex_kernel::handlers::recall::{unfold_source, RecallContext};
@@ -238,4 +242,93 @@ fn blank_updated_at_falls_through_created_at_for_cold_move() {
         )
         .unwrap();
     assert!(dec.starts_with("[cold:"), "{dec}");
+}
+
+fn ranked_memory(id: i64, updated_at: Option<&str>, created_at: Option<&str>) -> RankedCandidate {
+    RankedCandidate {
+        source_kind: "memory",
+        source_id: id,
+        retention_class: "operational".into(),
+        body: format!("body-{id}"),
+        updated_at: updated_at.map(str::to_string),
+        created_at: created_at.map(str::to_string),
+        last_accessed: None,
+        retrievals: 0,
+        relevance: 0.5,
+        status: "active".into(),
+        confirmed_by: None,
+        valid_from: None,
+        valid_until: None,
+        components: empty_rank_components(),
+    }
+}
+
+#[test]
+fn blank_updated_at_falls_through_created_at_for_boot_recency() {
+    let now = cortex_kernel::compiler::parse_timestamp(Some("2026-09-13T12:00:00.000Z"))
+        .expect("now");
+    let fresh = rank_components_for(
+        &ranked_memory(1, Some(""), Some("2026-09-13T11:00:00.000Z")),
+        now,
+    );
+    let whitespace = rank_components_for(
+        &ranked_memory(2, Some("   "), Some("2026-09-13T11:00:00.000Z")),
+        now,
+    );
+    let ancient = rank_components_for(
+        &ranked_memory(3, Some("2020-01-01T00:00:00.000Z"), Some("2020-01-01T00:00:00.000Z")),
+        now,
+    );
+    assert!(
+        fresh.recency_score > 0.8,
+        "blank updated_at must use created_at, not the ancient bucket: {}",
+        fresh.recency_score
+    );
+    assert!(
+        whitespace.recency_score > 0.8,
+        "whitespace updated_at must use created_at: {}",
+        whitespace.recency_score
+    );
+    assert!(
+        ancient.recency_score < 0.2,
+        "a 2020 stamp must stay in the ancient bucket: {}",
+        ancient.recency_score
+    );
+    let ranked = rank_candidates(
+        vec![
+            ranked_memory(3, Some("2020-01-01T00:00:00.000Z"), Some("2020-01-01T00:00:00.000Z")),
+            ranked_memory(1, Some(""), Some("2026-09-13T11:00:00.000Z")),
+        ],
+        2,
+        now,
+    );
+    assert_eq!(
+        ranked[0].source_id, 1,
+        "blank updated_at plus recent created_at must outrank a 2020 stamp"
+    );
+}
+
+#[test]
+fn blank_updated_at_still_enters_the_boot_rank_window() {
+    let conn = test_conn();
+    for i in 0..80 {
+        conn.execute(
+            "INSERT INTO memories (text, type, source_agent, status, score, pinned, updated_at, created_at) VALUES (?1, 'note', 'a', 'active', 0.5, 0, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+            [format!("old-ranked-{i}")],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO memories (text, type, source_agent, status, score, pinned, updated_at, created_at) VALUES ('blank-updated recent memory', 'note', 'a', 'active', 0.5, 0, '', '2026-09-13T11:00:00Z')",
+        [],
+    )
+    .unwrap();
+    let candidates = fetch_rank_candidates(&conn).expect("rank candidates");
+    assert!(
+        candidates
+            .iter()
+            .any(|c| c.source_kind == "memory" && c.body.contains("blank-updated recent memory")),
+        "blank updated_at must fall through created_at so the row is inside LIMIT 80, not dropped: {} candidates",
+        candidates.len()
+    );
 }

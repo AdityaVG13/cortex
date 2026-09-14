@@ -34,6 +34,9 @@ pub fn empty_rank_components() -> RankComponents {
         total_score: 0.0,
     }
 }
+/// Blank `updated_at` is not NULL. `ORDER BY julianday(updated_at)` ranks
+/// those rows last, so a just-created fact with empty `updated_at` can miss
+/// the LIMIT 80 window. Fall through `created_at` the same way aging does.
 pub fn fetch_rank_candidates(conn: &Connection) -> Result<Vec<RankedCandidate>, String> {
     let mut candidates = Vec::new();
     let mem_scope = super::owner_clause(conn, "memories", super::boot_owner());
@@ -48,7 +51,7 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Result<Vec<RankedCandidate>, 
            AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now'))
            AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))
            AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){mem_scope}
-         ORDER BY julianday(updated_at) DESC, id DESC
+         ORDER BY julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) DESC, id DESC
          LIMIT 80"
         ))
         .map_err(|err| err.to_string())?;
@@ -87,7 +90,7 @@ pub fn fetch_rank_candidates(conn: &Connection) -> Result<Vec<RankedCandidate>, 
            AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now'))
            AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now'))
            AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')){dec_scope}
-         ORDER BY julianday(updated_at) DESC, id DESC
+         ORDER BY julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) DESC, id DESC
          LIMIT 80"
         ))
         .map_err(|err| err.to_string())?;

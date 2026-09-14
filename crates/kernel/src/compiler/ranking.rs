@@ -53,11 +53,14 @@ pub fn retention_class_score(retention_class: &str) -> f64 {
         _ => 0.6,
     }
 }
+/// Blank TEXT is not NULL. `Option::or` sticks on `Some("")` / whitespace,
+/// so boot recency treated a just-created row with empty `updated_at` as
+/// ancient. Skip blanks the same way aging/cold-move fall through.
+fn nonempty_stamp(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|s| !s.is_empty())
+}
 pub fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
-    let value = value?.trim();
-    if value.is_empty() {
-        return None;
-    }
+    let value = nonempty_stamp(value)?;
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
         .ok()
@@ -88,10 +91,8 @@ pub fn activity_score(retrievals: i64, last_accessed: Option<&str>, now: DateTim
     (retrieval_score * 0.55) + (access_score * 0.45)
 }
 pub fn rank_components_for(candidate: &RankedCandidate, now: DateTime<Utc>) -> RankComponents {
-    let timestamp = candidate
-        .updated_at
-        .as_deref()
-        .or(candidate.created_at.as_deref());
+    let timestamp = nonempty_stamp(candidate.updated_at.as_deref())
+        .or_else(|| nonempty_stamp(candidate.created_at.as_deref()));
     let class_score = retention_class_score(&candidate.retention_class);
     let recency_score = recency_score(timestamp, now);
     let relevance_score = clamp01(candidate.relevance);
