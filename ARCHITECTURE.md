@@ -20,6 +20,7 @@ each one. Guides for users, developers and operators live in `docs/guides/`.
 | Product | Path | Role |
 |---------|------|------|
 | Kernel | `crates/kernel` (`cortex-kernel`) | The embeddable brain: `CortexRuntime::open / deposit / lens / boot` in-process over SQLite — CQR engines, store path, boot compiler, schema, Reflex, hooks. No axum, no server, no port. Rust hosts (Outfit) path-dep this crate |
+| RefZero identity | `crates/refzero-core` (`cortex-refzero`) | Session-owned identity sidecar: interned objects, `@N` locs, recall envelopes, `z://blob/` grammar. Port of ZeroStack `refzero-core`, rusqlite driver |
 | CLI / MCP edge | `crates/daemon` (`cortex-daemon`, binary `cortex`) | Direct kernel access, MCP stdio, hooks, and an optional bounded maintenance worker. No network listener or service manager. |
 | Logic | `crates/logic` (`cortex-logic`) | Deterministic types: clocks, graph, traces, conflict, budgets |
 | Tests | `tests/` (`cortex-tests`) | Public contracts. Production crates have no inline tests |
@@ -184,6 +185,49 @@ Named capsules SCARS / WAKE / SKILLS / BOARD are **not** separate compilers yet.
 
 ---
 
+## Hashing and identity
+
+Content hashing is BLAKE3-only. `content_hash` (logic traces, compiler
+cache, query signatures) is BLAKE3 over the complete bytes as 64 lowercase
+hex; `handlers::digest_hex` is the unkeyed integrity form over exactly what
+was read; `DigestDescriptor::blake3("cortex/record")` binds the domain on
+the tamper-evident path. There is no SHA-256, SipHash, or FNV on any
+content-identity path (the only FNV left is the 16-bit `ctx_` key checksum,
+an error-detection code, not identity). Replacing the old SipHash
+`content_hash` fixed a real stability bug: its per-process random keys made
+every stored digest unverifiable after restart, so idempotency replay and
+cold seals now verify across processes for the first time.
+
+Identity is RefZero. The kernel opens a session-owned sidecar
+(`<brain>.refzero.sqlite`) next to the brain DB — daemonless, never a
+machine-wide service. Deposits and host captures intern their bytes there
+(best-effort, never failing the store). Recall envelopes
+(`{oid_hex, start, end}`) and `z://blob/<blake3>` refs with `#B`/`#L`
+fragments are the exact cross-product shapes shared with ZeroStack, driven
+by the vendored `tests/fixtures/zeroref-fixtures.json` vectors. Digest
+spellings in identity slots fail closed as `not_a_loc`.
+
+Migration 025 renames `host_capture_metadata.sha256` to `digest`;
+pre-cutover marker bytes are preserved, never reinterpreted. Readers
+dual-read by shape: 16-hex seals are unverifiable legacy (cold rows report
+`intact: false` once and re-seal when the length matches; the identity
+capsule cache misses once and self-heals; ledger rows fail closed as
+conflicts, as they already did across processes under SipHash). Legacy
+compiled-plan cache rows are purged by the migration (pure cache, misses
+recompute); ledger, trace, and feedback history is kept.
+
+Upgrading is a clean break with safe migration: install the new binary and
+open the brain — first boot applies 025, memories (observations, decisions,
+cold segments, FTS) survive byte-for-byte and stay recallable, and new
+writes seal under BLAKE3. Two visible effects: file generations re-capture
+once under the new digest (same steady-state churn as any mtime touch;
+recall collapses identical excerpts), and idempotency keys sealed before
+the upgrade must be retired (reuse fails closed with a `previous hash
+epoch` message, never a duplicate write). Downgrade is not supported:
+a v25 brain opened by an older binary is untested and may mix epochs.
+
+---
+
 ## Time, HEAD, ACL
 
 Three independent gates, all SQL:
@@ -217,6 +261,12 @@ Three independent gates, all SQL:
 Three Rust crates. Brain types live in `cortex-kernel` or `cortex-logic`. Import those crates directly. `cortex-daemon` is the process edge only (CLI, MCP stdio, plugin spawn, setup).
 
 ```text
+cortex-refzero        identity sidecar (SQLite + BLAKE3, no server)
+  store               interned objects, sessions, locs, grants, import map
+  mint                seed/read/write/bind, G1-G5 guards
+  recall/importer     RecallEnvelope, offline BLAKE3 import, frozen fragments
+  zeroref/digest      portable z://blob/ grammar, contract digests
+
 cortex-logic          pure types, no SQLite
   adapter             EventKind, decide(), hook protocol
   clockwork/          CQR admit math: anchors, query, morph, quorum, links

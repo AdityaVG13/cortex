@@ -535,7 +535,6 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "sysinfo",
  "tempfile",
  "toml",
@@ -548,8 +547,10 @@ version = "0.6.0"
 dependencies = [
  "argon2 0.6.0",
  "asupersync",
+ "blake3",
  "chrono",
  "cortex-logic",
+ "cortex-refzero",
  "dirs",
  "flate2",
  "frankensearch",
@@ -562,7 +563,6 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "sysinfo",
  "tempfile",
  "toml",
@@ -576,6 +576,7 @@ name = "cortex-logic"
 version = "0.6.0"
 dependencies = [
  "asupersync",
+ "blake3",
  "chrono",
  "libc",
  "rusqlite",
@@ -583,6 +584,17 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "cortex-refzero"
+version = "0.6.0"
+dependencies = [
+ "blake3",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

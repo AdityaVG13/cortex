@@ -147,9 +147,22 @@ pub(crate) fn decorate_tool_payload_with_token_usage(data: Value) -> Value {
         other => json!({"value":other,"tokenUsage":{"used":used,"saved":saved,"budget":budget},"tokenUsageLine":line}),
     }
 }
+/// Tool-originated errors (`invalid_request`, `unavailable`, `denied`,
+/// `outcome_unknown`) ride inside the result with `isError`, per spec: the
+/// model must see the failure to self-correct. Honest non-errors (`no_match`,
+/// `ambiguous`), retry signals (`needs_more_budget`, `projection_pending`,
+/// `resnapshot_required`), and `partial`/`ok` stay unflagged.
+fn tool_result_is_error(decorated: &Value) -> bool {
+    matches!(decorated.get("status").and_then(Value::as_str), Some("invalid_request" | "unavailable" | "denied" | "outcome_unknown"))
+}
+
 pub(crate) fn wrap_mcp_tool_result(data: Value) -> Value {
-    let text = decorate_tool_payload_with_token_usage(data).to_string();
-    json!({"content":[{"type":"text","text":text}]})
+    let decorated = decorate_tool_payload_with_token_usage(data);
+    let mut result = json!({"content":[{"type":"text","text":decorated.to_string()}],"structuredContent":decorated});
+    if tool_result_is_error(&decorated) {
+        result["isError"] = json!(true);
+    }
+    result
 }
 pub(crate) fn wrap_mcp_tool_result_verbose(state: &RuntimeState, data: Value) -> Value {
     let calls = state.next_mcp_call();
@@ -163,7 +176,11 @@ pub(crate) fn wrap_mcp_tool_result_verbose(state: &RuntimeState, data: Value) ->
         }
         other => json!({"value":other,"_liveness":true,"_ts":now_iso(),"_calls":calls}),
     };
-    json!({"content":[{"type":"text","text":decorated.to_string()}]})
+    let mut result = json!({"content":[{"type":"text","text":decorated.to_string()}],"structuredContent":decorated});
+    if tool_result_is_error(&decorated) {
+        result["isError"] = json!(true);
+    }
+    result
 }
 
 pub(crate) use cortex_logic::protocol::{arg_i64, arg_str, arg_usize};

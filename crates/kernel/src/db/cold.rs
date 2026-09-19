@@ -138,8 +138,25 @@ pub fn hydrate(
         return Ok(None);
     }
     let text = String::from_utf8_lossy(&bytes).to_string();
-    let intact =
-        bytes.len() as i64 == byte_length && cortex_logic::traces::content_hash(&text) == digest;
+    // Dual-read across the hash-epoch cutover. A 16-hex seal is SipHash
+    // epoch: per-process random keys, unverifiable by construction, so it
+    // can never attest integrity. Length-gate first (cheap, no trust
+    // claim), re-seal to BLAKE3 for the next read, and report the seal as
+    // unverified this once. New seals compare exactly.
+    let intact = if cortex_logic::traces::is_legacy_content_hash(&digest) {
+        // A length mismatch means the payload is not what was archived: do
+        // not re-seal it, or the next read would attest corrupt bytes.
+        if bytes.len() as i64 == byte_length {
+            let fresh = cortex_logic::traces::content_hash(&text);
+            let _ = conn.execute(
+                "UPDATE cold_sources SET digest = ?1 WHERE namespace = ?2 AND address = ?3 AND digest = ?4",
+                params![fresh, namespace, id.to_string(), digest],
+            );
+        }
+        false
+    } else {
+        bytes.len() as i64 == byte_length && cortex_logic::traces::content_hash(&text) == digest
+    };
     let context = context_payload
         .and_then(|c| decode_limited(&c, COLD_MAX_DECODE_BYTES))
         .map(|c| String::from_utf8_lossy(&c).to_string());

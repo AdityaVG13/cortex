@@ -1,0 +1,521 @@
+{
+  "schema": "zeroref-golden-vectors",
+  "fixture_version": 2,
+  "canonical_owner": "ZeroStack contracts/zeroref-fixtures.json",
+  "notes": "Shared verbatim across ZeroStack domain libraries.",
+  "error_classes": [
+    "malformed",
+    "unsupported",
+    "range_out_of_bounds",
+    "not_utf8",
+    "missing",
+    "io",
+    "digest_mismatch",
+    "policy_denied"
+  ],
+  "blobs": {
+    "alpha": {
+      "bytes_hex": "616c7068610a626574610a67616d6d610a",
+      "blake3": "ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0"
+    },
+    "noeol": {
+      "bytes_hex": "6f6e650a74776f",
+      "blake3": "e46879c954a6ab0cb90b76fedb8e15f22bdace75c4cdff4c0cf5eead3f75b457"
+    },
+    "crlf": {
+      "bytes_hex": "610d0a620d0a",
+      "blake3": "e17e2ed2d9c3f5466860f16170f4ab2b77e0102c0038f596ac910a6f5a7b5c33"
+    },
+    "empty": {
+      "bytes_hex": "",
+      "blake3": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+    },
+    "nonutf8": {
+      "bytes_hex": "fffe67616d6d610a42",
+      "blake3": "a83c02b3d26b4d7d0523786dad555253e0c2b41f28e5a02a276f4426f5a630fb"
+    }
+  },
+  "vectors": [
+    {
+      "name": "gz_blob_whole",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0",
+      "blob": "alpha",
+      "selected_hex": "616c7068610a626574610a67616d6d610a"
+    },
+    {
+      "name": "fz_blob_whole",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0",
+      "blob": "alpha",
+      "selected_hex": "616c7068610a626574610a67616d6d610a"
+    },
+    {
+      "name": "tz_blob_whole",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0",
+      "blob": "alpha",
+      "selected_hex": "616c7068610a626574610a67616d6d610a"
+    },
+    {
+      "name": "bytes_prefix",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-5",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-5",
+      "blob": "alpha",
+      "selected_hex": "616c706861"
+    },
+    {
+      "name": "bytes_middle",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B6-10",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B6-10",
+      "blob": "alpha",
+      "selected_hex": "62657461"
+    },
+    {
+      "name": "bytes_empty_at_zero",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-0",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-0",
+      "blob": "alpha",
+      "selected_hex": "",
+      "notes": "start == end is an allowed empty selection"
+    },
+    {
+      "name": "bytes_empty_at_len",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B17-17",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B17-17",
+      "blob": "alpha",
+      "selected_hex": "",
+      "notes": "empty selection at exactly the byte length is allowed"
+    },
+    {
+      "name": "bytes_whole_span",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-17",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-17",
+      "blob": "alpha",
+      "selected_hex": "616c7068610a626574610a67616d6d610a"
+    },
+    {
+      "name": "bytes_on_non_utf8",
+      "input": "z://blob/a83c02b3d26b4d7d0523786dad555253e0c2b41f28e5a02a276f4426f5a630fb#B0-2",
+      "parse": "ok",
+      "canonical": "z://blob/a83c02b3d26b4d7d0523786dad555253e0c2b41f28e5a02a276f4426f5a630fb#B0-2",
+      "blob": "nonutf8",
+      "selected_hex": "fffe",
+      "notes": "#B operates on raw bytes; UTF-8 validity is not required"
+    },
+    {
+      "name": "bytes_empty_blob",
+      "input": "z://blob/af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262#B0-0",
+      "parse": "ok",
+      "canonical": "z://blob/af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262#B0-0",
+      "blob": "empty",
+      "selected_hex": ""
+    },
+    {
+      "name": "lines_first",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L1-1",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L1-1",
+      "blob": "alpha",
+      "selected_hex": "616c7068610a",
+      "notes": "a selected line includes its terminating LF when present"
+    },
+    {
+      "name": "lines_tail",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L2-3",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L2-3",
+      "blob": "alpha",
+      "selected_hex": "626574610a67616d6d610a"
+    },
+    {
+      "name": "lines_full",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L1-3",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L1-3",
+      "blob": "alpha",
+      "selected_hex": "616c7068610a626574610a67616d6d610a"
+    },
+    {
+      "name": "lines_unterminated_last",
+      "input": "z://blob/e46879c954a6ab0cb90b76fedb8e15f22bdace75c4cdff4c0cf5eead3f75b457#L2-2",
+      "parse": "ok",
+      "canonical": "z://blob/e46879c954a6ab0cb90b76fedb8e15f22bdace75c4cdff4c0cf5eead3f75b457#L2-2",
+      "blob": "noeol",
+      "selected_hex": "74776f",
+      "notes": "an unterminated final line is selected without appending a newline"
+    },
+    {
+      "name": "lines_span_to_unterminated",
+      "input": "z://blob/e46879c954a6ab0cb90b76fedb8e15f22bdace75c4cdff4c0cf5eead3f75b457#L1-2",
+      "parse": "ok",
+      "canonical": "z://blob/e46879c954a6ab0cb90b76fedb8e15f22bdace75c4cdff4c0cf5eead3f75b457#L1-2",
+      "blob": "noeol",
+      "selected_hex": "6f6e650a74776f"
+    },
+    {
+      "name": "lines_crlf_retained",
+      "input": "z://blob/e17e2ed2d9c3f5466860f16170f4ab2b77e0102c0038f596ac910a6f5a7b5c33#L1-1",
+      "parse": "ok",
+      "canonical": "z://blob/e17e2ed2d9c3f5466860f16170f4ab2b77e0102c0038f596ac910a6f5a7b5c33#L1-1",
+      "blob": "crlf",
+      "selected_hex": "610d0a",
+      "notes": "CR is ordinary line content; LF is the only terminator"
+    },
+    {
+      "name": "alias_plus_len",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B6+4",
+      "parse": "error",
+      "notes": "plus-length byte fragments are not part of the portable grammar",
+      "error_class": "malformed"
+    },
+    {
+      "name": "alias_plus_zero",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B3+0",
+      "parse": "error",
+      "error_class": "malformed",
+      "notes": "plus-length byte fragments are not part of the portable grammar"
+    },
+    {
+      "name": "leading_zeros_normalized",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B06-010",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B6-10",
+      "blob": "alpha",
+      "selected_hex": "62657461",
+      "notes": "leading zeros accepted on input, canonical form emits plain decimal"
+    },
+    {
+      "name": "hash_uppercase",
+      "input": "z://blob/4FDBC441EA7B546100E086AC1E4FC5AE6749B7314311C99DB05BE450ECA12996",
+      "parse": "error",
+      "error_class": "malformed",
+      "notes": "uppercase hex is rejected"
+    },
+    {
+      "name": "hash_mixed_case",
+      "input": "z://blob/4fdbc441ea7b546100e086ac1e4fc5ae6749B7314311C99DB05BE450ECA12996",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "hash_short_prefix",
+      "input": "z://blob/4fdbc441ea7b546100e086ac1e4fc5ae6749b7314311c99db05be450eca1299",
+      "parse": "error",
+      "error_class": "malformed",
+      "notes": "short prefixes do not satisfy the 64-hex identity grammar"
+    },
+    {
+      "name": "hash_way_short",
+      "input": "z://blob/4fdbc441ea7b",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "hash_too_long",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c00",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "hash_non_hex",
+      "input": "z://blob/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "hash_empty",
+      "input": "z://blob/",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "extra_path_segment",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0/extra",
+      "parse": "error",
+      "error_class": "malformed",
+      "notes": "extra path segments after the hash are rejected"
+    },
+    {
+      "name": "unknown_kind",
+      "input": "gz://widget/abc123",
+      "parse": "error",
+      "error_class": "unsupported"
+    },
+    {
+      "name": "engine_owned_node",
+      "input": "gz://node/sym-42",
+      "parse": "error",
+      "error_class": "unsupported",
+      "notes": "graph node refs are engine-owned, not portable blobs"
+    },
+    {
+      "name": "engine_owned_query",
+      "input": "gz://query/q123",
+      "parse": "error",
+      "error_class": "unsupported"
+    },
+    {
+      "name": "foreign_non_blob_fz",
+      "input": "fz://query/abc",
+      "parse": "error",
+      "error_class": "unsupported",
+      "notes": "foreign non-blob refs must fail as unsupported, never be canonicalized"
+    },
+    {
+      "name": "foreign_non_blob_tz",
+      "input": "tz://file/ffa8138833248dead",
+      "parse": "error",
+      "error_class": "unsupported"
+    },
+    {
+      "name": "unknown_scheme",
+      "input": "xx://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0",
+      "parse": "error",
+      "error_class": "unsupported"
+    },
+    {
+      "name": "compact_locate",
+      "input": "g:26",
+      "parse": "error",
+      "error_class": "unsupported",
+      "notes": "engine compact forms are documented but not portable ZeroRefs"
+    },
+    {
+      "name": "compact_query",
+      "input": "q:abc",
+      "parse": "error",
+      "error_class": "unsupported"
+    },
+    {
+      "name": "no_scheme",
+      "input": "not a ref at all",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "bare_scheme",
+      "input": "gz://",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "kind_without_id",
+      "input": "gz://blob",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "bytes_reversed",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B5-2",
+      "parse": "error",
+      "error_class": "malformed",
+      "notes": "start > end is statically invalid and rejected at parse time"
+    },
+    {
+      "name": "lines_reversed",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L3-2",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "lines_zero_start",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L0-3",
+      "parse": "error",
+      "error_class": "malformed",
+      "notes": "line numbering is one-based"
+    },
+    {
+      "name": "bytes_overflow_add",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B18446744073709551615+1",
+      "parse": "error",
+      "error_class": "malformed",
+      "notes": "checked arithmetic: start + len must not overflow u64"
+    },
+    {
+      "name": "bytes_overflow_digits",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B99999999999999999999-99999999999999999999",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "fragment_empty",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "fragment_unknown_letter",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#X1-2",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "bytes_signed_number",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B+1-2",
+      "parse": "error",
+      "error_class": "malformed",
+      "notes": "digits only; explicit signs are rejected"
+    },
+    {
+      "name": "bytes_missing_end",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B12",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "bytes_double_fragment",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B1-2#B3-4",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "lines_missing_dash",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L5",
+      "parse": "error",
+      "error_class": "malformed"
+    },
+    {
+      "name": "bytes_end_past_len",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-18",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-18",
+      "blob": "alpha",
+      "selection_error": "range_out_of_bounds",
+      "notes": "end > byte length is an error; never clamp"
+    },
+    {
+      "name": "bytes_start_past_len",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B18-18",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B18-18",
+      "blob": "alpha",
+      "selection_error": "range_out_of_bounds"
+    },
+    {
+      "name": "lines_end_past_count",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L1-4",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L1-4",
+      "blob": "alpha",
+      "notes": "canonical line_end=clamp selects through the final available line",
+      "selected_hex": "616c7068610a626574610a67616d6d610a"
+    },
+    {
+      "name": "lines_end_past_count_strict_override",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L1-4",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L1-4",
+      "blob": "alpha",
+      "notes": "explicit strict validation rejects a line end past EOF",
+      "selection_error": "range_out_of_bounds",
+      "line_end_policy": "strict"
+    },
+    {
+      "name": "lines_start_past_count",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L4-4",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#L4-4",
+      "blob": "alpha",
+      "selection_error": "range_out_of_bounds"
+    },
+    {
+      "name": "lines_on_empty_blob",
+      "input": "z://blob/af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262#L1-1",
+      "parse": "ok",
+      "canonical": "z://blob/af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262#L1-1",
+      "blob": "empty",
+      "selection_error": "range_out_of_bounds",
+      "notes": "the empty blob has zero lines"
+    },
+    {
+      "name": "lines_on_non_utf8",
+      "input": "z://blob/a83c02b3d26b4d7d0523786dad555253e0c2b41f28e5a02a276f4426f5a630fb#L1-1",
+      "parse": "ok",
+      "canonical": "z://blob/a83c02b3d26b4d7d0523786dad555253e0c2b41f28e5a02a276f4426f5a630fb#L1-1",
+      "blob": "nonutf8",
+      "selection_error": "not_utf8",
+      "notes": "#L requires the complete blob to be valid UTF-8"
+    },
+    {
+      "name": "digest_mismatch_before_selection",
+      "input": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-5",
+      "parse": "ok",
+      "canonical": "z://blob/ed8b7a779a4acecd8265c7b2b70a2e74e7c63b9d39e5050601c6c80af194e5c0#B0-5",
+      "blob": "noeol",
+      "selection_error": "digest_mismatch",
+      "notes": "verification of the complete unfragmented bytes precedes fragment selection"
+    }
+  ],
+  "span_vectors": [
+    {
+      "name": "valid_span",
+      "blob": "alpha",
+      "fragment": {
+        "kind": "bytes",
+        "start": 0,
+        "end": 5
+      },
+      "byte_start": 0,
+      "byte_len": 5,
+      "selected_hex": "616c706861",
+      "span_digest": "644a9bc57c6063e2ba4028fa73ed585170ae7db8ac7723d32be49c021a0225f5"
+    },
+    {
+      "name": "empty_span",
+      "blob": "alpha",
+      "fragment": {
+        "kind": "bytes",
+        "start": 3,
+        "end": 3
+      },
+      "byte_start": 3,
+      "byte_len": 0,
+      "selected_hex": "",
+      "span_digest": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+    },
+    {
+      "name": "line_derived_span",
+      "blob": "alpha",
+      "fragment": {
+        "kind": "lines",
+        "start": 2,
+        "end": 3
+      },
+      "byte_start": 6,
+      "byte_len": 11,
+      "selected_hex": "626574610a67616d6d610a",
+      "span_digest": "3ca16169cb9345be70508b1585c91e4c921369cfe841178dec9d247632b6de47"
+    }
+  ],
+  "span_tamper_cases": [
+    {
+      "name": "tampered_payload",
+      "base": "valid_span",
+      "expected": "span_digest_mismatch"
+    },
+    {
+      "name": "tampered_range",
+      "base": "valid_span",
+      "expected": "range_out_of_bounds"
+    },
+    {
+      "name": "tampered_digest",
+      "base": "valid_span",
+      "expected": "span_digest_mismatch"
+    }
+  ],
+  "selection_policy": {
+    "byte": "strict",
+    "line_start": "strict",
+    "line_end": "clamp"
+  }
+}

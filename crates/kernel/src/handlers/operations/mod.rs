@@ -92,7 +92,7 @@ impl Operation {
 /// out of the description.
 pub fn tool_schemas() -> Vec<Value> {
     let profiles: Vec<&str> = LensProfile::ALL.iter().map(|p| p.as_str()).collect();
-    vec![
+    let mut schemas = vec![
         json!({"name":"cortex_capabilities","description":"What this brain can do: operations, Lens profiles, response statuses, epochs and adapter capabilities. Cache by version.","inputSchema":{"type":"object","properties":{}}}),
         json!({"name":"cortex_orient","description":"Situation brief for a task or Thread: constraints, known facts with their limits, failed attempts, open work, unresolved conflicts, evidence handles. Surfaces attributed observations and, after an explicit route rebuild, evidence-closed assembly bundles. Call once when you start.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"What you are trying to do"},"thread":{"type":"string","description":"Thread id or label (optional)"},"paths":{"type":"array","items":{"type":"string"},"description":"Project roots for this task"},"cwd":{"type":"string","description":"Working directory treated as a project root"},"budget":{"type":"number","description":"Output budget in bytes (default 2000)"},"evidence":{"type":"string","enum":["brief","support","exact"]},"observation_scope":{"type":"string","description":"Observation and assembly scope (default project)"},"observations":{"type":"boolean","description":"Include attributed observation hits (default true)"},"assemblies":{"type":"boolean","description":"Include compiled assembly bundles when cue routes are enabled (default true)"}}}}),
         json!({"name":"cortex_query","description":"Ask memory a question with a profile: answer, changes, attempts, procedures, conflicts, uncertainty, compare, history, audit, map. Returns Cards with epistemic status, applicability and expansion handles; leads are separate from supported answers. Attributed observations and compiled assemblies appear in separate sections, never as Cards.","inputSchema":{"type":"object","properties":{"need":{"type":"string","description":"The question or need"},"profile":{"type":"string","enum":profiles},"needs":{"type":"array","items":{"type":"string"},"description":"Typed needs: current_constraints, open_obligations, last_verified_outcome, failed_attempts, conflicts, as_known, changes, procedures"},"thread":{"type":"string"},"time":{"type":"string","description":"valid_at instant for historical views"},"budget":{"type":"number"},"evidence":{"type":"string","enum":["brief","support","exact"]},"paths":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"},"symbols":{"type":"array","items":{"type":"string"}},"observation_scope":{"type":"string"},"observations":{"type":"boolean"},"assemblies":{"type":"boolean"}},"required":["need"]}}),
@@ -101,7 +101,55 @@ pub fn tool_schemas() -> Vec<Value> {
         json!({"name":"cortex_checkpoint","description":"Durable Thread state: checkpoint (goal, state), obligations (create / transition / verify with a checker predicate on an artifact / revalidate on a new artifact), attempts (inputs, artifacts, exit status, failure), or status. A successor or post-compaction context resumes from this, not from your transcript.","inputSchema":{"type":"object","properties":{"thread":{"type":"string"},"action":{"type":"string","enum":["checkpoint","status","obligation","transition","verify","revalidate","attempt"]},"goal":{"type":"string"},"state":{"type":"object"},"note":{"type":"string"},"title":{"type":"string"},"predicate":{},"obligation":{"type":"string"},"to":{"type":"string"},"artifact":{"type":"string"},"checker":{"type":"string"},"passed":{"type":"boolean"},"attempt":{"type":"object"}},"required":["thread"]}}),
         json!({"name":"cortex_resolve","description":"Resolve competing heads of a record with authority and rationale. Creates a resolution revision; rejected evidence is kept.","inputSchema":{"type":"object","properties":{"record":{"type":"string"},"considered":{"type":"array","items":{"type":"string"}},"rationale":{"type":"string"},"body":{"type":"object"},"keepId":{"type":"number","description":"Legacy conflict resolution: decision id to keep"},"action":{"type":"string","description":"Legacy: keep|merge|archive"}}}}),
         json!({"name":"cortex_feedback","description":"Report a task outcome (success|partial|failure) and which memory sources were actually used, so usefulness statistics stay separate from truth.","inputSchema":{"type":"object","properties":{"outcome":{"type":"string","enum":["success","partial","failure"]},"taskClass":{"type":"string"},"memorySources":{"type":"array","items":{"type":"string"}},"qualityScore":{"type":"number"},"notes":{"type":"string"}},"required":["outcome"]}}),
-    ]
+    ];
+    // 2026-07-28 tool metadata: every result carries a JSON `structuredContent`
+    // object, reads are side-effect free, and writes are additive-only
+    // (rejected evidence is kept; nothing is destroyed) but not idempotent
+    // without an explicit idempotency key. Every tool is closed-world: a
+    // memory brain touches only its own store, never external entities.
+    for schema in &mut schemas {
+        let (title, annotations) = match schema.get("name").and_then(Value::as_str) {
+            Some("cortex_capabilities") => (
+                "Capabilities",
+                json!({"readOnlyHint": true, "openWorldHint": false}),
+            ),
+            Some("cortex_orient") => (
+                "Orient",
+                json!({"readOnlyHint": true, "openWorldHint": false}),
+            ),
+            Some("cortex_query") => (
+                "Query memory",
+                json!({"readOnlyHint": true, "openWorldHint": false}),
+            ),
+            Some("cortex_expand") => (
+                "Expand evidence",
+                json!({"readOnlyHint": true, "openWorldHint": false}),
+            ),
+            Some("cortex_commit") => (
+                "Commit",
+                json!({"destructiveHint": false, "idempotentHint": false, "openWorldHint": false}),
+            ),
+            Some("cortex_checkpoint") => (
+                "Checkpoint",
+                json!({"destructiveHint": false, "idempotentHint": false, "openWorldHint": false}),
+            ),
+            Some("cortex_resolve") => (
+                "Resolve",
+                json!({"destructiveHint": false, "idempotentHint": false, "openWorldHint": false}),
+            ),
+            Some("cortex_feedback") => (
+                "Feedback",
+                json!({"destructiveHint": false, "idempotentHint": false, "openWorldHint": false}),
+            ),
+            _ => continue,
+        };
+        if let Some(map) = schema.as_object_mut() {
+            map.insert("title".to_string(), Value::String(title.into()));
+            map.insert("outputSchema".to_string(), json!({"type": "object"}));
+            map.insert("annotations".to_string(), annotations);
+        }
+    }
+    schemas
 }
 
 pub async fn capabilities(cx: &asupersync::Cx, state: &RuntimeState) -> Result<Value, String> {

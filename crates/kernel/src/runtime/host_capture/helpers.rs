@@ -189,7 +189,7 @@ pub(super) fn insert_host_metadata(
             byte_offset,
             kind,
             line.len() as i64,
-            crate::handlers::sha256_hex(line)
+            crate::handlers::digest_hex(line)
         ],
     )
     .map_err(|e| e.to_string())?;

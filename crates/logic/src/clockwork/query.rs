@@ -197,10 +197,7 @@ pub fn parse_query_frame(
 }
 
 pub fn query_signature(frame: &QueryFrame) -> String {
-    format!(
-        "{:016x}",
-        fnv1a64(frame.canonical_signature_payload().as_bytes())
-    )
+    crate::traces::content_hash(&frame.canonical_signature_payload())
 }
 
 fn infer_temporal(raw: &str, explicit: Option<&str>) -> (TemporalMode, Option<String>) {
@@ -281,13 +278,4 @@ fn extract_iso_date(text: &str) -> Option<String> {
         }
     }
     None
-}
-
-pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }

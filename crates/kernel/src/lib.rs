@@ -28,6 +28,7 @@ pub mod hook_event;
 pub mod hybrid_search;
 pub mod indexer;
 pub mod reflex;
+pub mod refzero;
 pub mod runtime;
 pub mod state;
 pub mod store_spi;

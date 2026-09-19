@@ -155,8 +155,32 @@ pub fn configure_with_profile(
     let cache_size = -(cache_size_kib as i64);
     let busy_timeout_ms = SQLITE_BUSY_TIMEOUT_MS;
     let wal_autocheckpoint_pages = SQLITE_WAL_AUTOCHECKPOINT_PAGES;
-    conn.execute_batch(&format!("PRAGMA journal_mode = WAL; PRAGMA synchronous = {synchronous}; PRAGMA busy_timeout = {busy_timeout_ms}; PRAGMA foreign_keys = ON; PRAGMA mmap_size = {mmap_size}; PRAGMA cache_size = {cache_size}; PRAGMA temp_store = MEMORY; PRAGMA wal_autocheckpoint = {wal_autocheckpoint_pages};"))?;
-    Ok(())
+    // The busy timeout must apply before any lock-taking pragma runs:
+    // `journal_mode = WAL` can busy under concurrent boot, and a SQL-set
+    // timeout later in this same batch would come too late. Set it via API
+    // first (no lock needed), then run the batch with bounded busy retries.
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms));
+    execute_batch_with_busy_retry(
+        conn,
+        &format!(
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = {synchronous}; PRAGMA busy_timeout = {busy_timeout_ms}; PRAGMA foreign_keys = ON; PRAGMA mmap_size = {mmap_size}; PRAGMA cache_size = {cache_size}; PRAGMA temp_store = MEMORY; PRAGMA wal_autocheckpoint = {wal_autocheckpoint_pages};"
+        ),
+    )
+}
+
+/// `execute_batch` with the shared bounded busy policy, for setup-time SQL
+/// (pragmas, schema) that can contend under concurrent boot.
+pub(crate) fn execute_batch_with_busy_retry(conn: &Connection, sql: &str) -> rusqlite::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match conn.execute_batch(sql) {
+            Err(err) if is_busy_error(&err) && attempt + 1 < SAVEPOINT_BUSY_RETRIES => {
+                attempt += 1;
+                sleep_busy_backoff(attempt);
+            }
+            other => return other,
+        }
+    }
 }
 pub type MigrationDef = (&'static str, &'static str);
 
@@ -250,6 +274,13 @@ impl Drop for SqliteSavepoint<'_> {
 /// `SAVEPOINT` around a body that needs `&mut Connection` (so a live
 /// [`SqliteSavepoint`] cannot coexist with the exclusive borrow). Rolls back
 /// on `Err` and on unwind; `RELEASE` only on `Ok`.
+///
+/// Multi-process write safety: when autocommit, the savepoint opens inside
+/// `BEGIN IMMEDIATE`, so lock contention surfaces as plain `BUSY` (which the
+/// busy timeout retries) instead of `BUSY_SNAPSHOT` on deferred upgrade
+/// (which it does not). `BEGIN` additionally retries on busy with bounded
+/// backoff. Body errors (`E`) and `COMMIT` outcomes never retry: the former
+/// are application decisions, the latter are commit-unknown.
 pub fn with_savepoint_mut<T, E>(
     conn: &mut Connection,
     name: &'static str,
@@ -257,27 +288,91 @@ pub fn with_savepoint_mut<T, E>(
     map_sql: impl Fn(rusqlite::Error) -> E,
 ) -> Result<T, E> {
     savepoint_ident(name);
-    conn.execute_batch(&format!("SAVEPOINT {name}"))
-        .map_err(&map_sql)?;
+    let opened = open_write_txn(conn, name, &map_sql)?;
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(conn))) {
         Ok(Ok(value)) => {
             if let Err(err) = conn.execute_batch(&format!("RELEASE {name}")) {
-                // RELEASE failed with the body already applied. Roll the
-                // named savepoint back so this connection is not returned to
-                // the write mutex still inside a transaction (the next
-                // BEGIN/SAVEPOINT would fail or join leftover writes).
-                rollback_savepoint(conn, name);
+                // RELEASE failed with the body already applied. Roll back so
+                // this connection is not returned to the write mutex still
+                // inside a transaction (the next BEGIN/SAVEPOINT would fail
+                // or join leftover writes).
+                abort_write_txn(conn, name, opened);
                 return Err(map_sql(err));
+            }
+            if opened {
+                // Commit-unknown: never retry (a retry could double-apply).
+                if let Err(err) = conn.execute_batch("COMMIT") {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(map_sql(err));
+                }
             }
             Ok(value)
         }
         Ok(Err(err)) => {
-            rollback_savepoint(conn, name);
+            abort_write_txn(conn, name, opened);
             Err(err)
         }
         Err(payload) => {
-            rollback_savepoint(conn, name);
+            abort_write_txn(conn, name, opened);
             std::panic::resume_unwind(payload);
         }
     }
+}
+
+pub(crate) const SAVEPOINT_BUSY_RETRIES: usize = 8;
+
+fn open_write_txn<E>(
+    conn: &mut Connection,
+    name: &'static str,
+    map_sql: &impl Fn(rusqlite::Error) -> E,
+) -> Result<bool, E> {
+    if !conn.is_autocommit() {
+        // Nested inside a caller's transaction: plain savepoint as before.
+        conn.execute_batch(&format!("SAVEPOINT {name}"))
+            .map_err(map_sql)?;
+        return Ok(false);
+    }
+    let mut attempt = 0usize;
+    loop {
+        match conn.execute_batch("BEGIN IMMEDIATE") {
+            Ok(()) => break,
+            Err(err) if is_busy_error(&err) && attempt + 1 < SAVEPOINT_BUSY_RETRIES => {
+                attempt += 1;
+                // Bounded ~250ms on top of the connection busy timeout.
+                sleep_busy_backoff(attempt);
+            }
+            Err(err) => return Err(map_sql(err)),
+        }
+    }
+    // Inside our own IMMEDIATE txn the savepoint cannot hit busy: we hold
+    // the write lock for the whole body.
+    conn.execute_batch(&format!("SAVEPOINT {name}"))
+        .map_err(map_sql)?;
+    Ok(true)
+}
+
+fn abort_write_txn(conn: &mut Connection, name: &'static str, opened: bool) {
+    if opened {
+        let _ = conn.execute_batch("ROLLBACK");
+    } else {
+        rollback_savepoint(conn, name);
+    }
+}
+
+pub(crate) fn is_busy_error(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(e, _)
+            if e.code == rusqlite::ErrorCode::DatabaseBusy
+    )
+}
+
+/// Bounded busy backoff shared by write transactions and contention-sensitive
+/// reads: 2, 4, 8 … ms with deterministic jitter. Attempt counts from 1.
+pub(crate) fn sleep_busy_backoff(attempt: usize) {
+    let backoff = 2u64
+        .saturating_pow(attempt.min(6) as u32)
+        .min(128)
+        .saturating_add((attempt as u64 * 7) % 13);
+    std::thread::sleep(std::time::Duration::from_millis(backoff));
 }

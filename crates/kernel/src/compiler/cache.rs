@@ -5,12 +5,7 @@ use regex::Regex;
 use rusqlite::{Connection, params};
 use std::sync::OnceLock;
 pub fn content_hash(data: &str) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in data.bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
+    cortex_logic::traces::content_hash(data)
 }
 fn identity_constraint_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();

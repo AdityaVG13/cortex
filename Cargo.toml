@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*", "tests"]
+exclude = ["crates/.asgrep"]
 resolver = "2"
 
 [workspace.package]

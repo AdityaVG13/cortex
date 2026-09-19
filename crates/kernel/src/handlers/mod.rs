@@ -17,7 +17,6 @@ pub use cortex_logic::protocol::ResponseStatus;
 pub use event_log::log_event;
 pub use redaction::redact_secrets;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 const DEFAULT_PARSED_DURATION_SECONDS: i64 = 60 * 60;
 const MAX_PARSED_DURATION_SECONDS: i64 = 100 * 365 * 24 * 60 * 60;
 thread_local! {
@@ -182,9 +181,8 @@ pub fn agent_match_params(agent: &str) -> Option<(String, String)> {
 }
 pub use crate::protocol::{ident_match_sql, optional_coalesce_like_sql, optional_ident_match_sql};
 
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+/// BLAKE3 of the complete object bytes as 64 lowercase hex. No domain,
+/// no trim: integrity paths hash exactly what was read.
+pub fn digest_hex(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
 }

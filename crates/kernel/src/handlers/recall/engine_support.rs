@@ -231,18 +231,17 @@ pub fn enforce_budget_token_invariant(
     }
     pack_budget(results, token_budget, query_text)
 }
+/// In-memory served-set fingerprint. BLAKE3 truncated to 32 bits keeps the
+/// `HashMap<u32, i64>` shape; values never leave the process (60s TTL), so no
+/// migration applies. Hash the whole string: recall excerpts are already
+/// bounded, and a 100-char window treated distinct memories as already-served.
 pub fn hash_content(content: &str) -> u32 {
-    let mut hash: u32 = 2_166_136_261;
-    // Length first so two excerpts that share a long prefix still differ.
-    // Hash the whole string: recall excerpts are already bounded, and a
-    // 100-char window treated distinct memories as already-served.
-    hash ^= content.chars().count() as u32;
-    hash = hash.wrapping_mul(16_777_619);
-    for ch in content.chars() {
-        hash ^= ch as u32;
-        hash = hash.wrapping_mul(16_777_619);
-    }
-    hash
+    let digest = blake3::hash(content.as_bytes());
+    u32::from_le_bytes(
+        digest.as_bytes()[..4]
+            .try_into()
+            .expect("blake3 is 32 bytes"),
+    )
 }
 pub fn source_dedup_hash(source: &str) -> u32 {
     hash_content(&format!("source::{source}"))

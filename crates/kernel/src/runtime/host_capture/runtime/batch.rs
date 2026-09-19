@@ -18,7 +18,7 @@ impl CortexRuntime {
         if raw.len() > MAX_CAPTURE_BYTES {
             return Err("capture_batch_byte_limit".into());
         }
-        self.with_db_tx(
+        let receipt = self.with_db_tx(
             cx,
             TransactionBehavior::Immediate,
             |conn| {
@@ -68,7 +68,11 @@ impl CortexRuntime {
         }
             Ok(result)
             },
-        ).await
+        ).await?;
+        // Best-effort identity interning for the cross-product sidecar. A
+        // sidecar failure warns and never fails the committed capture.
+        crate::refzero::intern_store_bytes_for_db(&self.state().db_path, raw);
+        Ok(receipt)
     }
 }
 

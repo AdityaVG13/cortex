@@ -112,7 +112,7 @@ The source role and scope still come only from registration; config metadata
 and file prose cannot elevate authority. Legacy alias rows remain untouched.
 
 File generations combine platform file identity metadata, modification time
-and SHA-256 content digest. Modification time supplies `observed_at`, not a
+and BLAKE3 content digest. Modification time supplies `observed_at`, not a
 verified assertion timestamp. Metadata is rechecked after a bounded read;
 this is not an atomic filesystem snapshot or a journal of intermediate edits.
 Recursive custom-source enumeration does not follow symlinks and retains its
@@ -179,7 +179,7 @@ whitespace/order or the shell's pre-host byte stream. Retrieval cues use reporte
 stdout/stderr, never JSON envelope names or boolean flags.
 
 Known queue, budget, hook-context, ATIS latch, Bash request and last-prompt records
-are non-evidence. Their byte offsets, lengths, kinds and SHA-256 markers commit
+are non-evidence. Their byte offsets, lengths, kinds and BLAKE3 markers commit
 with the raw cursor in `host_capture_metadata`; unknown/private shapes still
 block advancement. No raw private metadata body is copied into evidence.
 Operator-owned origin policy remains separate from payload origin claims.
@@ -241,10 +241,25 @@ second environment name for that sidecar. `cortex setup` writes the sidecar
 file once; an existing operator file is left alone.
 `cortex capture host-cycle` remains the explicit-flag operator path.
 
+**Identity sidecar.** The runtime holds no RefZero handle; the `refzero`
+module opens the session-owned `<brain>.refzero.sqlite` sidecar next to
+the brain DB on demand and interns deposit/host-capture bytes there
+(best-effort, never failing the store; hook handles are cached per sidecar
+path, harness handles from `open_sidecar` are never shared). It
+exports/imports the exact
+cross-product `RecallEnvelope` shape and `z://blob/` + `#B`/`#L` grammar;
+import mints a fresh loc with no Edit grant. Digest spellings in identity
+slots fail closed as `not_a_loc`. Hashing is BLAKE3-only; migration 025
+renames the host marker column, and legacy 16-hex seals dual-read as
+unverifiable (cold rows re-seal when the length matches, ledger rows
+conflict).
+
 **Conformance.** `tests/contracts/observation_capture.rs`,
 `observation_inventory.rs`, `observation_cycle.rs`, `host_capture.rs`,
-`observation_associations.rs`, `assembly.rs`, and `tests/contracts/kernel_embed.rs`
-(`kernel_opens_deposits_and_lenses_without_a_server_or_a_port`). Contracts
+`observation_associations.rs`, `assembly.rs`, `tests/contracts/kernel_embed.rs`
+(`kernel_opens_deposits_and_lenses_without_a_server_or_a_port`), and
+`tests/contracts/refzero_{identity,interop}.rs` (identity store, importer,
+shared `z://blob/` vectors, envelope transfer, migration 025). Contracts
 import `cortex_kernel` / `cortex_logic` for brain types and `cortex_daemon`
 only for MCP, health presentation, and other process-edge surfaces.
 

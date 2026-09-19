@@ -260,5 +260,17 @@ path = "contracts/observation_associations.rs"
 name = "assembly"
 path = "contracts/assembly.rs"
 
+[[test]]
+name = "refzero_identity"
+path = "contracts/refzero_identity.rs"
+
+[[test]]
+name = "refzero_interop"
+path = "contracts/refzero_interop.rs"
+
+[[test]]
+name = "hash_epoch_upgrade"
+path = "contracts/hash_epoch_upgrade.rs"
+
 [lints.rust]
 unsafe_code = "forbid"

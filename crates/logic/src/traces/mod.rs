@@ -1,6 +1,5 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 const SUMMARY_MAX_CHARS: usize = 160;
 
@@ -19,10 +18,25 @@ pub fn migrate_history_tables(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// BLAKE3 of the complete bytes as 64 lowercase hex. Stable across runs
+/// and processes. This replaced a SipHash (`DefaultHasher`) 16-hex value
+/// whose per-process random keys made every stored digest unverifiable
+/// after restart; see `is_legacy_content_hash`.
 pub fn content_hash(text: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    content_hash_bytes(text.as_bytes())
+}
+
+/// Byte form of [`content_hash`]: BLAKE3 over the complete object, no trim.
+pub fn content_hash_bytes(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+/// True for pre-cutover 16-hex digests (SipHash/FNV epoch). Those values are
+/// never equal to a BLAKE3 digest and must never be silently reinterpreted
+/// as one: readers treat them as unverifiable legacy, fail closed, and
+/// re-seal on the next write.
+pub fn is_legacy_content_hash(value: &str) -> bool {
+    value.len() == 16 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn summary_of(op: &str, text: &str) -> String {

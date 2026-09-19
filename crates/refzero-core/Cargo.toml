@@ -1,22 +1,19 @@
 [package]
-name = "cortex-logic"
+name = "cortex-refzero"
 version = "0.6.0"
 edition = "2024"
-description = "Deterministic domain logic for Cortex"
+description = "Cortex identity store: RefZero-compatible interned objects and captured-use locs over rusqlite"
 license = "MIT"
+
+[lib]
+path = "src/lib.rs"
 
 [dependencies]
 blake3 = "1.8"
-chrono = { version = "0.4.45", features = ["serde", "clock"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-rustc-hash = "2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-asupersync = "=0.4.10"
-toml = "1.1.5"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2.189"
+uuid = { version = "1.26.0", features = ["v4"] }
 
 [lints.rust]
 unsafe_code = "forbid"

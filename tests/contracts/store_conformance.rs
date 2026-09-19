@@ -7,10 +7,10 @@
 
 use cortex_kernel::db::addresses;
 use cortex_kernel::store_spi::conformance::{
-    digest_set, resolve_index, resolve_security, run_suite, verify_digest, verify_rotation,
-    ConformanceLevel, DigestDescriptor, IndexResolution, IntegrityVerdict,
+    ConformanceLevel, DigestDescriptor, IndexResolution, IntegrityVerdict, digest_set,
+    resolve_index, resolve_security, run_suite, verify_digest, verify_rotation,
 };
-use cortex_kernel::store_spi::dispatch::{shadow_compare, StoreHandle};
+use cortex_kernel::store_spi::dispatch::{StoreHandle, shadow_compare};
 use cortex_kernel::store_spi::memory::MemoryStore;
 use cortex_kernel::store_spi::sqlite::SqliteStore;
 use cortex_kernel::store_spi::{BrainStore, Durability, Op, WriteIntent, WriteTransaction};
@@ -80,23 +80,23 @@ fn memory_oracle_passes_core_and_nothing_else() {
 
 #[test]
 fn integrity_descriptors_rotate_side_by_side_and_unknown_means_unverified() {
-    let sha = DigestDescriptor::sha256("cortex/record");
+    let blake = DigestDescriptor::blake3("cortex/record");
     let future = DigestDescriptor {
         algorithm: "blake3-xof".into(),
         domain: "cortex/record".into(),
         canonicalization: "raw".into(),
     };
     let bytes = b"  ledger commit is the retry fence  ";
-    let set = digest_set(&[sha.clone(), future.clone()], bytes);
-    assert!(set[&sha.key()].is_some());
+    let set = digest_set(&[blake.clone(), future.clone()], bytes);
+    assert!(set[&blake.key()].is_some());
     assert_eq!(
         set[&future.key()],
         None,
         "unsupported algorithm yields no digest, never a fake one"
     );
-    let good = sha.digest(bytes).unwrap();
+    let good = blake.digest(bytes).unwrap();
     assert_eq!(
-        verify_digest(&sha, bytes, &good),
+        verify_digest(&blake, bytes, &good),
         IntegrityVerdict::Verified
     );
     assert!(matches!(
@@ -106,7 +106,10 @@ fn integrity_descriptors_rotate_side_by_side_and_unknown_means_unverified() {
     // Rotation: an old unsupported digest beside a supported one verifies; a supported mismatch is loud.
     assert_eq!(
         verify_rotation(
-            &[(future.clone(), "abcd".into()), (sha.clone(), good.clone())],
+            &[
+                (future.clone(), "abcd".into()),
+                (blake.clone(), good.clone())
+            ],
             bytes
         ),
         IntegrityVerdict::Verified
@@ -116,25 +119,33 @@ fn integrity_descriptors_rotate_side_by_side_and_unknown_means_unverified() {
         IntegrityVerdict::Unverified { .. }
     ));
     assert!(matches!(
-        verify_rotation(&[(sha.clone(), good.clone())], b"tampered"),
+        verify_rotation(&[(blake.clone(), good.clone())], b"tampered"),
         IntegrityVerdict::Mismatch { .. }
     ));
-    // Canonicalization is part of identity: trimmed input verifies under the trim descriptor only.
-    assert_eq!(
-        verify_digest(&sha, b"ledger commit is the retry fence", &good),
-        IntegrityVerdict::Verified
-    );
-    let raw = DigestDescriptor {
-        canonicalization: "raw".into(),
-        ..sha.clone()
+    // Integrity paths hash the complete bytes: surrounding whitespace is content.
+    assert!(matches!(
+        verify_digest(&blake, b"ledger commit is the retry fence", &good),
+        IntegrityVerdict::Mismatch { .. }
+    ));
+    // The retired trim canonicalization is unsupported: legacy descriptors
+    // yield no digest and verify as Unverified, never as a silent pass.
+    let legacy_trim = DigestDescriptor {
+        canonicalization: "utf8-nfc-trim".into(),
+        ..blake.clone()
     };
-    assert_ne!(
-        raw.digest(bytes),
-        raw.digest(b"ledger commit is the retry fence")
-    );
+    assert_eq!(legacy_trim.digest(bytes), None);
+    assert!(matches!(
+        verify_digest(&legacy_trim, bytes, &good),
+        IntegrityVerdict::Unverified { .. }
+    ));
+    let legacy_sha = DigestDescriptor {
+        algorithm: "sha256".into(),
+        ..blake.clone()
+    };
+    assert_eq!(legacy_sha.digest(bytes), None);
     // Domain separation: same bytes, different domain, different digest.
     assert_ne!(
-        DigestDescriptor::sha256("cortex/other").digest(bytes),
+        DigestDescriptor::blake3("cortex/other").digest(bytes),
         Some(good)
     );
 }
@@ -187,28 +198,28 @@ fn address_overlay_rebases_without_touching_records_and_measures_short_address_a
         .unwrap()
         .expect("record for legacy decision");
     conn.execute("INSERT INTO records (record_id, kind, scope_id, retention, created_sequence) SELECT 'rec-other', kind, scope_id, retention, created_sequence FROM records WHERE record_id = ?1", [&id]).unwrap();
-    let sha = DigestDescriptor::sha256("cortex/record");
-    let d1 = sha.digest(b"address overlay law").unwrap();
+    let blake = DigestDescriptor::blake3("cortex/record");
+    let d1 = blake.digest(b"address overlay law").unwrap();
     let d2 = format!("{}ffff", &d1[..6]);
     assert_eq!(
-        addresses::assign(conn, &id, "segments", "sha256-full", &d1).unwrap(),
+        addresses::assign(conn, &id, "segments", "blake3-full", &d1).unwrap(),
         1
     );
-    addresses::assign(conn, "rec-other", "segments", "sha256-full", &d2).unwrap();
+    addresses::assign(conn, "rec-other", "segments", "blake3-full", &d2).unwrap();
     // A 6-char prefix is ambiguous on this brain; the floor is data-defined.
     assert!(
-        matches!(addresses::resolve_short(conn, "sha256-full", "segments", &d1[..6]).unwrap(), addresses::ShortAddress::Ambiguous(ref ids) if ids.len() == 2)
+        matches!(addresses::resolve_short(conn, "blake3-full", "segments", &d1[..6]).unwrap(), addresses::ShortAddress::Ambiguous(ref ids) if ids.len() == 2)
     );
     assert_eq!(
-        addresses::resolve_short(conn, "sha256-full", "segments", &d1[..8]).unwrap(),
+        addresses::resolve_short(conn, "blake3-full", "segments", &d1[..8]).unwrap(),
         addresses::ShortAddress::Unique(id.clone())
     );
     assert_eq!(
-        addresses::minimum_unique_prefix(conn, "sha256-full", "segments").unwrap(),
+        addresses::minimum_unique_prefix(conn, "blake3-full", "segments").unwrap(),
         7
     );
     assert_eq!(
-        addresses::resolve_short(conn, "sha256-full", "segments", "zzz").unwrap(),
+        addresses::resolve_short(conn, "blake3-full", "segments", "zzz").unwrap(),
         addresses::ShortAddress::Unknown
     );
     // Rebase to a different scheme: locators change, the record row does not.
@@ -223,7 +234,7 @@ fn address_overlay_rebases_without_touching_records_and_measures_short_address_a
         addresses::rebase(
             conn,
             "segments",
-            "sha256-full",
+            "blake3-full",
             "seg-v2",
             |id, old| format!("v2/{id}/{}", &old[..8])
         )
@@ -241,7 +252,7 @@ fn address_overlay_rebases_without_touching_records_and_measures_short_address_a
         Some(id.as_str())
     );
     assert_eq!(
-        addresses::record_for(conn, "sha256-full", "segments", &d1).unwrap(),
+        addresses::record_for(conn, "blake3-full", "segments", &d1).unwrap(),
         None,
         "old scheme dropped"
     );

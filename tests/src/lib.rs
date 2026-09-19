@@ -17,13 +17,14 @@ pub fn cortex_bin() -> std::path::PathBuf {
         "cortex"
     };
     let exe = std::env::current_exe().expect("cortex-tests: current exe");
-    // Only accept a binary in a Cargo profile dir (`deps` + `.fingerprint`).
-    // Walking into `$HOME` would pick up an unrelated `cortex` and hide daemon defects.
+    // Only accept a binary in a Cargo profile dir: the per-package layout
+    // (1.100+) keeps no top-level `deps`/`.fingerprint`, so the marker is a
+    // `build/` dir plus the binary itself. Walking into `$HOME` would pick up
+    // an unrelated `cortex` and hide daemon defects.
     exe.ancestors()
         .skip(1)
-        .find(|dir| dir.join("deps").is_dir() && dir.join(".fingerprint").is_dir())
+        .find(|dir| dir.join("build").is_dir() && dir.join(name).is_file())
         .map(|dir| dir.join(name))
-        .filter(|path| path.is_file())
         .unwrap_or_else(|| {
             panic!(
                 "cortex binary not found next to the Cargo profile of {}; run \

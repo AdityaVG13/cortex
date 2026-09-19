@@ -77,7 +77,7 @@ pub(super) fn evidence(
         result.push(Evidence {
             id,
             lineage,
-            digest: crate::handlers::sha256_hex(&bytes),
+            digest: crate::handlers::digest_hex(&bytes),
             tokens: tokens(text),
         });
     }

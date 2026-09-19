@@ -1,7 +1,7 @@
 use super::*;
 use rusqlite::{Connection, TransactionBehavior, params};
 use std::collections::HashSet;
-pub const SCHEMA_MIGRATIONS: [MigrationDef; 24] = [
+pub const SCHEMA_MIGRATIONS: [MigrationDef; 25] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -26,6 +26,7 @@ pub const SCHEMA_MIGRATIONS: [MigrationDef; 24] = [
     ("022_clock_anchors", "clock_anchors"),
     ("023_authoritative_records", "authoritative_records"),
     ("024_boot_capsule_indexes", "boot_capsule_indexes"),
+    ("025_blake3_digests", "blake3_digests"),
 ];
 pub fn migration_definitions() -> &'static [MigrationDef] {
     &SCHEMA_MIGRATIONS

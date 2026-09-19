@@ -121,9 +121,7 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
                     let (stdout_bytes, stderr_bytes) = child.take_pipes();
                     let stdout = String::from_utf8_lossy(&stdout_bytes);
                     let stderr = String::from_utf8_lossy(&stderr_bytes);
-                    panic!(
-                        "isolated contract {test} timed out ({status}):\n{stdout}\n{stderr}"
-                    );
+                    panic!("isolated contract {test} timed out ({status}):\n{stdout}\n{stderr}");
                 }
                 thread::sleep(Duration::from_millis(20));
             }
@@ -152,7 +150,8 @@ pub fn in_subprocess(test: &str, variables: &[(&str, Option<&OsStr>)]) -> bool {
     assert!(
         stdout.lines().any(|line| {
             let line = line.trim();
-            line.starts_with(&format!("test {test} ")) || line.starts_with(&format!("test {test}..."))
+            line.starts_with(&format!("test {test} "))
+                || line.starts_with(&format!("test {test}..."))
         }),
         "isolated contract {test} ran a different test (wrong filter would hide the contract):\n{stdout}\n{stderr}"
     );

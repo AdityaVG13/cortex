@@ -153,7 +153,7 @@ fn capture_file(
     }
     let observed_at = chrono::DateTime::<chrono::Utc>::from(modified)
         .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-    let digest = crate::handlers::sha256_hex(&bytes);
+    let digest = crate::handlers::digest_hex(&bytes);
     #[cfg(unix)]
     let identity = {
         use std::os::unix::fs::MetadataExt;

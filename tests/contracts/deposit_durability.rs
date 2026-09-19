@@ -2,11 +2,13 @@
 //! `synchronous` pragma; a deposit is one atomic batch; idempotency is
 //! principal-scoped with canonical-payload comparison through the local runtime.
 
-use cortex_kernel::db::{configure_with_profile, DurabilityProfile};
-use cortex_logic::protocol::AckProfile;
+use cortex_kernel::db::{DurabilityProfile, configure_with_profile};
 use cortex_kernel::runtime::CortexRuntime;
 use cortex_kernel::store_spi::sqlite::ack_profile;
-use cortex_tests::support::{run_with_cx, solo_state, test_conn};
+use cortex_logic::protocol::AckProfile;
+use cortex_tests::support::{
+    open_file_db, run_with_cx, runtime_state, solo_state, test_conn, unique_temp_dir,
+};
 
 #[test]
 fn durability_profile_selects_synchronous_and_receipt_reports_it() {
@@ -218,7 +220,7 @@ fn local_store_replays_by_idempotency_key_and_rejects_payload_conflict() {
 #[test]
 fn recall_does_not_block_behind_a_held_write_lock() {
     run_with_cx(|cx| async move {
-        use cortex_kernel::handlers::recall::{execute_unified_recall, RecallContext};
+        use cortex_kernel::handlers::recall::{RecallContext, execute_unified_recall};
         use cortex_kernel::state::SIDE_EFFECT_LOCK_WAIT_MS;
         let runtime = CortexRuntime::from_state(solo_state());
         let state = runtime.state().clone();
@@ -274,4 +276,128 @@ fn recall_does_not_block_behind_a_held_write_lock() {
             .unwrap();
         assert!(retrievals >= 1, "deferred retrieval bump was applied");
     });
+}
+
+#[test]
+fn concurrent_writers_on_one_brain_all_store() {
+    // Regression: SAVEPOINT-on-autocommit (deferred upgrade) collapsed under
+    // multi-writer races with SQLITE_BUSY_SNAPSHOT — 3 hammering `cortex
+    // mcp` processes stored 2 of 30 commits. Each thread holds its own
+    // connections like a separate MCP server process; the write txn now
+    // opens BEGIN IMMEDIATE with bounded busy retry, so every deposit lands.
+    const WRITERS: usize = 3;
+    const DEPOSITS: usize = 8;
+    // Pairwise near-zero Jaccard overlap: near-identical probe texts would be
+    // correctly consolidated by conflict detection instead of stored as rows.
+    // Distinct agents per writer likewise avoid same-agent relation linking.
+    const TOPICS: [&str; 24] = [
+        "ledger anchors hold retry storms",
+        "garden sensors report soil moisture",
+        "harbor cranes lift container freight",
+        "circuit breakers trip overload faults",
+        "meadow voles tunnel root systems",
+        "canyon echoes carry thunder farther",
+        "bridge cables tension wind shear",
+        "orchard frost threatens apple blossoms",
+        "forest canopy filters morning sunlight",
+        "engine pistons compress fuel mixture",
+        "compass needles align magnetic north",
+        "tunnel boring advances bedrock daily",
+        "beacon flashes guide night pilots",
+        "summit winds scour granite faces",
+        "river deltas deposit silt slowly",
+        "vault doors seal archive chambers",
+        "prairie fires renew grassland ecology",
+        "lantern oil fuels midnight watch",
+        "glacier melt feeds alpine streams",
+        "kiln heat fuses ceramic glaze",
+        "reef sharks patrol coral trenches",
+        "diesel generators hum backup power",
+        "falcon dives strike pigeon flocks",
+        "tapestry looms weave wool patterns",
+    ];
+    let dir = unique_temp_dir("conc-writes");
+    let db = dir.join("cortex.db");
+    drop(open_file_db(&db)); // pre-migrate so threads race only on writes
+    let mut handles = Vec::new();
+    for w in 0..WRITERS {
+        let db = db.clone();
+        let home = dir.clone();
+        handles.push(std::thread::spawn(move || {
+            run_with_cx(|cx| async move {
+                let write = open_file_db(&db);
+                let read = rusqlite::Connection::open(&db).expect("read conn");
+                cortex_kernel::db::configure(&read).expect("configure read");
+                read.execute_batch("PRAGMA query_only = ON;")
+                    .expect("query-only");
+                let mut state = runtime_state(write, read, false, None);
+                state.home = home;
+                state.db_path = db;
+                let runtime = CortexRuntime::from_state(state);
+                for i in 0..DEPOSITS {
+                    runtime
+                        .deposit(
+                            &cx,
+                            &format!("conc-{w}-{i}"),
+                            &format!("C{w}{i} {}", TOPICS[w * DEPOSITS + i]),
+                            &format!("conc-agent-{w}"),
+                            None,
+                        )
+                        .await
+                        .expect("every concurrent deposit stores");
+                }
+            })
+        }));
+    }
+    for handle in handles {
+        handle.join().expect("writer thread");
+    }
+    let conn = open_file_db(&db);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM decisions WHERE decision LIKE 'C__ %'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, (WRITERS * DEPOSITS) as i64);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn missing_outbox_reads_zero_debt_instead_of_refusing_intake() {
+    run_with_cx(|cx| async move {
+        let state = solo_state();
+        let conn = state.db.lock(&cx).await.unwrap();
+        conn.execute_batch("DROP TABLE outbox").unwrap();
+        // A table that does not exist holds no jobs with certainty: fresh
+        // and mid-migration databases must read zero debt, never hard
+        // pressure. (Concurrent fresh-boot probes refused all intake here.)
+        let debt = cortex_kernel::db::outbox::debt(&conn);
+        assert_eq!(debt.pending_jobs, 0);
+        assert_eq!(debt.pressure(), "none");
+        assert!(!debt.refuse_intake());
+    });
+}
+
+#[test]
+fn configure_survives_a_lock_held_by_a_concurrent_boot() {
+    // One process holds the write lock (mid-migration boot) while another
+    // configures: the busy timeout must already apply, so the second boot
+    // waits instead of failing with `database is locked`.
+    let dir = unique_temp_dir("configure-lock");
+    let db = dir.join("cortex.db");
+    let holder = open_file_db(&db);
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let worker = std::thread::spawn(move || {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite");
+        cortex_kernel::db::configure(&conn)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    holder.execute_batch("ROLLBACK").unwrap();
+    worker
+        .join()
+        .expect("configure thread")
+        .expect("configure waits out a concurrent boot lock instead of failing");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -54,7 +54,7 @@ impl StoreHandle {
                 ]
                 .into_iter()
                 .collect(),
-                integrity: vec![DigestDescriptor::sha256("cortex/record")],
+                integrity: vec![DigestDescriptor::blake3("cortex/record")],
                 optional_indexes: ["fts".to_string(), "clock_anchor".to_string()]
                     .into_iter()
                     .collect(),

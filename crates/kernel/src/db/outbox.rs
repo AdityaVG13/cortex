@@ -202,16 +202,54 @@ impl Debt {
     }
 }
 
+/// Debt-read retry budget: same bounded busy policy as write transactions.
+/// Concurrent boot and migration DDL can busy a reader that the connection
+/// timeout does not cover (snapshot upgrades); retrying here keeps a
+/// transient lock from becoming a total intake refusal.
+fn query_retry<T>(
+    conn: &Connection,
+    mut f: impl FnMut() -> Result<T, rusqlite::Error>,
+) -> Result<T, rusqlite::Error> {
+    let mut attempt = 0;
+    loop {
+        match f() {
+            Err(err)
+                if super::connection::is_busy_error(&err)
+                    && attempt + 1 < super::connection::SAVEPOINT_BUSY_RETRIES =>
+            {
+                attempt += 1;
+                super::connection::sleep_busy_backoff(attempt);
+            }
+            other => return other,
+        }
+    }
+}
+
 pub fn debt(conn: &Connection) -> Debt {
-    // An unreadable COUNT is not "no jobs": that would let intake proceed
-    // while the outbox is at the hard bound. Treat a failed read as hard
-    // pressure so refuse_intake stays fail-closed.
+    // A provably missing outbox table holds no jobs with certainty: no rows
+    // can exist where the table does not, so fresh and mid-migration
+    // databases read zero debt instead of refusing all intake. Any other
+    // unreadable COUNT stays fail-closed to hard pressure — an unknown
+    // outbox must not admit writes past the bound.
+    let missing = matches!(
+        query_retry(conn, || conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'outbox'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )),
+        Ok(0)
+    );
     let count = |state: &str| -> i64 {
-        conn.query_row(
-            "SELECT COUNT(*) FROM outbox WHERE state = ?1",
-            params![state],
-            |r| r.get(0),
-        )
+        if missing {
+            return 0;
+        }
+        query_retry(conn, || {
+            conn.query_row(
+                "SELECT COUNT(*) FROM outbox WHERE state = ?1",
+                params![state],
+                |r| r.get(0),
+            )
+        })
         .unwrap_or(DEBT_HARD_LIMIT_JOBS)
     };
     Debt {

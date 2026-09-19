@@ -134,6 +134,17 @@ pub fn deposit_decision(
                     capture,
                 });
             }
+            Some((stored_hash, _, _))
+                if cortex_logic::traces::is_legacy_content_hash(&stored_hash) =>
+            {
+                // Pre-cutover seals are process-random SipHash: unverifiable by
+                // construction, so the payload can be neither confirmed nor
+                // denied. Fail closed with a clear epoch message instead of a
+                // misleading "different payload" claim.
+                return Err(StoreError::BadRequest(
+                    "idempotency_conflict: key sealed under a previous hash epoch; retire and reissue the key",
+                ));
+            }
             Some(_) => {
                 return Err(StoreError::BadRequest(
                     "idempotency_conflict: key reused with a different payload",
@@ -153,12 +164,16 @@ pub fn deposit_decision(
     }
     // One atomic batch: store + focus + trace/version + entities + clock
     // projection. A failure or panic rolls the whole deposit back.
-    crate::db::with_savepoint_mut(
+    let outcome = crate::db::with_savepoint_mut(
         conn,
         "deposit",
         |conn| deposit_inner(conn, &input, &text, context, &canonical_hash),
         |e| StoreError::Internal(e.to_string()),
-    )
+    )?;
+    // Best-effort identity interning for the cross-product sidecar. A sidecar
+    // failure warns and never fails the committed store.
+    crate::refzero::intern_store_bytes_for_conn(conn, text.as_bytes());
+    Ok(outcome)
 }
 
 fn canonical_deposit(

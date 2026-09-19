@@ -55,11 +55,13 @@ pub struct DigestDescriptor {
 }
 
 impl DigestDescriptor {
-    pub fn sha256(domain: &str) -> Self {
+    /// BLAKE3 over the complete record bytes (`raw`: no trim). The domain
+    /// stays part of the descriptor identity and the digest input.
+    pub fn blake3(domain: &str) -> Self {
         Self {
-            algorithm: "sha256".into(),
+            algorithm: "blake3".into(),
             domain: domain.into(),
-            canonicalization: "utf8-nfc-trim".into(),
+            canonicalization: "raw".into(),
         }
     }
     pub fn key(&self) -> String {
@@ -70,8 +72,10 @@ impl DigestDescriptor {
     }
     fn canonical(&self, bytes: &[u8]) -> Option<Vec<u8>> {
         match self.canonicalization.as_str() {
+            // Integrity paths hash the complete bytes. The retired
+            // `utf8-nfc-trim` spelling is unsupported: legacy descriptors
+            // verify as `Unverified`, never as a silent pass.
             "raw" => Some(bytes.to_vec()),
-            "utf8-nfc-trim" => Some(String::from_utf8_lossy(bytes).trim().as_bytes().to_vec()),
             _ => None,
         }
     }
@@ -80,18 +84,12 @@ impl DigestDescriptor {
     pub fn digest(&self, bytes: &[u8]) -> Option<String> {
         let canonical = self.canonical(bytes)?;
         match self.algorithm.as_str() {
-            "sha256" => {
-                use sha2::Digest;
-                let mut h = sha2::Sha256::new();
+            "blake3" => {
+                let mut h = blake3::Hasher::new();
                 h.update(self.domain.as_bytes());
-                h.update([0u8]);
+                h.update(&[0u8]);
                 h.update(&canonical);
-                Some(
-                    h.finalize()
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<String>(),
-                )
+                Some(h.finalize().to_hex().to_string())
             }
             _ => None,
         }

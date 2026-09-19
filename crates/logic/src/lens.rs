@@ -69,7 +69,14 @@ impl LensProfile {
                 Need::FailedAttempts,
                 Need::Conflicts,
             ],
-            Self::Answer => vec![Need::Answer, Need::CurrentConstraints, Need::Conflicts],
+            // Answer promises an answer plus applicable constraints. Conflict
+            // evidence still surfaces as contested cards when present, but a
+            // conflict-free answer is complete (`ok`), not `partial`: the
+            // coverage model can only express "conflict cards delivered", so
+            // promising conflict coverage here made `ok` unreachable on clean
+            // data. Profiles conflicts/uncertainty/orient — and explicit
+            // `needs: ["conflicts"]` — keep the promise.
+            Self::Answer => vec![Need::Answer, Need::CurrentConstraints],
             Self::Changes => vec![Need::Changes],
             Self::Attempts => vec![Need::FailedAttempts, Need::LastVerifiedOutcome],
             Self::Procedures => vec![Need::Procedures],

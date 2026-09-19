@@ -2,11 +2,11 @@ use super::super::{
     add_twin_columns, ensure_temporal_columns, fill_twins, migration_error, require_columns,
     require_tables,
 };
-use crate::db::rebuild_fts;
 use crate::db::schema::{
     AGENT_FEEDBACK_DDL, CLIENT_PERMISSIONS_DDL, DECISION_CONFLICTS_DDL,
     IDX_ACTIVE_SOURCE_RECENT_SQL, IDX_EMBEDDINGS_MODEL_NORM_SQL, fts_rebuild_sql,
 };
+use crate::db::{rebuild_fts, table_exists, table_has_column};
 use rusqlite::Connection;
 
 fn exec_batch(conn: &Connection, sql: &str) -> rusqlite::Result<()> {
@@ -154,6 +154,36 @@ pub(super) fn apply_later(
                 conn,
                 "CREATE INDEX IF NOT EXISTS idx_decisions_updated_at ON decisions(updated_at); CREATE INDEX IF NOT EXISTS idx_decisions_status_retention_created ON decisions(status, retention_class, created_at, id);",
             )
+        }
+        "025_blake3_digests" => {
+            // Hash-epoch cutover gate. Pre-cutover marker rows keep their old
+            // bytes under the new name; nothing reinterprets a legacy digest
+            // as BLAKE3. Readers dual-read by shape (16-hex SipHash/FNV is
+            // unverifiable legacy) and re-seal on the next write.
+            if table_exists(conn, "host_capture_metadata")
+                && table_has_column(conn, "host_capture_metadata", "sha256")
+                && !table_has_column(conn, "host_capture_metadata", "digest")
+            {
+                exec_batch(
+                    conn,
+                    "ALTER TABLE host_capture_metadata RENAME COLUMN sha256 TO digest",
+                )?;
+            }
+            // Legacy compiled plans are pure cache keyed by `compiled:{16hex}`;
+            // new code keys by `compiled:{64hex}`, so old rows can never hit
+            // again. Purge them (guards first: no reliance on FK cascades).
+            // Ledger, trace, and feedback rows are history, not cache: kept.
+            for table in ["compiled_guards", "compiled_reads"] {
+                if table_exists(conn, table) {
+                    conn.execute(
+                        &format!(
+                            "DELETE FROM {table} WHERE compiled_id LIKE 'compiled:%' AND length(compiled_id) = 25"
+                        ),
+                        [],
+                    )?;
+                }
+            }
+            Ok(())
         }
         other => Err(migration_error(format!(
             "unknown schema migration: {other}"

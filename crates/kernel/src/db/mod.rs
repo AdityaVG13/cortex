@@ -7,8 +7,9 @@ mod team;
 pub use connection::*;
 pub use maintenance::*;
 pub use migrations::{
-    applied_migration_versions, current_schema_user_version, migration_definitions,
-    pending_migration_versions, run_pending_migrations, run_pending_migrations_quiet,
+    applied_migration_versions, current_schema_user_version, ensure_schema_migrations_table,
+    migration_definitions, pending_migration_versions, run_pending_migrations,
+    run_pending_migrations_quiet,
 };
 pub use schema::initialize_schema;
 
