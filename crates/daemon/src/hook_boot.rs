@@ -1,6 +1,8 @@
+use cortex_kernel::handlers::cwd_root;
 use cortex_kernel::hook_event::{frame_from_host, process};
 use cortex_logic::adapter::CapabilityManifest;
-use serde_json::{json, Value};
+use cortex_logic::protocol::nonempty_owned;
+use serde_json::{Value, json};
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -17,30 +19,30 @@ struct HealthResult {
     embeddings: i64,
 }
 
-async fn fetch_boot(
-    cx: &asupersync::Cx,
-    agent: &str,
-    budget: u32,
-    runtime: &crate::CortexRuntime,
-    payload: &Value,
-) -> Option<BootResult> {
+pub async fn boot_for_paths(
+    cx: &asupersync::Cx, runtime: &crate::CortexRuntime, agent: &str, budget: u32, paths: &[String],
+) -> Result<crate::compiler::BootResult, String> {
     let state = runtime.state();
     if state.team_mode && state.default_owner_id.is_none() {
-        return None;
+        return Err("boot requires a local owner in team mode".into());
     }
-    let result = runtime
+    runtime
         .boot(
             cx,
             crate::runtime::BootInput {
                 agent: agent.to_string(),
                 max_tokens: budget as usize,
                 owner_id: state.default_owner_id,
-                paths: payload_roots(payload),
+                paths: paths.to_vec(),
                 ..Default::default()
             },
         )
         .await
-        .ok()?;
+        .map_err(|e| format!("boot failed ({e})"))
+}
+
+async fn fetch_boot(cx: &asupersync::Cx, agent: &str, budget: u32, runtime: &crate::CortexRuntime, payload: &Value) -> Option<BootResult> {
+    let result = boot_for_paths(cx, runtime, agent, budget, &payload_roots(payload)).await.ok()?;
     Some(BootResult {
         boot_prompt: result.boot_prompt,
         token_estimate: i64::try_from(result.token_estimate).ok(),
@@ -50,16 +52,8 @@ async fn fetch_boot(
 
 /// CQR boot capsule for SessionStart fallback. Caller cwd keeps path-scoped
 /// facts in that repository; empty cwd compiles unscoped.
-pub async fn boot_capsule_for_payload(
-    cx: &asupersync::Cx,
-    runtime: &crate::CortexRuntime,
-    agent: &str,
-    payload: &Value,
-    max_tokens: usize,
-) -> Option<String> {
-    fetch_boot(cx, agent, max_tokens as u32, runtime, payload)
-        .await
-        .map(|boot| boot.boot_prompt)
+pub async fn boot_capsule_for_payload(cx: &asupersync::Cx, runtime: &crate::CortexRuntime, agent: &str, payload: &Value, max_tokens: usize) -> Option<String> {
+    fetch_boot(cx, agent, max_tokens as u32, runtime, payload).await.map(|boot| boot.boot_prompt)
 }
 
 async fn fetch_health(cx: &asupersync::Cx, runtime: &crate::CortexRuntime) -> Option<HealthResult> {
@@ -88,67 +82,31 @@ fn read_optional_payload() -> Value {
     let mut raw = Vec::new();
     let _ = std::io::stdin().lock().take(64 * 1024).read_to_end(&mut raw);
     serde_json::from_slice(&raw).unwrap_or_else(|_| {
-        json!({
-            "hook_event_name": "SessionStart",
-            "cwd": std::env::var("PWD").or_else(|_| std::env::current_dir().map(|p| p.display().to_string())).unwrap_or_default(),
-        })
+        json!({"hook_event_name":"SessionStart","cwd":std::env::var("PWD").or_else(|_| std::env::current_dir().map(|p| p.display().to_string())).unwrap_or_default()})
     })
 }
 
 fn payload_roots(payload: &Value) -> Vec<String> {
-    let cwd = payload
-        .get("cwd")
-        .or_else(|| payload.get("cwd_path"))
-        .or_else(|| payload.get("working_directory"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if cwd.contains('/') || cwd.contains('\\') {
-        vec![cwd.to_string()]
-    } else {
-        Vec::new()
-    }
+    cwd_root(payload).into_iter().collect()
 }
 
 /// Assembly brief for the SessionStart boot fallback. Caller cwd keeps
 /// path-scoped bundles in that repository; no cwd keeps the `project` bucket.
-pub async fn boot_assembly_brief(
-    cx: &asupersync::Cx,
-    runtime: &crate::CortexRuntime,
-    text: &str,
-    payload: &Value,
-) -> String {
+pub async fn boot_assembly_brief(cx: &asupersync::Cx, runtime: &crate::CortexRuntime, text: &str, payload: &Value) -> String {
     let paths = payload_roots(payload);
     let cues = crate::runtime::assembly::tokenize_cues(text);
-    match runtime
-        .compile_assemblies_for_paths(cx, &paths, None, &cues, 4, None, None, None, "")
-        .await
-    {
+    match runtime.compile_assemblies_for_paths(cx, &paths, None, &cues, 4, None, None, None, "").await {
         Ok(compiled) if !compiled.brief.is_empty() => compiled.brief,
         _ => String::new(),
     }
 }
 
 /// Same View as MCP `cortex_orient` / `process()` SessionStart. Empty means fall back to boot.
-pub async fn session_start_context(
-    cx: &asupersync::Cx,
-    agent: &str,
-    runtime: &crate::CortexRuntime,
-    payload: &Value,
-) -> Option<String> {
+pub async fn session_start_context(cx: &asupersync::Cx, agent: &str, runtime: &crate::CortexRuntime, payload: &Value) -> Option<String> {
     let manifest = CapabilityManifest::claude_code_plugin();
     let frame = frame_from_host("SessionStart", payload, manifest);
     let result = process(cx, runtime, agent, &frame, payload).await.ok()?;
-    result.additional_context.then_nonempty()
-}
-
-trait ThenNonEmpty {
-    fn then_nonempty(self) -> Option<String>;
-}
-impl ThenNonEmpty for String {
-    fn then_nonempty(self) -> Option<String> {
-        if self.trim().is_empty() { None } else { Some(self) }
-    }
+    nonempty_owned(result.additional_context)
 }
 
 pub async fn run_boot(cx: &asupersync::Cx, agent: &str) {
@@ -161,11 +119,7 @@ pub async fn run_boot(cx: &asupersync::Cx, agent: &str) {
         }
     };
     let payload = read_optional_payload();
-    let (boot, health) = futures_util::future::join(
-        fetch_boot(cx, agent, DEFAULT_BUDGET, &runtime, &payload),
-        fetch_health(cx, &runtime),
-    )
-    .await;
+    let (boot, health) = futures_util::future::join(fetch_boot(cx, agent, DEFAULT_BUDGET, &runtime, &payload), fetch_health(cx, &runtime)).await;
     if boot.is_some() {
         register_session(cx, agent, &runtime).await;
     }
@@ -205,11 +159,7 @@ pub async fn run_status(cx: &asupersync::Cx) {
         Err(_) => None,
     };
     match health {
-        Some(h) => {
-            println!("ONLINE | {} mem | {} dec | {} emb", h.memories, h.decisions, h.embeddings);
-        }
-        None => {
-            println!("OFFLINE");
-        }
+        Some(h) => println!("ONLINE | {} mem | {} dec | {} emb", h.memories, h.decisions, h.embeddings),
+        None => println!("OFFLINE"),
     }
 }

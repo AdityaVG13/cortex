@@ -1,6 +1,7 @@
 use super::arg_str;
 use crate::handlers::SourceIdentity;
 use crate::state::RuntimeState;
+use cortex_kernel::handlers::store::normalize_client_slug;
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,7 +33,9 @@ pub(crate) fn required_permission_for_tool(tool_name: &str) -> Option<ClientPerm
         "cortex_store" | "cortex_focus_start" | "cortex_focus_end" => Some(ClientPermission::Write),
         "cortex_conflicts_resolve" => Some(ClientPermission::Admin),
         // Specialised legacy surfaces that still dispatch
-        "cortex_recall" | "cortex_peek" | "cortex_semantic_recall" | "cortex_health" | "cortex_digest" | "cortex_lastCall" | "cortex_agent_feedback_stats" => Some(ClientPermission::Read),
+        "cortex_recall" | "cortex_peek" | "cortex_semantic_recall" | "cortex_health" | "cortex_digest" | "cortex_lastCall" | "cortex_agent_feedback_stats" => {
+            Some(ClientPermission::Read)
+        }
         "cortex_agent_feedback_record" => Some(ClientPermission::Write),
         "cortex_permissions_list" => Some(ClientPermission::Read),
         "cortex_permissions_grant" | "cortex_permissions_revoke" => Some(ClientPermission::Admin),
@@ -44,13 +47,7 @@ pub(crate) fn normalize_permission_client_id(raw: &str) -> String {
     if trimmed == "*" {
         return "*".to_string();
     }
-    let before_model = trimmed.split('(').next().unwrap_or(trimmed).trim().to_ascii_lowercase();
-    let normalized: String = before_model.chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_').collect();
-    if normalized.is_empty() {
-        "mcp".to_string()
-    } else {
-        normalized
-    }
+    normalize_client_slug(trimmed, "mcp")
 }
 pub(crate) fn source_client_for_permissions(source: Option<&SourceIdentity>, args: &Value) -> String {
     let raw = source.map(|identity| identity.agent.as_str()).or_else(|| arg_str(args, &["source_agent", "agent"])).unwrap_or("mcp");
@@ -66,23 +63,15 @@ pub(crate) fn permission_satisfies(granted: &str, required: ClientPermission) ->
 pub(crate) fn has_client_permission(
     conn: &rusqlite::Connection, owner_id: i64, client_id: &str, scope: &str, required: ClientPermission,
 ) -> Result<bool, String> {
-    let configured_rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM client_permissions WHERE owner_id = ?1", rusqlite::params![owner_id], |row| row.get(0))
-        .map_err(|err| err.to_string())?;
+    let configured_rows = crate::db::count_sql(conn, "SELECT COUNT(*) FROM client_permissions WHERE owner_id = ?1", rusqlite::params![owner_id])?;
     if configured_rows == 0 {
         return Ok(true);
     }
     let mut stmt = conn
-        .prepare(
-            "SELECT client_id, permission FROM client_permissions
-             WHERE owner_id = ?1
-               AND (scope = ?2 OR scope = '*')",
-        )
+        .prepare("SELECT client_id, permission FROM client_permissions WHERE owner_id = ?1 AND (scope = ?2 OR scope = '*')")
         .map_err(|err| err.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params![owner_id, scope], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
+        .query_map(rusqlite::params![owner_id, scope], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
         .map_err(|err| err.to_string())?;
     for row in rows {
         let (stored_client, granted) = row.map_err(|err| err.to_string())?;

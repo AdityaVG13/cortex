@@ -4,7 +4,7 @@ use super::{
 };
 use crate::handlers::SourceIdentity;
 use crate::state::RuntimeState;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 pub async fn handle_mcp_message_with_caller(
     cx: &asupersync::Cx, state: &RuntimeState, msg: &Value, caller_id: Option<i64>, source: Option<&SourceIdentity>,
 ) -> Option<Value> {
@@ -26,23 +26,20 @@ pub async fn handle_mcp_message_with_caller(
     match method {
         "initialize" => Some(mcp_success(
             id,
-            json!({"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":true},"resources":{"listChanged":
-true}},"serverInfo":{"name":"cortex","version":env!("CARGO_PKG_VERSION")}}),
+            json!({"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":true},"resources":{"listChanged":true}},"serverInfo":{"name":"cortex","version":env!("CARGO_PKG_VERSION")}}),
         )),
         "notifications/initialized" => None,
         "tools/list" => Some(mcp_success(id, json!({"tools":mcp_tools()}))),
         "resources/list" => Some(mcp_success(id, json!({"resources":mcp_resources()}))),
         "resources/read" => {
             let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
-            let uri = params.get("uri").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+            let uri = params.get("uri").and_then(Value::as_str).and_then(cortex_logic::protocol::nonempty_str).unwrap_or_default();
             if uri.is_empty() {
                 return Some(mcp_error_with_data(
                     id,
                     -32602,
                     "Missing resource URI",
-                    json
-!({"errorType":"MISSING_RESOURCE_URI","availableResources":mcp_resource_uris(),"fixHint":
-"Call resources/list, then pass one of the returned uri values to resources/read."}),
+                    json!({"errorType":"MISSING_RESOURCE_URI","availableResources":mcp_resource_uris(),"fixHint":"Call resources/list, then pass one of the returned uri values to resources/read."}),
                 ));
             }
             match mcp_resource_payload(uri) {
@@ -51,8 +48,7 @@ true}},"serverInfo":{"name":"cortex","version":env!("CARGO_PKG_VERSION")}}),
                     id,
                     -32602,
                     &format!("Unknown resource URI: {uri}"),
-                    json!({"errorType":"UNKNOWN_RESOURCE","provided":uri,"availableResources":mcp_resource_uris(),
-"fixHint":"Call resources/list to discover valid Cortex MCP resource URIs."}),
+                    json!({"errorType":"UNKNOWN_RESOURCE","provided":uri,"availableResources":mcp_resource_uris(),"fixHint":"Call resources/list to discover valid Cortex MCP resource URIs."}),
                 )),
             }
         }
@@ -64,24 +60,17 @@ true}},"serverInfo":{"name":"cortex","version":env!("CARGO_PKG_VERSION")}}),
                     id,
                     -32602,
                     "Missing tool name",
-                    json!({"errorType":"MISSING_TOOL_NAME","fixHint":
-"Call tools/list or read cortex://tooling/tools, then pass params.name exactly.","availableToolCount":mcp_tools().len()}),
+                    json!({"errorType":"MISSING_TOOL_NAME","fixHint":"Call tools/list or read cortex://tooling/tools, then pass params.name exactly.","availableToolCount":mcp_tools().len()}),
                 ));
             }
             if required_permission_for_tool(tool_name).is_none() {
-                let mut data = json!({"errorType":"UNKNOWN_TOOL","provided":tool_name,"suggestions":tool_name_suggestions(tool_name),"discoveryHint":
-"Call tools/list for full schemas or read cortex://tooling/tools for a compact catalog.","availableToolCount":mcp_tools().len()});
+                let mut data = json!({"errorType":"UNKNOWN_TOOL","provided":tool_name,"suggestions":tool_name_suggestions(tool_name),"discoveryHint":"Call tools/list for full schemas or read cortex://tooling/tools for a compact catalog.","availableToolCount":mcp_tools().len()});
                 if let Some(replacement) = super::removed_tool_replacements().get(tool_name).and_then(Value::as_str) {
                     data["removed"] = json!(true);
                     data["replacement"] = json!(replacement);
                     data["fixHint"] = json!(format!("Removed tool `{tool_name}`; use `{replacement}`."));
                 }
-                return Some(mcp_error_with_data(
-                    id,
-                    -32601,
-                    &format!("Unknown tool: {tool_name}"),
-                    data,
-                ));
+                return Some(mcp_error_with_data(id, -32601, &format!("Unknown tool: {tool_name}"), data));
             }
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
             match mcp_dispatch(cx, state, caller_id, tool_name, &args, source).await {
@@ -89,15 +78,11 @@ true}},"serverInfo":{"name":"cortex","version":env!("CARGO_PKG_VERSION")}}),
                     let wrapped = if tool_name == "cortex_health" || tool_name == "cortex_digest" {
                         wrap_mcp_tool_result_verbose(state, result)
                     } else {
-                        wrap_mcp_tool_result(state, result)
+                        wrap_mcp_tool_result(result)
                     };
                     Some(mcp_success(id, wrapped))
                 }
-                Err(err) => Some(mcp_success(
-                    id,
-                    json!({
-"content":[{"type":"text","text":json!({"error":err}).to_string()}],"isError":true}),
-                )),
+                Err(err) => Some(mcp_success(id, json!({"content":[{"type":"text","text":json!({"error":err}).to_string()}],"isError":true}))),
             }
         }
         _ => {

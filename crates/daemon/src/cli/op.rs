@@ -2,10 +2,16 @@
 //! eight operations against the local brain in-process. No daemon, HTTP or
 //! token is required; the process's own identity is the principal.
 
-use super::common::{parse_flag_usize, validate_cli_options_or_exit};
+use super::common::{die, parse_flag_usize, validate_cli_options_or_exit};
 use crate::auth;
-use cortex_kernel::handlers::operations::{Caller, Operation, dispatch};
 use crate::runtime::CortexRuntime;
+use cortex_kernel::handlers::operations::{Caller, Operation, dispatch};
+use serde_json::json;
+
+fn fail_json(status: &str, error: impl Into<String>, code: i32) -> ! {
+    println!("{}", json!({"status": status, "error": error.into()}));
+    std::process::exit(code);
+}
 
 pub async fn run_op_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[String]) {
     let args = super::common::without_global_value_flags(args);
@@ -22,22 +28,15 @@ pub async fn run_op_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[
     let agent = super::common::parse_flag_value(&args, "--agent").unwrap_or_else(|| "cli".into());
     let parsed: serde_json::Value = match serde_json::from_str(&raw_args) {
         Ok(v) => v,
-        Err(err) => {
-            println!("{}", serde_json::json!({"status": "invalid_request", "error": format!("--args is not JSON: {err}")}));
-            std::process::exit(2);
-        }
+        Err(err) => fail_json("invalid_request", format!("--args is not JSON: {err}"), 2),
     };
     let runtime = match CortexRuntime::open(paths) {
         Ok(r) => r,
-        Err(err) => {
-            println!("{}", serde_json::json!({"status": "unavailable", "error": err.to_string()}));
-            std::process::exit(1);
-        }
+        Err(err) => fail_json("unavailable", err.to_string(), 1),
     };
     let state = runtime.state();
     if state.team_mode && state.default_owner_id.is_none() {
-        println!("{}", serde_json::json!({"status": "unavailable", "error": "Team mode requires a local owner"}));
-        std::process::exit(1);
+        fail_json("unavailable", "Team mode requires a local owner", 1);
     }
     let caller = Caller {
         owner_id: state.default_owner_id,
@@ -47,15 +46,9 @@ pub async fn run_op_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, args: &[
     match dispatch(cx, state, caller, op, &parsed).await {
         Ok(payload) => match serde_json::to_string(&payload) {
             Ok(encoded) => println!("{encoded}"),
-            Err(err) => {
-                println!("{}", serde_json::json!({"status": "unavailable", "error": format!("serialize failed: {err}")}));
-                std::process::exit(1);
-            }
+            Err(err) => fail_json("unavailable", format!("serialize failed: {err}"), 1),
         },
-        Err(err) => {
-            println!("{}", serde_json::json!({"status": "unavailable", "error": err.to_string()}));
-            std::process::exit(1);
-        }
+        Err(err) => fail_json("unavailable", err.to_string(), 1),
     }
 }
 
@@ -73,25 +66,16 @@ pub async fn run_maintain_cli(cx: &asupersync::Cx, paths: &auth::CortexPaths, ar
     };
     let runtime = match CortexRuntime::open(paths) {
         Ok(r) => r,
-        Err(err) => {
-            println!("{}", serde_json::json!({"status": "unavailable", "error": err.to_string()}));
-            std::process::exit(1);
-        }
+        Err(err) => fail_json("unavailable", err.to_string(), 1),
     };
     let conn = match runtime.state().db.lock(cx).await {
         Ok(conn) => conn,
-        Err(err) => {
-            eprintln!("[cortex] {err}");
-            std::process::exit(1);
-        }
+        Err(err) => die(format!("[cortex] {err}")),
     };
     let _ = crate::db::records::ensure_authoritative_schema(&conn);
     let result = crate::db::outbox::maintain_slice(&conn, "cli", jobs);
     match result {
         Ok(slice) => println!("{}", serde_json::json!({"status": "ok", "slice": slice, "debt": crate::db::outbox::debt(&conn).to_json()})),
-        Err(err) => {
-            println!("{}", serde_json::json!({"status": "unavailable", "error": err.to_string()}));
-            std::process::exit(1);
-        }
+        Err(err) => fail_json("unavailable", err.to_string(), 1),
     }
 }

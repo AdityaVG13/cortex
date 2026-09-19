@@ -1,25 +1,18 @@
-use super::common::{open_cli_connection, parse_flag_usize, parse_flag_value, validate_cli_options_or_exit};
+use super::common::{die, open_cli_connection, or_die, parse_flag_usize, parse_flag_value, validate_cli_options_or_exit};
 use crate::auth;
 use crate::eval;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::Read;
 
 const MAX_EVAL_BASELINE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Operator `--baseline-file` is a chosen path; following a symlink is intentional.
 fn read_eval_baseline(path: &str) -> String {
-    let file = std::fs::File::open(path).unwrap_or_else(|err| {
-        eprintln!("Failed to read baseline snapshot file '{path}': {err}");
-        std::process::exit(1);
-    });
+    let file = or_die(std::fs::File::open(path), &format!("Failed to read baseline snapshot file '{path}': "));
     let mut raw = String::new();
-    if let Err(err) = file.take(MAX_EVAL_BASELINE_BYTES + 1).read_to_string(&mut raw) {
-        eprintln!("Failed to read baseline snapshot file '{path}': {err}");
-        std::process::exit(1);
-    }
+    let _ = or_die(file.take(MAX_EVAL_BASELINE_BYTES + 1).read_to_string(&mut raw), &format!("Failed to read baseline snapshot file '{path}': "));
     if raw.len() as u64 > MAX_EVAL_BASELINE_BYTES {
-        eprintln!("Baseline snapshot file '{path}' exceeds {MAX_EVAL_BASELINE_BYTES} bytes");
-        std::process::exit(1);
+        die(format!("Baseline snapshot file '{path}' exceeds {MAX_EVAL_BASELINE_BYTES} bytes"));
     }
     raw
 }
@@ -34,13 +27,9 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
     }
     let max_regression = match parse_flag_value(args, "--max-regression") {
         Some(raw) => {
-            let parsed = raw.trim().parse::<f64>().map_err(|_| format!("invalid value for --max-regression: '{raw}'")).unwrap_or_else(|err| {
-                eprintln!("{err}");
-                std::process::exit(1);
-            });
+            let parsed = raw.trim().parse::<f64>().unwrap_or_else(|_| die(format!("invalid value for --max-regression: '{raw}'")));
             if !(0.0..=1.0).contains(&parsed) {
-                eprintln!("--max-regression must be between 0.0 and 1.0");
-                std::process::exit(1);
+                die("--max-regression must be between 0.0 and 1.0");
             }
             parsed
         }
@@ -49,18 +38,9 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
     let window_days = match parse_flag_usize(args, "--window-days") {
         Ok(Some(value)) => value.min(180) as i64,
         Ok(None) => 30,
-        Err(err) => {
-            eprintln!("Invalid --window-days value: {err}");
-            std::process::exit(1);
-        }
+        Err(err) => die(format!("Invalid --window-days value: {err}")),
     };
-    let conn = match open_cli_connection(&paths.db) {
-        Ok(conn) => conn,
-        Err(err) => {
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
-    };
+    let conn = or_die(open_cli_connection(&paths.db), "");
     let mut snapshot = eval::build_eval_snapshot(&conn, window_days);
     if snapshot.get("ok").and_then(Value::as_bool) != Some(true) {
         if json_output {
@@ -69,20 +49,14 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
                 Err(err) => eprintln!("Failed to serialize eval snapshot: {err}"),
             }
         } else {
-            let error = snapshot
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("eval snapshot unavailable");
+            let error = snapshot.get("error").and_then(Value::as_str).unwrap_or("eval snapshot unavailable");
             eprintln!("Eval snapshot failed: {error}");
         }
         std::process::exit(1);
     }
     let regression_gate = baseline_file.as_deref().map(|path| {
         let baseline_raw = read_eval_baseline(path);
-        let baseline_json: Value = serde_json::from_str(&baseline_raw).unwrap_or_else(|err| {
-            eprintln!("Invalid baseline snapshot JSON in '{path}': {err}");
-            std::process::exit(1);
-        });
+        let baseline_json: Value = serde_json::from_str(&baseline_raw).unwrap_or_else(|err| die(format!("Invalid baseline snapshot JSON in '{path}': {err}")));
         eval::build_eval_regression_gate(&snapshot, &baseline_json, max_regression)
     });
     if let (Some(gate), Value::Object(map)) = (regression_gate.clone(), &mut snapshot) {
@@ -91,10 +65,7 @@ pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
     if json_output {
         match serde_json::to_string_pretty(&snapshot) {
             Ok(encoded) => println!("{encoded}"),
-            Err(err) => {
-                eprintln!("Failed to serialize eval snapshot: {err}");
-                std::process::exit(1);
-            }
+            Err(err) => die(format!("Failed to serialize eval snapshot: {err}")),
         }
         if fail_on_regression && regression_gate.as_ref().and_then(|gate| gate.get("ok")).and_then(Value::as_bool) != Some(true) {
             std::process::exit(2);

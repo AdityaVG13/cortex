@@ -39,9 +39,7 @@ fn top_level_command_suggestion(command: &str) -> Option<&'static str> {
 pub fn unknown_cli_command_message(command: &str) -> String {
     let prefix = if command.starts_with('-') { format!("Unknown option: {command}") } else { format!("Unknown command: {command}") };
     match top_level_command_suggestion(command) {
-        Some(suggestion) => {
-            format!("{prefix}\nDid you mean: `{suggestion}`?\nRun `cortex help` or `cortex capabilities --json` for supported commands.")
-        }
+        Some(suggestion) => format!("{prefix}\nDid you mean: `{suggestion}`?\nRun `cortex help` or `cortex capabilities --json` for supported commands."),
         None => format!("{prefix}\nRun `cortex help` or `cortex capabilities --json` for supported commands."),
     }
 }

@@ -8,20 +8,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let paths = auth::CortexPaths::resolve_from_args(&args);
     auth::CortexPaths::install_process_paths(&paths);
-    let runtime = match RuntimeBuilder::new().build() {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            eprintln!("[cortex] runtime initialization failed: {err}");
-            std::process::exit(1);
-        }
-    };
+    let runtime = cli::or_die(RuntimeBuilder::new().build(), "[cortex] runtime initialization failed: ");
     let result = runtime.block_on(async {
         let cx = Cx::current().ok_or("runtime capability context unavailable")?;
         run(&cx, &paths, &args).await
     });
     if let Err(err) = result {
-        eprintln!("[cortex] {err}");
-        std::process::exit(1);
+        cli::die(format!("[cortex] {err}"));
     }
 }
 
@@ -88,11 +81,7 @@ async fn run(cx: &Cx, paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
             // `--team` has a full migrate implementation; rejecting it as an
             // unknown option left README / doctor recovery with no CLI entry.
             if rest.iter().any(|arg| arg == "--team") {
-                cli::validate_cli_options_or_exit(
-                    rest,
-                    &["--owner", "--display-name"],
-                    &["--team", "--dry-run"],
-                );
+                cli::validate_cli_options_or_exit(rest, &["--owner", "--display-name"], &["--team", "--dry-run"]);
                 setup::run_setup_team(args, rest.iter().any(|arg| arg == "--dry-run")).await;
             } else {
                 cli::validate_cli_options_or_exit(rest, &[], &[]);

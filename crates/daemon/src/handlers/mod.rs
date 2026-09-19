@@ -4,4 +4,4 @@ pub mod auth;
 pub mod boot;
 pub mod health;
 pub mod mcp;
-pub use auth::{register_agent_presence, SourceIdentity};
+pub use auth::{SourceIdentity, register_agent_presence};

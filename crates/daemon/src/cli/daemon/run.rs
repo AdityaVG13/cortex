@@ -32,11 +32,7 @@ pub async fn run_daemon(cx: &Cx, paths: auth::CortexPaths, shutdown: impl std::f
             None
         }
     };
-    let serve = ServeGuards {
-        runtime,
-        _lock,
-        _pid,
-    };
+    let serve = ServeGuards { runtime, _lock, _pid };
     let mut shutdown = Box::pin(shutdown);
     let mut data_version = None;
     let mut pending = true;

@@ -7,9 +7,7 @@ mod rpc;
 mod tools;
 pub(crate) use dispatch::mcp_dispatch;
 pub use handler::handle_mcp_message_with_caller;
-pub(crate) use permissions::{
-    enforce_client_permission, normalize_permission_client_id, required_permission_for_tool, ClientPermission,
-};
+pub(crate) use permissions::{ClientPermission, enforce_client_permission, normalize_permission_client_id, required_permission_for_tool};
 
 pub(crate) use queries::fetch_last_call;
 pub(crate) use rpc::{

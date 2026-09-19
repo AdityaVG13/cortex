@@ -65,13 +65,7 @@ pub(crate) fn build_status_report(paths: &auth::CortexPaths, runtime_probe: Stat
     } else {
         status_doctor_repair()
     };
-    let payload = json!({"schemaVersion": 2, "status": status, "summary": detail,
-        "version": env!("CARGO_PKG_VERSION"),
-        "runtime": {"mode": "in-process", "home": paths.home.display().to_string(), "dbPath": paths.db.display().to_string()},
-        "nextAction": status_repair_json(&next),
-        "repair": if status == "ready" { Value::Null } else { status_repair_json(&next) },
-        "checks": [{"name": "database", "status": if status == "ready" { "ok" } else { "fail" }, "detail": detail}]
-    });
+    let payload = json!({"schemaVersion":2,"status":status,"summary":detail,"version":env!("CARGO_PKG_VERSION"),"runtime":{"mode":"in-process","home":paths.home.display().to_string(),"dbPath":paths.db.display().to_string()},"nextAction":status_repair_json(&next),"repair":if status=="ready"{Value::Null}else{status_repair_json(&next)},"checks":[{"name":"database","status":if status=="ready"{"ok"}else{"fail"},"detail":detail}]});
     StatusReport { payload, exit_code: if status == "ready" { 0 } else { 1 } }
 }
 async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {

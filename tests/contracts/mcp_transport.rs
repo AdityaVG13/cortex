@@ -4,35 +4,72 @@
 //! wrapper is recreated: this pins the surviving in-process MCP conversation.
 use cortex_daemon::handlers::mcp::handle_mcp_message_with_caller;
 use cortex_tests::support::{run_with_cx, solo_state};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn local_mcp_initialize_notifications_and_discovery() {
     run_with_cx(|cx| async move {
         let state = solo_state();
         for id in [json!(42), json!("string-id")] {
-            let reply = handle_mcp_message_with_caller(&cx, &state, &json!({"jsonrpc":"2.0","id":id,"method":"initialize","params":{}}), None, None).await.unwrap();
+            let reply = handle_mcp_message_with_caller(
+                &cx,
+                &state,
+                &json!({"jsonrpc":"2.0","id":id,"method":"initialize","params":{}}),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
             assert_eq!(reply["id"], id);
             assert_eq!(reply["jsonrpc"], "2.0");
             assert_eq!(reply["result"]["protocolVersion"], "2024-11-05");
             assert_eq!(reply["result"]["serverInfo"]["name"], "cortex");
-            assert_eq!(reply["result"]["capabilities"]["tools"]["listChanged"], true);
-            assert_eq!(reply["result"]["capabilities"]["resources"]["listChanged"], true);
+            assert_eq!(
+                reply["result"]["capabilities"]["tools"]["listChanged"],
+                true
+            );
+            assert_eq!(
+                reply["result"]["capabilities"]["resources"]["listChanged"],
+                true
+            );
             assert!(reply.get("error").is_none());
         }
         for method in ["notifications/initialized", "notifications/unknown"] {
-            assert!(handle_mcp_message_with_caller(&cx, &state, &json!({"jsonrpc":"2.0","method":method}), None, None).await.is_none());
+            assert!(
+                handle_mcp_message_with_caller(
+                    &cx,
+                    &state,
+                    &json!({"jsonrpc":"2.0","method":method}),
+                    None,
+                    None
+                )
+                .await
+                .is_none()
+            );
         }
-        let reply = handle_mcp_message_with_caller(&cx, &state, &json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}), None, None).await.unwrap();
+        let reply = handle_mcp_message_with_caller(
+            &cx,
+            &state,
+            &json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let tools = reply["result"]["tools"].as_array().unwrap();
         for name in ["cortex_query", "cortex_commit", "cortex_capabilities"] {
-            assert!(tools.iter().any(|tool| tool["name"] == name), "missing {name}: {reply}");
+            assert!(
+                tools.iter().any(|tool| tool["name"] == name),
+                "missing {name}: {reply}"
+            );
         }
     });
 }
 
 fn mcp_tool_text(reply: &Value) -> Value {
-    let text = reply["result"]["content"][0]["text"].as_str().unwrap_or("{}");
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("{}");
     serde_json::from_str(text).unwrap_or(Value::Null)
 }
 
@@ -91,7 +128,10 @@ fn agent_feedback_record_parses_stringified_scores_and_sources() {
             "stored quality_score={quality_score}"
         );
         let parsed: Vec<String> = serde_json::from_str(&sources).expect("sources json");
-        assert_eq!(parsed, vec!["memory::1".to_string(), "decision::2".to_string()]);
+        assert_eq!(
+            parsed,
+            vec!["memory::1".to_string(), "decision::2".to_string()]
+        );
     });
 }
 
@@ -120,11 +160,10 @@ fn query_budget_parses_json_float_and_decimal_string() {
             assert!(reply.get("error").is_none(), "{reply}");
             let payload = mcp_tool_text(&reply);
             assert_eq!(
-        assert_eq!(
-            payload["budget"]["bytes"],
-            json!(100),
-            "budget={budget} must not fall through to the 2000 default: {payload}"
-        );
+                payload["budget"]["bytes"],
+                json!(100),
+                "budget={budget} must not fall through to the 2000 default: {payload}"
+            );
         }
     });
 }
@@ -167,7 +206,11 @@ fn last_call_matches_model_suffixed_source_agent() {
             json!("cli (opus)"),
             "lastCall agent=cli must include rows stored as cli (opus): {payload}"
         );
-        assert_eq!(payload["summary"], json!("last-call suffix marker"), "{payload}");
+        assert_eq!(
+            payload["summary"],
+            json!("last-call suffix marker"),
+            "{payload}"
+        );
     });
 }
 
@@ -264,6 +307,10 @@ fn last_call_does_not_hide_older_agent_behind_newer_others() {
         assert_eq!(payload["found"], json!(true), "{payload}");
         assert_eq!(payload["kind"], json!("memory"), "{payload}");
         assert_eq!(payload["sourceAgent"], json!("cli"), "{payload}");
-        assert_eq!(payload["summary"], json!("cli last-call needle"), "{payload}");
+        assert_eq!(
+            payload["summary"],
+            json!("cli last-call needle"),
+            "{payload}"
+        );
     });
 }

@@ -1,16 +1,40 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::handlers::health::{build_digest, build_health_payload};
 use crate::handlers::SourceIdentity;
+use crate::handlers::health::{build_digest, build_health_payload};
 use crate::state::RuntimeState;
 use cortex_kernel::handlers::feedback::{build_agent_feedback_stats_payload, record_agent_feedback_from_value};
 use cortex_kernel::handlers::mutate::{grant_permission, list_permissions, revoke_permission};
-use cortex_kernel::handlers::recall::{execute_semantic_recall, execute_unified_recall, RecallContext};
+use cortex_kernel::handlers::recall::{RecallContext, execute_semantic_recall, execute_unified_recall};
 
 use super::{arg_i64, arg_str, arg_usize, enforce_client_permission, fetch_last_call, normalize_permission_client_id};
 
 fn require_arg<'a>(args: &'a Value, keys: &[&str], label: &str) -> Result<&'a str, String> {
     arg_str(args, keys).ok_or_else(|| format!("Missing required argument: {label}"))
+}
+
+fn mcp_agent<'a>(args: &'a Value, source: Option<&'a SourceIdentity>) -> &'a str {
+    arg_str(args, &["agent", "source_agent"]).unwrap_or_else(|| source.map(|identity| identity.agent.as_str()).unwrap_or("mcp"))
+}
+
+fn permission_target(args: &Value) -> Result<(String, &str, &str), String> {
+    Ok((
+        normalize_permission_client_id(require_arg(args, &["client", "client_id"], "client")?),
+        require_arg(args, &["permission"], "permission")?,
+        arg_str(args, &["scope"]).unwrap_or("*"),
+    ))
+}
+
+fn recall_call<'a>(
+    args: &'a Value, source: Option<&'a SourceIdentity>, caller_id: Option<i64>, state: &RuntimeState,
+) -> Result<(&'a str, usize, &'a str, RecallContext, Option<&'a str>), String> {
+    Ok((
+        require_arg(args, &["query", "q"], "query")?,
+        arg_usize(args, &["k", "limit"]).unwrap_or(10),
+        mcp_agent(args, source),
+        RecallContext::from_caller(caller_id, state),
+        arg_str(args, &["source_prefix", "sourcePrefix"]),
+    ))
 }
 
 pub(crate) async fn mcp_dispatch(
@@ -27,9 +51,7 @@ pub(crate) async fn mcp_dispatch(
         let keep_legacy_shape =
             matches!(tool_name, "cortex_recall" | "cortex_peek" | "cortex_semantic_recall" | "cortex_health" | "cortex_agent_feedback_record");
         if !keep_legacy_shape {
-            let agent = arg_str(args, &["agent", "source_agent"])
-                .unwrap_or_else(|| source.map(|identity| identity.agent.as_str()).unwrap_or("mcp"))
-                .to_string();
+            let agent = mcp_agent(args, source).to_string();
             let principal = if state.team_mode { format!("user:{owner_id}") } else { "solo".to_string() };
             let caller = cortex_kernel::handlers::operations::Caller { owner_id: caller_id, agent: &agent, principal };
             return cortex_kernel::handlers::operations::dispatch(cx, state, caller, op, args).await;
@@ -41,21 +63,18 @@ pub(crate) async fn mcp_dispatch(
             let conn = state.db_read.lock(cx).await.map_err(|err| err.to_string())?;
             build_digest(&conn)
         }
-        "cortex_recall" | "cortex_peek" => {
-            let query = require_arg(args, &["query", "q"], "query")?;
-            let budget = arg_usize(args, &["budget", "b"]).unwrap_or(if tool_name == "cortex_peek" { 0 } else { 320 });
-            let k = arg_usize(args, &["k", "limit"]).unwrap_or(10);
-            let agent = arg_str(args, &["agent", "source_agent"]).unwrap_or_else(|| source.map(|identity| identity.agent.as_str()).unwrap_or("mcp"));
-            let ctx = RecallContext::from_caller(caller_id, state);
-            execute_unified_recall(cx, state, query, budget, k, agent, &ctx, arg_str(args, &["source_prefix", "sourcePrefix"])).await
-        }
-        "cortex_semantic_recall" => {
-            let query = require_arg(args, &["query", "q"], "query")?;
-            let k = arg_usize(args, &["k", "limit"]).unwrap_or(10);
-            let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let agent = arg_str(args, &["agent", "source_agent"]).unwrap_or_else(|| source.map(|identity| identity.agent.as_str()).unwrap_or("mcp"));
-            let ctx = RecallContext::from_caller(caller_id, state);
-            execute_semantic_recall(cx, state, query, budget, k, agent, &ctx, arg_str(args, &["source_prefix", "sourcePrefix"])).await
+        "cortex_recall" | "cortex_peek" | "cortex_semantic_recall" => {
+            let (query, k, agent, ctx, prefix) = recall_call(args, source, caller_id, state)?;
+            let budget = arg_usize(args, &["budget", "b"]).unwrap_or(match tool_name {
+                "cortex_peek" => 0,
+                "cortex_semantic_recall" => 200,
+                _ => 320,
+            });
+            if tool_name == "cortex_semantic_recall" {
+                execute_semantic_recall(cx, state, query, budget, k, agent, &ctx, prefix).await
+            } else {
+                execute_unified_recall(cx, state, query, budget, k, agent, &ctx, prefix).await
+            }
         }
         "cortex_agent_feedback_record" => {
             let conn = state.db.lock(cx).await.map_err(|err| err.to_string())?;
@@ -77,17 +96,13 @@ pub(crate) async fn mcp_dispatch(
             list_permissions(&conn, owner_id).map(|permissions| json!({"permissions":permissions}))
         }
         "cortex_permissions_grant" => {
-            let client = normalize_permission_client_id(require_arg(args, &["client", "client_id"], "client")?);
-            let permission = require_arg(args, &["permission"], "permission")?;
-            let scope = arg_str(args, &["scope"]).unwrap_or("*");
+            let (client, permission, scope) = permission_target(args)?;
             let conn = state.db.lock(cx).await.map_err(|err| err.to_string())?;
             grant_permission(&conn, owner_id, &client, permission, scope, arg_str(args, &["grantedBy", "granted_by"]).unwrap_or("mcp"))?;
             Ok(json!({"granted":true,"client":client,"permission":permission,"scope":scope}))
         }
         "cortex_permissions_revoke" => {
-            let client = normalize_permission_client_id(require_arg(args, &["client", "client_id"], "client")?);
-            let permission = require_arg(args, &["permission"], "permission")?;
-            let scope = arg_str(args, &["scope"]).unwrap_or("*");
+            let (client, permission, scope) = permission_target(args)?;
             let conn = state.db.lock(cx).await.map_err(|err| err.to_string())?;
             // Lookup matches stored ids after normalize; revoke must delete
             // the same set or a pre-normalize grant keeps working forever.

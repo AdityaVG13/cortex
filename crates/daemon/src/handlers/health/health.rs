@@ -1,7 +1,12 @@
 use super::*;
 use crate::state::RuntimeState;
 use chrono::Utc;
-use serde_json::{json, Value};
+use cortex_logic::protocol::nonempty_trimmed;
+use serde_json::{Value, json};
+
+fn daemon_owner_env() -> Option<String> {
+    std::env::var("CORTEX_DAEMON_OWNER").ok().and_then(nonempty_trimmed)
+}
 pub(crate) fn redact_private_runtime_details(payload: &mut Value) {
     if let Some(runtime) = payload.get_mut("runtime").and_then(Value::as_object_mut) {
         runtime.remove("db_path");
@@ -24,14 +29,14 @@ async fn brain_health_snapshot(cx: &asupersync::Cx, state: &RuntimeState) -> Res
 }
 pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, include_private_runtime: bool) -> Result<Value, String> {
     let now_unix_secs = Utc::now().timestamp();
-    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let daemon_owner = daemon_owner_env();
     let (memories, decisions, embeddings_count, events, db_freelist_pages, retrieval, db_size_bytes) = {
         let conn = state.db_read.lock(cx).await.map_err(|err| err.to_string())?;
-        let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let ev: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let m = crate::db::count_sql(&conn, "SELECT COUNT(*) FROM memories WHERE status = 'active'", [])?;
+        let d = crate::db::count_sql(&conn, "SELECT COUNT(*) FROM decisions WHERE status = 'active'", [])?;
+        let e = crate::db::count_sql(&conn, "SELECT COUNT(*) FROM embeddings", [])?;
+        let ev = crate::db::count_sql(&conn, "SELECT COUNT(*) FROM events", [])?;
+        let freelist = crate::db::count_sql(&conn, "PRAGMA freelist_count", [])?;
         let retrieval = cortex_kernel::handlers::recall::clock_health_payload(&conn);
         // Same census as the compaction governor. A failed `stat` of the
         // `.db` path used to report 0 bytes / "normal" pressure.
@@ -132,22 +137,9 @@ pub async fn build_health_payload(cx: &asupersync::Cx, state: &RuntimeState, inc
 }
 pub fn build_readiness_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
     let executable = std::env::current_exe().ok().map(|path| path.display().to_string()).unwrap_or_default();
-    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let daemon_owner = daemon_owner_env();
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
-    let mut payload = json!({
-        "status": if ready { "ready" } else { "starting" },
-        "ready": ready,
-        "runtime": {
-            "version": env!("CARGO_PKG_VERSION"),
-            "mode": if state.team_mode { "team" } else { "solo" },
-            "db_path": state.db_path.display().to_string(),
-            "token_path": state.token_path.display().to_string(),
-            "pid_path": state.pid_path.display().to_string(),
-            "executable": executable,
-            "owner": daemon_owner
-        },
-        "stats": { "home": state.home.display().to_string() }
-    });
+    let mut payload = json!({"status":if ready { "ready" } else { "starting" },"ready":ready,"runtime":{"version":env!("CARGO_PKG_VERSION"),"mode":if state.team_mode { "team" } else { "solo" },"db_path":state.db_path.display().to_string(),"token_path":state.token_path.display().to_string(),"pid_path":state.pid_path.display().to_string(),"executable":executable,"owner":daemon_owner},"stats":{"home":state.home.display().to_string()}});
     if !include_private_runtime {
         redact_private_runtime_details(&mut payload);
     }

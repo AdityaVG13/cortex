@@ -25,7 +25,15 @@ pub async fn run_setup(cx: &Cx) {
     let results = step_configure(&detected, &stable_mcp_binary_path());
     print_step(3, "Configure AI tools", &summarize_configs(&results));
     let result = runtime
-        .boot(cx, crate::runtime::BootInput { agent: "cortex-setup".into(), max_tokens: 100, owner_id: runtime.state().default_owner_id, ..Default::default() })
+        .boot(
+            cx,
+            crate::runtime::BootInput {
+                agent: "cortex-setup".into(),
+                max_tokens: 100,
+                owner_id: runtime.state().default_owner_id,
+                ..Default::default()
+            },
+        )
         .await;
     let verified = match result {
         Ok(_) => StepResult::Ok("Local boot compilation succeeded. No HTTP server or service required.".into()),
@@ -48,10 +56,7 @@ async fn enable_host_capture(cx: &Cx, runtime: &CortexRuntime, paths: &auth::Cor
             "{grant_msg}; wrote {}. Plugin SessionStart uses cortex_orient; live hooks read this file when CORTEX_CAPTURE is unset.",
             paths.capture_sidecar().display()
         )),
-        Ok(false) => StepResult::Ok(format!(
-            "{grant_msg}; left existing {} in place.",
-            paths.capture_sidecar().display()
-        )),
+        Ok(false) => StepResult::Ok(format!("{grant_msg}; left existing {} in place.", paths.capture_sidecar().display())),
         Err(err) => StepResult::Warn(format!("{grant_msg}; sidecar not written: {err}")),
     }
 }

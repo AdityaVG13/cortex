@@ -8,7 +8,9 @@ use cortex_logic::adapter::{
     decide, degradation_matrix, CapabilityManifest, EventKind, HookDecision, Presence,
     SnapshotState,
 };
-use cortex_daemon::hook_boot::{boot_assembly_brief, boot_capsule_for_payload, session_start_context};
+use cortex_daemon::hook_boot::{
+    boot_assembly_brief, boot_capsule_for_payload, boot_for_paths, session_start_context,
+};
 use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
 use cortex_kernel::auth::CortexPaths;
 use cortex_kernel::hook_event::{frame_from_host, load_capture_sidecar, process, run_with_paths};
@@ -1268,3 +1270,126 @@ fn unscoped_duplicate_sentence_still_collapses() {
         );
     });
 }
+
+#[test]
+fn prompt_inject_boot_keeps_path_scoped_facts_in_their_repository() {
+    run_with_cx(|cx| async move {
+        const REPO_A: &str = "/Users/x/repoa";
+        const REPO_B: &str = "/Users/x/repob";
+        let runtime = CortexRuntime::from_state(solo_state());
+        let caller = || Caller {
+            owner_id: None,
+            agent: "claude-code",
+            principal: "solo".into(),
+        };
+        let a = dispatch(
+            &cx,
+            runtime.state(),
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": "InjectA exclusive boot marker must stay here",
+                "paths": [REPO_A],
+                "retention_class": "durable",
+                "type": "constraint"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(a["status"], "ok", "{a}");
+        let b = dispatch(
+            &cx,
+            runtime.state(),
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": "InjectB exclusive boot marker must stay here",
+                "paths": [REPO_B],
+                "retention_class": "durable",
+                "type": "constraint"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(b["status"], "ok", "{b}");
+
+        let injected = boot_for_paths(&cx, &runtime, "claude-code", 600, &[REPO_A.into()])
+            .await
+            .expect("path-scoped file inject")
+            .boot_prompt;
+        let capsule = boot_capsule_for_payload(
+            &cx,
+            &runtime,
+            "claude-code",
+            &json!({"cwd": REPO_A}),
+            600,
+        )
+        .await
+        .expect("path-scoped boot capsule");
+        assert_eq!(
+            injected, capsule,
+            "file inject must compile the same capsule as SessionStart boot"
+        );
+        assert!(
+            injected.contains("InjectA exclusive boot marker"),
+            "path-scoped inject must pack this repo: {injected}"
+        );
+        assert!(
+            !injected.contains("InjectB exclusive boot marker"),
+            "path-scoped inject must omit the sibling repo: {injected}"
+        );
+        let via_dotdot = boot_for_paths(
+            &cx,
+            &runtime,
+            "claude-code",
+            600,
+            &[format!("{REPO_A}/../repob")],
+        )
+        .await
+        .expect("dotdot inject")
+        .boot_prompt;
+        assert!(
+            via_dotdot.contains("InjectB exclusive boot marker"),
+            "repoa/../repob must collapse to repob: {via_dotdot}"
+        );
+        assert!(
+            !via_dotdot.contains("InjectA exclusive boot marker"),
+            "repoa/../repob must not pull repo A facts: {via_dotdot}"
+        );
+    });
+}
+
+#[test]
+fn tally_renders_three_shapes_and_replacements_respect_the_manifest() {
+    use cortex_logic::adapter::{propose_replacements, ContextReplacement, ErgonomicsTally};
+    let t = ErgonomicsTally {
+        first_useful_orientation_ms: Some(420),
+        schema_tokens: 310,
+        mistaken_calls: 1,
+        unresolved_aliases: 0,
+        unsupported_completions: 0,
+        expansions: 2,
+        success: true,
+    };
+    assert!(t.render("prose").contains("420 ms"));
+    assert!(t.render("terse").starts_with("orient=420ms"));
+    assert_eq!(
+        serde_json::from_str::<ErgonomicsTally>(&t.render("json")).unwrap(),
+        t
+    );
+    let c = vec![ContextReplacement {
+        span_start: 0,
+        span_end: 100,
+        replacement: "m1".into(),
+        reason: "bundle".into(),
+        bytes_saved: 98,
+    }];
+    assert!(
+        propose_replacements(&CapabilityManifest::claude_code_plugin(), c.clone()).is_empty(),
+        "plugin cannot replace spans"
+    );
+    let mut can = CapabilityManifest::native();
+    can.replace_context_spans = true;
+    assert_eq!(propose_replacements(&can, c.clone()), c);
+}
+

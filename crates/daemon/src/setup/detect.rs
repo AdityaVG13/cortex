@@ -1,61 +1,34 @@
 use super::types::{ConfigMethod, DetectedTool};
 use std::path::PathBuf;
 use std::process::Command;
+fn detected(name: &'static str, agent_name: &'static str, config_path: Option<PathBuf>, config_method: ConfigMethod) -> DetectedTool {
+    DetectedTool { name, agent_name, config_path, config_method }
+}
+
 pub(crate) fn step_detect() -> Vec<DetectedTool> {
     let mut found = Vec::new();
     if let Some(config_path) = find_claude_code_config() {
-        found.push(DetectedTool {
-            name: "Claude Code",
-            agent_name: "claude-code",
-            config_path: Some(config_path),
-            config_method: ConfigMethod::JsonMerge,
-        });
+        found.push(detected("Claude Code", "claude-code", Some(config_path), ConfigMethod::JsonMerge));
     } else if command_exists("claude") {
-        found.push(DetectedTool {
-            name: "Claude Code",
-            agent_name: "claude-code",
-            config_path: None,
-            config_method: ConfigMethod::CliCommand { program: "claude", args: &["mcp", "add", "cortex", "-s", "user", "--"] },
-        });
+        found.push(detected(
+            "Claude Code",
+            "claude-code",
+            None,
+            ConfigMethod::CliCommand { program: "claude", args: &["mcp", "add", "cortex", "-s", "user", "--"] },
+        ));
     }
     if let Some(config_path) = find_claude_desktop_config() {
-        found.push(DetectedTool {
-            name: "Claude Desktop",
-            agent_name: "claude",
-            config_path: Some(config_path),
-            config_method: ConfigMethod::JsonMerge,
-        });
+        found.push(detected("Claude Desktop", "claude", Some(config_path), ConfigMethod::JsonMerge));
     }
     if let Some(config_path) = find_codex_config() {
-        found.push(DetectedTool {
-            name: "Codex CLI",
-            agent_name: "codex",
-            config_path: Some(config_path),
-            config_method: ConfigMethod::TomlMerge,
-        });
+        found.push(detected("Codex CLI", "codex", Some(config_path), ConfigMethod::TomlMerge));
     } else if command_exists("codex") {
-        found.push(DetectedTool {
-            name: "Codex CLI",
-            agent_name: "codex",
-            config_path: None,
-            config_method: ConfigMethod::CliCommand { program: "codex", args: &["mcp", "add", "cortex", "--"] },
-        });
+        found.push(detected("Codex CLI", "codex", None, ConfigMethod::CliCommand { program: "codex", args: &["mcp", "add", "cortex", "--"] }));
     }
-    if let Some(config_path) = find_cursor_config() {
-        found.push(DetectedTool {
-            name: "Cursor",
-            agent_name: "cursor",
-            config_path: Some(config_path),
-            config_method: ConfigMethod::JsonMerge,
-        });
-    }
-    if let Some(config_path) = find_windsurf_config() {
-        found.push(DetectedTool {
-            name: "Windsurf",
-            agent_name: "windsurf",
-            config_path: Some(config_path),
-            config_method: ConfigMethod::JsonMerge,
-        });
+    for (find, name, slug) in [(find_cursor_config as fn() -> Option<PathBuf>, "Cursor", "cursor"), (find_windsurf_config, "Windsurf", "windsurf")] {
+        if let Some(config_path) = find() {
+            found.push(detected(name, slug, Some(config_path), ConfigMethod::JsonMerge));
+        }
     }
     found
 }
@@ -70,9 +43,15 @@ fn find_claude_code_config() -> Option<PathBuf> {
     }
     find_existing_config(home.join(".claude").join("settings.json"))
 }
+fn find_home_config(parts: &[&str]) -> Option<PathBuf> {
+    let mut path = dirs::home_dir()?;
+    for part in parts {
+        path = path.join(part);
+    }
+    find_existing_config(path)
+}
 fn find_codex_config() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    find_existing_config(home.join(".codex").join("config.toml"))
+    find_home_config(&[".codex", "config.toml"])
 }
 fn claude_desktop_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -99,33 +78,22 @@ fn claude_desktop_config_paths() -> Vec<PathBuf> {
     paths
 }
 fn find_cursor_config() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    find_existing_config(home.join(".cursor").join("mcp.json"))
+    find_home_config(&[".cursor", "mcp.json"])
 }
 fn find_windsurf_config() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    find_first_config_path(vec![
-        home.join(".codeium").join("windsurf").join("mcp_config.json"),
-        home.join(".windsurf").join("mcp.json"),
-    ])
+    find_first_config_path(vec![home.join(".codeium").join("windsurf").join("mcp_config.json"), home.join(".windsurf").join("mcp.json")])
 }
 fn find_first_config_path(paths: Vec<PathBuf>) -> Option<PathBuf> {
     paths.into_iter().find_map(find_existing_config)
 }
 pub(crate) fn find_existing_config(path: PathBuf) -> Option<PathBuf> {
-    if path.exists() || path.parent().is_some_and(|p| p.exists()) {
-        Some(path)
-    } else {
-        None
-    }
+    (path.exists() || path.parent().is_some_and(|p| p.exists())).then_some(path)
 }
 fn command_exists(cmd: &str) -> bool {
     #[cfg(windows)]
-    {
-        Command::new("where").arg(cmd).output().map(|o| o.status.success()).unwrap_or(false)
-    }
+    let finder = "where";
     #[cfg(not(windows))]
-    {
-        Command::new("which").arg(cmd).output().map(|o| o.status.success()).unwrap_or(false)
-    }
+    let finder = "which";
+    Command::new(finder).arg(cmd).output().map(|o| o.status.success()).unwrap_or(false)
 }

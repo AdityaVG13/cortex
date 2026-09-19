@@ -1,6 +1,4 @@
-use super::common::{
-    first_positional, is_cli_option_token, validate_cli_options_allowing_one_positional_or_exit,
-};
+use super::common::{die, first_positional, is_cli_option_token, or_die, validate_cli_options_allowing_one_positional_or_exit};
 use crate::{auth, compaction, db};
 use chrono::{Local, Utc};
 use std::path::Path;
@@ -100,41 +98,18 @@ fn event_cleanup_action(paths: &auth::CortexPaths, dry_run: bool, max_event_pass
     let before = compaction::non_boot_event_count(&conn);
     let pressure = compaction::classify_event_pressure(before);
     if dry_run {
-        return format!(
-            "Would prune events ({before} nonboot rows, pressure={pressure}, max_passes={max_event_passes})"
-        );
+        return format!("Would prune events ({before} nonboot rows, pressure={pressure}, max_passes={max_event_passes})");
     }
     let mut failures = Vec::new();
     let mut deleted = 0usize;
     deleted += compaction::rollup_old_boot_savings(&conn, &mut failures);
-    deleted += compaction::rollup_old_savings_events(
-        &conn,
-        &mut failures,
-        compaction::SAVINGS_EVENT_ROLLUP_RETENTION_DAYS,
-    );
-    deleted += compaction::prune_old_event_savings_rollups(
-        &conn,
-        &mut failures,
-        compaction::EVENT_SAVINGS_ROLLUP_RETENTION_DAYS,
-    );
+    deleted += compaction::rollup_old_savings_events(&conn, &mut failures, compaction::SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
+    deleted += compaction::prune_old_event_savings_rollups(&conn, &mut failures, compaction::EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
     let batch = Some(compaction::STARTUP_EVENT_PRUNE_BATCH_ROWS);
     for _ in 0..max_event_passes {
-        let n = compaction::prune_old_events_with_retention_limit(
-            &conn,
-            &mut failures,
-            compaction::EVENT_RETENTION_DAYS,
-            batch,
-        ) + compaction::prune_event_type_caps_with_limit(
-            &conn,
-            &mut failures,
-            compaction::EVENT_TYPE_SOFT_CAPS,
-            batch,
-        ) + compaction::prune_nonboot_event_overflow_with_limit(
-            &conn,
-            &mut failures,
-            compaction::EVENT_NONBOOT_SOFT_KEEP_ROWS,
-            batch,
-        );
+        let n = compaction::prune_old_events_with_retention_limit(&conn, &mut failures, compaction::EVENT_RETENTION_DAYS, batch)
+            + compaction::prune_event_type_caps_with_limit(&conn, &mut failures, compaction::EVENT_TYPE_SOFT_CAPS, batch)
+            + compaction::prune_nonboot_event_overflow_with_limit(&conn, &mut failures, compaction::EVENT_NONBOOT_SOFT_KEEP_ROWS, batch);
         deleted += n;
         if n == 0 {
             break;
@@ -144,21 +119,12 @@ fn event_cleanup_action(paths: &auth::CortexPaths, dry_run: bool, max_event_pass
     if failures.is_empty() {
         format!("Pruned {deleted} event rows ({before} -> {after} nonboot, pressure={pressure})")
     } else {
-        format!(
-            "Pruned {deleted} event rows with {} failure(s) ({before} -> {after} nonboot)",
-            failures.len()
-        )
+        format!("Pruned {deleted} event rows with {} failure(s) ({before} -> {after} nonboot)", failures.len())
     }
 }
 
 pub fn run_backup_cli(paths: &auth::CortexPaths) {
-    match create_backup(&paths.db, &paths.home.join("backups")) {
-        Ok(path) => println!("Backup created: {path}"),
-        Err(err) => {
-            eprintln!("Error: {err}");
-            std::process::exit(1);
-        }
-    }
+    println!("Backup created: {}", or_die(create_backup(&paths.db, &paths.home.join("backups")), "Error: "));
 }
 
 pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
@@ -166,10 +132,7 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
     validate_cli_options_allowing_one_positional_or_exit(rest, &[], &[]);
     let restore_file = match first_positional(rest, &[]) {
         Some(path) if !is_cli_option_token(path) => path,
-        _ => {
-            eprintln!("Usage: cortex restore <backup-file.db>");
-            std::process::exit(1);
-        }
+        _ => die("Usage: cortex restore <backup-file.db>"),
     };
     // Serve excludes via flock on `paths.lock`. Take that lock first so a
     // worker cannot start in the window between the pid check and the copy.
@@ -177,18 +140,19 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
     // PID reuse of a non-daemon; refuse either rather than copy over it.
     // Do not call `cleanup_stale_pid_lock` here: it would try_lock a second
     // fd of the flock we already hold.
-    let _lock = match auth::acquire_daemon_lock(paths) {
-        Ok(lock) => lock,
-        Err(err) => {
-            eprintln!("[cortex] Error: daemon appears active ({err}).");
-            eprintln!("[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using.");
-            std::process::exit(1);
-        }
-    };
+    let _lock = or_die(
+        auth::acquire_daemon_lock(paths).map_err(|err| {
+            format!(
+                "[cortex] Error: daemon appears active ({err}).\n[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using."
+            )
+        }),
+        "",
+    );
     if let Some(pid) = auth::pid_file_live_pid(paths) {
-        eprintln!("[cortex] Error: daemon appears active (pid {pid} per {}).", paths.pid.display());
-        eprintln!("[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using.");
-        std::process::exit(1);
+        die(format!(
+            "[cortex] Error: daemon appears active (pid {pid} per {}).\n[cortex] Stop the daemon before restoring; see `cortex paths --json` for the home it is using.",
+            paths.pid.display()
+        ));
     }
     let _ = auth::cleanup_stale_pid_file(paths);
     match db::backup::restore_from(Path::new(restore_file), &paths.db, &paths.home) {
@@ -196,17 +160,21 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
             let verified = report.to_json()["verified"].as_bool().unwrap_or(false);
             println!(
                 "Restore complete: epoch {} (was {}); integrity={} sample_reads={} records={} decisions={} memories={} aliases_expired={} projections_rebuilt={}",
-                report.new_restore_epoch, report.previous_restore_epoch, report.integrity_ok, report.sample_reads_ok, report.records, report.decisions, report.memories, report.aliases_expired, report.projections_rebuilt
+                report.new_restore_epoch,
+                report.previous_restore_epoch,
+                report.integrity_ok,
+                report.sample_reads_ok,
+                report.records,
+                report.decisions,
+                report.memories,
+                report.aliases_expired,
+                report.projections_rebuilt
             );
             println!("Verification report: {}", report.report_path.display());
             if !verified {
-                eprintln!("[cortex] WARNING: restore verification FAILED; the pre-restore copy in {} is intact", paths.home.display());
-                std::process::exit(1);
+                die(format!("[cortex] WARNING: restore verification FAILED; the pre-restore copy in {} is intact", paths.home.display()));
             }
         }
-        Err(err) => {
-            eprintln!("[cortex] Error: restore failed: {err}");
-            std::process::exit(1);
-        }
+        Err(err) => die(format!("[cortex] Error: restore failed: {err}")),
     }
 }

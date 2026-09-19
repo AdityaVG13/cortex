@@ -56,11 +56,7 @@ pub(crate) fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
             let replaced = fs::remove_file(dest).and_then(|_| fs::rename(&tmp, dest));
             if let Err(err) = replaced {
                 let _ = fs::remove_file(&tmp);
-                return Err(format!(
-                    "Cannot install {} from {} (rename: {rename_err}; replace: {err})",
-                    dest.display(),
-                    src.display()
-                ));
+                return Err(format!("Cannot install {} from {} (rename: {rename_err}; replace: {err})", dest.display(), src.display()));
             }
         }
     }

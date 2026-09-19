@@ -1,4 +1,5 @@
 use super::cleanup::{event_type_count, top_event_type_counts};
+use super::common::or_die;
 use crate::auth;
 use crate::compaction;
 use crate::db;
@@ -6,17 +7,8 @@ use std::collections::HashSet;
 pub fn run_doctor_cli(paths: &auth::CortexPaths) {
     let db_path = paths.db.clone();
     println!("[doctor] db_path={}", db_path.display());
-    let conn = match db::open(&db_path) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("[doctor] FAIL open: {e}");
-            std::process::exit(1);
-        }
-    };
-    if let Err(e) = db::configure(&conn) {
-        eprintln!("[doctor] FAIL configure: {e}");
-        std::process::exit(1);
-    }
+    let conn = or_die(db::open(&db_path), "[doctor] FAIL open: ");
+    or_die(db::configure(&conn), "[doctor] FAIL configure: ");
     let sqlite_version = db::sqlite_version();
     if db::sqlite_wal_reset_fixed(&sqlite_version) {
         println!("[doctor] OK sqlite {sqlite_version}: WAL-reset race fixed; concurrent-local use permitted");
@@ -122,7 +114,7 @@ pub fn run_doctor_cli(paths: &auth::CortexPaths) {
         nonboot_event_rows,
         decision_stored_rows,
         compaction::EVENT_NONBOOT_SOFT_LIMIT_ROWS,
-        compaction::EVENT_NONBOOT_HARD_LIMIT_ROWS,
+        compaction::EVENT_NONBOOT_HARD_LIMIT_ROWS
     );
     let top_event_types = top_event_type_counts(&conn, 5);
     if !top_event_types.is_empty() {

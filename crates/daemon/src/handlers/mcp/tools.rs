@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 /// Model-facing tools: the eight semantic operations. Legacy tool names stay
 /// callable (mapped in `operations::Operation::from_tool_name`) but are not
 /// advertised, so hosts that serialize every schema into the prompt pay for
@@ -36,8 +36,8 @@ pub fn legacy_mcp_tools() -> Vec<Value> {
 "retention_class":{"type":"string","enum":["durable","operational","audit","ephemeral"]}},"required":[
 "decision"]}}),
         json!({"name":"cortex_unfold","description":
-"Expand selected memory/decision sources to full text. Prefer cortex_expand with a View alias + receipt.",
-"inputSchema":{"type":"object","properties":{"sources":{"type":"array","items":{"type":"string"}}},"required":["sources"]}}
+        "Expand selected memory/decision sources to full text. Prefer cortex_expand with a View alias + receipt.",
+        "inputSchema":{"type":"object","properties":{"sources":{"type":"array","items":{"type":"string"}}},"required":["sources"]}}
         ),
         json!({"name":"cortex_health","description":
 "Check Cortex system health: DB stats, memory counts.","inputSchema":{"type":"object","properties":{}}}),

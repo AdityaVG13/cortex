@@ -1,74 +1,24 @@
 use crate::crystallize;
 use crate::db;
+use cortex_kernel::auth::take_flag_value;
 use std::path::Path;
 
-pub fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
-    let mut i = 0usize;
-    while i < args.len() {
-        if args[i] == flag {
-            if let Some((value, _)) = take_flag_value(args, i) {
-                return Some(value);
-            }
-            i += 1;
-            continue;
-        }
-        i += 1;
-    }
-    None
-}
-
-pub fn parse_flag_values(args: &[String], flag: &str) -> Vec<String> {
-    let mut values = Vec::new();
-    let mut i = 0usize;
-    while i < args.len() {
-        if args[i] == flag {
-            if let Some((value, next)) = take_flag_value(args, i) {
-                values.push(value);
-                i = next;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-        i += 1;
-    }
-    values
-}
+pub use cortex_kernel::auth::{parse_flag_value, parse_flag_values};
 const GLOBAL_VALUE_FLAGS: &[&str] = &["--home", "--db"];
-pub(crate) fn is_cli_option_token(value: &str) -> bool {
-    value.starts_with("--")
-}
+pub(crate) use cortex_kernel::auth::is_flag_token as is_cli_option_token;
 
-/// Value after a flag. `--` quotes the next token so a path or name may start with `--`.
-/// Returns `(value, index_after_consumed_tokens)`.
-fn take_flag_value(args: &[String], flag_index: usize) -> Option<(String, usize)> {
-    let Some(value) = args.get(flag_index + 1) else {
-        return None;
-    };
-    if value == "--" {
-        let explicit = args.get(flag_index + 2)?;
-        if explicit.trim().is_empty() {
-            return None;
-        }
-        return Some((explicit.clone(), flag_index + 3));
-    }
-    if is_cli_option_token(value) || value.trim().is_empty() {
-        return None;
-    }
-    Some((value.clone(), flag_index + 2))
+fn after_value_flag(args: &[String], i: usize) -> usize {
+    take_flag_value(args, i).map(|(_, next)| next).unwrap_or(i + 1)
 }
 
 /// Drop `--home` / `--db` pairs so a nested subcommand is not eaten as a flag value.
+
 pub(crate) fn without_global_value_flags(args: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     let mut i = 0usize;
     while i < args.len() {
         if GLOBAL_VALUE_FLAGS.contains(&args[i].as_str()) {
-            if let Some((_, next)) = take_flag_value(args, i) {
-                i = next;
-            } else {
-                i += 1;
-            }
+            i = after_value_flag(args, i);
             continue;
         }
         out.push(args[i].clone());
@@ -83,11 +33,7 @@ pub fn first_positional<'a>(args: &'a [String], value_flags: &[&str]) -> Option<
     while i < args.len() {
         let arg = args[i].as_str();
         if value_flags.contains(&arg) || GLOBAL_VALUE_FLAGS.contains(&arg) {
-            if let Some((_, next)) = take_flag_value(args, i) {
-                i = next;
-            } else {
-                i += 1;
-            }
+            i = after_value_flag(args, i);
             continue;
         }
         if arg.starts_with('-') {
@@ -106,13 +52,9 @@ pub fn validate_cli_options_allowing_one_positional_or_exit(args: &[String], val
     while i < args.len() {
         let arg = args[i].as_str();
         if value_flags.contains(&arg) || GLOBAL_VALUE_FLAGS.contains(&arg) {
-            if let Some((_, next)) = take_flag_value(args, i) {
-                flags.extend(args[i..next].iter().cloned());
-                i = next;
-            } else {
-                flags.push(args[i].clone());
-                i += 1;
-            }
+            let next = after_value_flag(args, i);
+            flags.extend(args[i..next].iter().cloned());
+            i = next;
             continue;
         }
         if boolean_flags.contains(&arg) || arg.starts_with('-') {
@@ -152,10 +94,18 @@ pub(crate) fn validate_cli_options(args: &[String], value_flags: &[&str], boolea
     }
     Ok(())
 }
+pub fn die(message: impl std::fmt::Display) -> ! {
+    eprintln!("{message}");
+    std::process::exit(1);
+}
+
+pub fn or_die<T, E: std::fmt::Display>(result: Result<T, E>, prefix: &str) -> T {
+    result.unwrap_or_else(|err| die(format!("{prefix}{err}")))
+}
+
 pub fn validate_cli_options_or_exit(args: &[String], value_flags: &[&str], boolean_flags: &[&str]) {
     if let Err(err) = validate_cli_options(args, value_flags, boolean_flags) {
-        eprintln!("{err}");
-        std::process::exit(1);
+        die(err);
     }
 }
 

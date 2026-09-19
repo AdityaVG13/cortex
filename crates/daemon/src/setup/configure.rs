@@ -59,21 +59,7 @@ pub(crate) fn merge_mcp_config(config_path: &Path, cortex_exe: &str, agent_name:
     let exe_path = PathBuf::from(cortex_exe).to_string_lossy().to_string();
     let desired_registration = serde_json::json!({"command": exe_path, "args": mcp_stdio_args(agent_name)});
     mcp_servers.as_object_mut().ok_or("mcpServers is not a JSON object")?.insert("cortex".to_string(), desired_registration);
-    let action = if config == original {
-        "Already configured"
-    } else if config_path.exists() {
-        "Updated configuration"
-    } else {
-        "Configured"
-    };
-    if config != original {
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
-        }
-        let output = serde_json::to_string_pretty(&config).map_err(|e| format!("JSON serialize failed: {e}"))?;
-        write_config_atomic(config_path, &output)?;
-    }
-    Ok(format!("{action} at {}", config_path.display()))
+    commit_config(config_path, config != original, || serde_json::to_string_pretty(&config).map_err(|e| format!("JSON serialize failed: {e}")))
 }
 pub(crate) fn merge_toml_config(config_path: &Path, cortex_exe: &str, agent_name: &str) -> Result<String, String> {
     let original: toml::Value = if config_path.exists() {
@@ -88,45 +74,36 @@ pub(crate) fn merge_toml_config(config_path: &Path, cortex_exe: &str, agent_name
     let servers_table = servers.as_table_mut().ok_or("mcp_servers is not a TOML table")?;
     let mut server = toml::map::Map::new();
     server.insert("command".into(), toml::Value::String(PathBuf::from(cortex_exe).to_string_lossy().to_string()));
-    server.insert(
-        "args".into(),
-        toml::Value::Array(mcp_stdio_args(agent_name).into_iter().map(toml::Value::String).collect()),
-    );
+    server.insert("args".into(), toml::Value::Array(mcp_stdio_args(agent_name).into_iter().map(toml::Value::String).collect()));
     servers_table.insert("cortex".into(), toml::Value::Table(server));
-    let action = if config == original {
+    commit_config(config_path, config != original, || toml::to_string_pretty(&config).map_err(|e| format!("TOML serialize failed: {e}")))
+}
+
+fn commit_config(config_path: &Path, changed: bool, serialize: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    let action = if !changed {
         "Already configured"
     } else if config_path.exists() {
         "Updated configuration"
     } else {
         "Configured"
     };
-    if config != original {
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
-        }
-        let output = toml::to_string_pretty(&config).map_err(|e| format!("TOML serialize failed: {e}"))?;
-        write_config_atomic(config_path, &output)?;
+    if changed {
+        write_config_atomic(config_path, &serialize()?)?;
     }
     Ok(format!("{action} at {}", config_path.display()))
 }
-
 /// Stage beside the destination then rename. In-place `fs::write` truncates
 /// the live inode first; a crash mid-write leaves a truncated Claude/Cursor
 /// MCP config that the host then fails to parse.
 fn write_config_atomic(path: &Path, contents: &str) -> Result<(), String> {
     let parent = path.parent().ok_or_else(|| format!("Invalid config path: {}", path.display()))?;
     fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("config");
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("config");
     let temp_path = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
     let write_tmp = (|| {
         let mut file = File::create(&temp_path).map_err(|e| format!("Cannot write {}: {e}", temp_path.display()))?;
-        file.write_all(contents.as_bytes())
-            .map_err(|e| format!("Cannot write {}: {e}", temp_path.display()))?;
-        file.sync_all()
-            .map_err(|e| format!("Cannot flush {}: {e}", temp_path.display()))?;
+        file.write_all(contents.as_bytes()).map_err(|e| format!("Cannot write {}: {e}", temp_path.display()))?;
+        file.sync_all().map_err(|e| format!("Cannot flush {}: {e}", temp_path.display()))?;
         Ok::<(), String>(())
     })();
     if let Err(err) = write_tmp {
@@ -176,18 +153,12 @@ fn run_mcp_add(program: &str, args: &[&str], cortex_exe: &str, agent_name: &str)
     let mut command = Command::new(program);
     command.args(args).arg(cortex_exe).args(&invocation);
     crate::auth::CortexPaths::resolve().apply_to_command(&mut command);
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to run {program} CLI: {e}"))?;
+    let output = command.output().map_err(|e| format!("Failed to run {program} CLI: {e}"))?;
     if output.status.success() {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("already exists") || stderr.contains("Already") {
-            Ok(())
-        } else {
-            Err(stderr.trim().to_string())
-        }
+        if stderr.contains("already exists") || stderr.contains("Already") { Ok(()) } else { Err(stderr.trim().to_string()) }
     }
 }
 pub(crate) fn summarize_configs(results: &[(&str, StepResult)]) -> StepResult {

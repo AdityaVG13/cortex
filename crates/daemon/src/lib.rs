@@ -13,5 +13,5 @@ pub mod setup;
 
 pub use cli::run_daemon;
 
-pub(crate) use cortex_kernel::{auth, compaction, compiler, crystallize, db, runtime, state, CortexRuntime};
+pub(crate) use cortex_kernel::{CortexRuntime, auth, compaction, compiler, crystallize, db, runtime, state};
 pub(crate) use cortex_logic::{clockwork, eval};
