@@ -10,7 +10,7 @@ async fn store(cx: &asupersync::Cx, runtime: &CortexRuntime, text: &str, context
         context: Some(context.into()), entry_type: Some("decision".into()), source_agent: "redaction-test".into(),
         provenance: DecisionProvenance::from_fields("redaction-test", None, None),
         confidence: Some(0.92), ttl_seconds: None, retention_class: None,
-        anchors: vec![], paths: vec![], thread: None, fields: None, owner_id: None, benchmark: false,
+        anchors: vec![], paths: vec![], evidence: vec![], thread: None, fields: None, owner_id: None, benchmark: false,
     }).expect("deposit");
     assert!(outcome.target_id.is_some());
     assert_eq!(outcome.entry["action"], "inserted");

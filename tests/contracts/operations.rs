@@ -1552,3 +1552,478 @@ fn query_and_orient_keep_path_scoped_observations_in_their_repository() {
         );
     });
 }
+
+#[derive(Clone, Copy)]
+struct CiteCase {
+    source_key: &'static str,
+    scope: &'static str,
+    cwd: Option<&'static str>,
+    expect_ok: bool,
+}
+
+#[test]
+fn commit_observation_cites_stay_in_path_scope() {
+    for case in [
+        CiteCase {
+            source_key: "notes-b",
+            scope: OBS_REPO_B,
+            cwd: Some(OBS_REPO_A),
+            expect_ok: false,
+        },
+        CiteCase {
+            source_key: "notes-a",
+            scope: OBS_REPO_A,
+            cwd: None,
+            expect_ok: false,
+        },
+        CiteCase {
+            source_key: "notes-a",
+            scope: OBS_REPO_A,
+            cwd: Some(OBS_REPO_A),
+            expect_ok: true,
+        },
+        CiteCase {
+            source_key: "worklog",
+            scope: "project",
+            cwd: Some(OBS_REPO_A),
+            expect_ok: true,
+        },
+        CiteCase {
+            source_key: "vault",
+            scope: "secrets",
+            cwd: Some(OBS_REPO_A),
+            expect_ok: false,
+        },
+        CiteCase {
+            source_key: "vault-global",
+            scope: "secrets",
+            cwd: None,
+            expect_ok: false,
+        },
+        CiteCase {
+            source_key: "notes-a",
+            scope: OBS_REPO_A,
+            cwd: Some("/Users/x/repoa/../repob"),
+            expect_ok: false,
+        },
+        CiteCase {
+            source_key: "notes-a",
+            scope: OBS_REPO_A,
+            cwd: Some("/Users/x/repoa/src/.."),
+            expect_ok: true,
+        },
+    ] {
+        cortex_tests::support::run_with_cx(|cx| async move {
+            use cortex_kernel::runtime::{
+                CortexRuntime,
+                observation::{ObservationEvent, SourceSpec},
+            };
+            let state = solo_state();
+            let runtime = CortexRuntime::from_state(state.clone());
+            runtime
+                .register_source(&cx, SourceSpec::document(case.source_key, case.scope))
+                .await
+                .unwrap();
+            let obs = runtime
+                .observe(
+                    &cx,
+                    case.source_key,
+                    "g-cite",
+                    ObservationEvent {
+                        event_key: "run".into(),
+                        text: format!(
+                            "tool reported PAY-CITE ledger write used idempotency key {}",
+                            case.source_key
+                        ),
+                        observed_at: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let mut body = json!({
+                "decision": format!(
+                    "PAY-CITE retries must reuse the original idempotency key ({})",
+                    case.source_key
+                ),
+                "evidence": [format!("obs:{}", obs.source_id)]
+            });
+            if let Some(cwd) = case.cwd {
+                body["cwd"] = json!(cwd);
+            }
+            let result = dispatch(&cx, &state, caller(), Operation::Commit, &body)
+                .await
+                .unwrap();
+            if case.expect_ok {
+                assert_eq!(result["status"], "ok", "{result}");
+                let evidence = result["evidence"]["linked"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(
+                    evidence
+                        .iter()
+                        .any(|item| item["source_id"] == json!(obs.source_id)),
+                    "commit must link the cited observation: {result}"
+                );
+                return;
+            }
+            assert_eq!(result["status"], "invalid_request", "{result}");
+            assert_eq!(result["field"], "evidence", "{result}");
+            let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "a rejected cite must not leave a deposit: {result}");
+        });
+    }
+}
+
+#[test]
+fn commit_cannot_cite_when_roots_span_siblings() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        use cortex_kernel::runtime::{
+            CortexRuntime,
+            observation::{ObservationEvent, SourceSpec},
+        };
+        let state = solo_state();
+        let runtime = CortexRuntime::from_state(state.clone());
+        runtime
+            .register_source(&cx, SourceSpec::document("notes-a", OBS_REPO_A))
+            .await
+            .unwrap();
+        let obs = runtime
+            .observe(
+                &cx,
+                "notes-a",
+                "g-cite-union",
+                ObservationEvent {
+                    event_key: "run-union".into(),
+                    text: "tool reported PAY-CITE-UNION ledger write used idempotency key key-u"
+                        .into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let stolen = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": "PAY-CITE-UNION retries must reuse the original idempotency key",
+                "cwd": OBS_REPO_B,
+                "paths": [OBS_REPO_A],
+                "evidence": [format!("obs:{}", obs.source_id)]
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stolen["status"], "invalid_request", "{stolen}");
+        assert_eq!(stolen["field"], "evidence", "{stolen}");
+        let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            n, 0,
+            "unioned sibling roots must not smuggle a cite: {stolen}"
+        );
+    });
+}
+
+fn cite_row_count(conn: &rusqlite::Connection, decision_id: i64, source_id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM decision_observation_evidence WHERE decision_id = ?1 AND source_id = ?2",
+        rusqlite::params![decision_id, source_id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn commit_cites_attach_to_a_merged_survivor() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        use cortex_kernel::runtime::{
+            CortexRuntime,
+            observation::{ObservationEvent, SourceSpec},
+        };
+        let state = solo_state();
+        let runtime = CortexRuntime::from_state(state.clone());
+        runtime
+            .register_source(&cx, SourceSpec::document("worklog", "project"))
+            .await
+            .unwrap();
+        let obs = runtime
+            .observe(
+                &cx,
+                "worklog",
+                "g-merge-cite",
+                ObservationEvent {
+                    event_key: "run-merge".into(),
+                    text: "tool reported PAY-CITE-MERGE ledger write used idempotency key key-m"
+                        .into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        const TEXT: &str = "PAY-CITE-MERGE retries must reuse the original idempotency key";
+        let first = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({"decision": TEXT}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["status"], "ok", "{first}");
+        let survivor = first["legacy_entries"][0]["id"]
+            .as_i64()
+            .expect("first decision id");
+        let second = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": TEXT,
+                "evidence": [format!("obs:{}", obs.source_id)]
+            }),
+        )
+        .await
+        .unwrap();
+        if second["legacy_entries"][0]["stored"] == false {
+            assert_eq!(second["status"], "invalid_request", "{second}");
+            assert_eq!(second["field"], "evidence", "{second}");
+            assert_eq!(
+                cite_row_count(
+                    &runtime.state().db_read.lock(&cx).await.unwrap(),
+                    survivor,
+                    &obs.source_id
+                ),
+                0,
+                "a rejected duplicate must not claim a cite: {second}"
+            );
+            return;
+        }
+        assert_eq!(second["status"], "ok", "{second}");
+        assert_eq!(
+            cite_row_count(
+                &runtime.state().db_read.lock(&cx).await.unwrap(),
+                survivor,
+                &obs.source_id
+            ),
+            1,
+            "a merged survivor must keep the cite: {second}"
+        );
+    });
+}
+
+#[test]
+fn commit_cannot_amend_cites_on_idempotent_replay() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        use cortex_kernel::runtime::{
+            CortexRuntime,
+            observation::{ObservationEvent, SourceSpec},
+        };
+        let state = solo_state();
+        let runtime = CortexRuntime::from_state(state.clone());
+        runtime
+            .register_source(&cx, SourceSpec::document("notes-a", "project"))
+            .await
+            .unwrap();
+        runtime
+            .register_source(&cx, SourceSpec::document("notes-b", "project"))
+            .await
+            .unwrap();
+        let obs_a = runtime
+            .observe(
+                &cx,
+                "notes-a",
+                "g-idemp",
+                ObservationEvent {
+                    event_key: "a".into(),
+                    text: "tool reported PAY-CITE-IDEMP A ledger write used idempotency key key-ia"
+                        .into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let obs_b = runtime
+            .observe(
+                &cx,
+                "notes-b",
+                "g-idemp",
+                ObservationEvent {
+                    event_key: "b".into(),
+                    text: "tool reported PAY-CITE-IDEMP B ledger write used idempotency key key-ib"
+                        .into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        const TEXT: &str = "PAY-CITE-IDEMP retries must reuse the original idempotency key";
+        let first = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": TEXT,
+                "evidence": [format!("obs:{}", obs_a.source_id)],
+                "idempotency_key": "cite/idemp-1"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["status"], "ok", "{first}");
+        let decision_id = first["legacy_entries"][0]["id"]
+            .as_i64()
+            .expect("decision id");
+        let replay = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": TEXT,
+                "evidence": [format!("obs:{}", obs_a.source_id)],
+                "idempotency_key": "cite/idemp-1"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(replay["status"], "ok", "{replay}");
+        let amend = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": TEXT,
+                "evidence": [format!("obs:{}", obs_b.source_id)],
+                "idempotency_key": "cite/idemp-1"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(amend["status"], "invalid_request", "{amend}");
+        assert!(
+            amend["error"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("idempotency_conflict"),
+            "changing evidence must be a payload conflict: {amend}"
+        );
+        let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+        assert_eq!(cite_row_count(&conn, decision_id, &obs_a.source_id), 1);
+        assert_eq!(cite_row_count(&conn, decision_id, &obs_b.source_id), 0);
+    });
+}
+
+#[test]
+fn commit_cannot_cite_after_policy_epoch_rotation() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        use cortex_kernel::runtime::{
+            CortexRuntime,
+            observation::{ObservationEvent, SourceSpec},
+        };
+        let state = solo_state();
+        let runtime = CortexRuntime::from_state(state.clone());
+        runtime
+            .register_source(&cx, SourceSpec::document("worklog", "project"))
+            .await
+            .unwrap();
+        let obs = runtime
+            .observe(
+                &cx,
+                "worklog",
+                "g-stale-policy",
+                ObservationEvent {
+                    event_key: "run-stale".into(),
+                    text: "tool reported PAY-STALE-POLICY ledger write used idempotency key key-sp"
+                        .into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        {
+            let conn = runtime.state().db.lock(&cx).await.unwrap();
+            conn.execute(
+                "UPDATE brain_meta SET policy_epoch = 'rotated' WHERE singleton = 1",
+                [],
+            )
+            .unwrap();
+        }
+        let result = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Commit,
+            &json!({
+                "decision": "PAY-STALE-POLICY retries must reuse the original idempotency key",
+                "evidence": [format!("obs:{}", obs.source_id)]
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["status"], "invalid_request", "{result}");
+        assert_eq!(result["field"], "evidence", "{result}");
+        let conn = runtime.state().db_read.lock(&cx).await.unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "a stale-policy cite must not leave a deposit: {result}");
+    });
+}
+
+#[test]
+fn resolve_unknown_keep_id_fails_closed() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let missing = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Resolve,
+            &json!({"keepId": 999_999, "action": "keep"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(missing["status"], "invalid_request", "{missing}");
+        assert!(
+            missing["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("was not found"),
+            "{missing}"
+        );
+        let same = dispatch(
+            &cx,
+            &state,
+            caller(),
+            Operation::Resolve,
+            &json!({"keepId": 1, "supersededId": 1, "action": "keep"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(same["status"], "invalid_request", "{same}");
+    });
+}

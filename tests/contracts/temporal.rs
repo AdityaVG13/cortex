@@ -14,7 +14,7 @@ async fn store(cx: &asupersync::Cx, runtime: &CortexRuntime, text: &str, confide
         context: None, entry_type: Some("decision".into()), source_agent: AGENT.into(),
         provenance: DecisionProvenance::from_fields(AGENT, Some("claude-opus"), None),
         confidence: Some(confidence), ttl_seconds: None, retention_class: None,
-        anchors: vec![], paths: vec![], thread: None, fields: None, owner_id: None, benchmark: false,
+        anchors: vec![], paths: vec![], evidence: vec![], thread: None, fields: None, owner_id: None, benchmark: false,
     }).expect("deposit")
 }
 

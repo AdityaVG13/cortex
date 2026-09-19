@@ -13,7 +13,7 @@ async fn store_decision(runtime: &CortexRuntime, cx: &asupersync::Cx, decision: 
         provenance: DecisionProvenance::from_fields("boot-determinism-agent", None, None),
         confidence: None, ttl_seconds: None,
         retention_class: Some(serde_json::from_value(serde_json::json!(retention)).expect("retention")),
-        anchors: vec![], paths: vec![], thread: None, fields: None, owner_id: None, benchmark: false,
+        anchors: vec![], paths: vec![], evidence: vec![], thread: None, fields: None, owner_id: None, benchmark: false,
     }).expect("deposit");
     assert!(outcome.target_id.is_some());
 }

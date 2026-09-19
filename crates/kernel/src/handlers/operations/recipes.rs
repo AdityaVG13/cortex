@@ -5,8 +5,8 @@
 //! invented plan. Agent-proposed recipes are validated structurally and
 //! replayed through the same interpreter.
 
-use crate::recipe::{Limits, Predicate, Step};
-use serde_json::{json, Value};
+use crate::recipe::{Predicate, Step};
+use serde_json::{Value, json};
 
 pub struct Template {
     pub name: &'static str,
@@ -25,15 +25,31 @@ pub const TEMPLATES: [Template; 7] = [
         purpose: "obligations whose head is checker_verified",
         parameters: &[],
     },
-    Template { name: "failed_attempts", purpose: "attempt records that ended in failure", parameters: &[] },
-    Template { name: "open_work", purpose: "obligations not yet complete or verified", parameters: &[] },
+    Template {
+        name: "failed_attempts",
+        purpose: "attempt records that ended in failure",
+        parameters: &[],
+    },
+    Template {
+        name: "open_work",
+        purpose: "obligations not yet complete or verified",
+        parameters: &[],
+    },
     Template {
         name: "conflicts",
         purpose: "records whose heads carry different values for one key",
         parameters: &["key", "value_field"],
     },
-    Template { name: "what_changed", purpose: "records known after a commit sequence", parameters: &["since_seq"] },
-    Template { name: "handoff", purpose: "latest checkpoint plus open work and failed attempts", parameters: &[] },
+    Template {
+        name: "what_changed",
+        purpose: "records known after a commit sequence",
+        parameters: &["since_seq"],
+    },
+    Template {
+        name: "handoff",
+        purpose: "latest checkpoint plus open work and failed attempts",
+        parameters: &[],
+    },
 ];
 
 /// Open work matches `agent_open_work`: every obligation that is not
@@ -51,123 +67,102 @@ fn open_obligation_states() -> Vec<Value> {
     ]
 }
 
+fn sel(id: &str, relation: &str) -> Step {
+    Step::Select {
+        id: id.into(),
+        relation: relation.into(),
+    }
+}
+fn proj(id: &str, input: &str, fields: &[&str]) -> Step {
+    Step::Project {
+        id: id.into(),
+        input: input.into(),
+        fields: fields.iter().map(|s| (*s).to_string()).collect(),
+    }
+}
+fn filter_eq(id: &str, input: &str, field: &str, value: Value) -> Step {
+    Step::Filter {
+        id: id.into(),
+        input: input.into(),
+        field: field.into(),
+        predicate: Predicate::Eq { value },
+    }
+}
+fn filter_in(id: &str, input: &str, field: &str, values: Vec<Value>) -> Step {
+    Step::Filter {
+        id: id.into(),
+        input: input.into(),
+        field: field.into(),
+        predicate: Predicate::In { values },
+    }
+}
+fn count_step(id: &str, input: &str) -> Step {
+    Step::Count {
+        id: id.into(),
+        input: input.into(),
+    }
+}
+
 pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> {
     let p = |k: &str| params.get(k).cloned();
     Some(match name {
         "current_constraints" => {
-            let mut steps = vec![Step::Select {
-                id: "rules".into(),
+            let mut steps = vec![sel(
+                "rules",
                 // Same family as agent_constraints / boot Constraints /
                 // required-role recall. Deposit stores the entry type as
                 // records.kind; omitting policy/rule here dropped those
                 // rows and skipped their guard epochs.
-                relation: "constraint|policy|rule|convention|contract|preference".into(),
-            }];
+                "constraint|policy|rule|convention|contract|preference",
+            )];
             let mut input = "rules".to_string();
             let mut exception_input = "exceptions".to_string();
             if let Some(subject) = p("subject") {
-                steps.push(Step::Filter {
-                    id: "on_subject".into(),
-                    input: input.clone(),
-                    field: "subject".into(),
-                    predicate: Predicate::Eq {
-                        value: subject.clone(),
-                    },
-                });
+                steps.push(filter_eq("on_subject", &input, "subject", subject.clone()));
                 input = "on_subject".into();
-                steps.push(Step::Select {
-                    id: "exceptions".into(),
-                    relation: "exception".into(),
-                });
-                steps.push(Step::Filter {
-                    id: "exceptions_on_subject".into(),
-                    input: "exceptions".into(),
-                    field: "subject".into(),
-                    predicate: Predicate::Eq { value: subject },
-                });
+                steps.push(sel("exceptions", "exception"));
+                steps.push(filter_eq(
+                    "exceptions_on_subject",
+                    "exceptions",
+                    "subject",
+                    subject,
+                ));
                 exception_input = "exceptions_on_subject".into();
             } else {
-                steps.push(Step::Select {
-                    id: "exceptions".into(),
-                    relation: "exception".into(),
-                });
+                steps.push(sel("exceptions", "exception"));
             }
             steps.push(Step::Exists {
                 id: "has_exceptions".into(),
                 input: exception_input,
             });
-            steps.push(Step::Project {
-                id: "out".into(),
-                input,
-                fields: vec!["text".into(), "record".into(), "subject".into()],
-            });
+            steps.push(proj("out", &input, &["text", "record", "subject"]));
             (steps, vec!["out".into(), "has_exceptions".into()])
         }
         "last_verified_outcome" => (
             vec![
-                Step::Select {
-                    id: "o".into(),
-                    relation: "obligation".into(),
-                },
-                Step::Filter {
-                    id: "v".into(),
-                    input: "o".into(),
-                    field: "epistemic".into(),
-                    predicate: Predicate::Eq {
-                        value: json!("checker_verified"),
-                    },
-                },
-                Step::Project {
-                    id: "out".into(),
-                    input: "v".into(),
-                    fields: vec!["record".into(), "verification".into(), "state".into()],
-                },
+                sel("o", "obligation"),
+                filter_eq("v", "o", "epistemic", json!("checker_verified")),
+                proj("out", "v", &["record", "verification", "state"]),
             ],
             vec!["out".into()],
         ),
         "failed_attempts" => (
             vec![
-                Step::Select {
-                    id: "f".into(),
-                    relation: "failure".into(),
-                },
-                Step::Project {
-                    id: "out".into(),
-                    input: "f".into(),
-                    fields: vec![
-                        "record".into(),
-                        "failure".into(),
-                        "environment".into(),
-                        "procedure".into(),
-                        "text".into(),
-                    ],
-                },
+                sel("f", "failure"),
+                proj(
+                    "out",
+                    "f",
+                    &["record", "failure", "environment", "procedure", "text"],
+                ),
             ],
             vec!["out".into()],
         ),
         "open_work" => (
             vec![
-                Step::Select {
-                    id: "o".into(),
-                    relation: "obligation".into(),
-                },
-                Step::Filter {
-                    id: "open".into(),
-                    input: "o".into(),
-                    field: "state".into(),
-                    predicate: Predicate::In {
-                        values: open_obligation_states(),
-                    },
-                },
-                Step::Project {
-                    id: "out".into(),
-                    input: "open".into(),
-                    fields: vec!["record".into(), "state".into(), "title".into()],
-                },
-                Step::Count {
-                    id: "count".into(),
-                    input: "open".into(),
-                },
+                sel("o", "obligation"),
+                filter_in("open", "o", "state", open_obligation_states()),
+                proj("out", "open", &["record", "state", "title"]),
+                count_step("count", "open"),
             ],
             vec!["out".into(), "count".into()],
         ),
@@ -180,10 +175,7 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
                 .unwrap_or_else(|| "text".into());
             (
                 vec![
-                    Step::Select {
-                        id: "d".into(),
-                        relation: "decision".into(),
-                    },
+                    sel("d", "decision"),
                     Step::Conflict {
                         id: "out".into(),
                         input: "d".into(),
@@ -195,22 +187,13 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
             )
         }
         "what_changed" => {
-            let since = p("since_seq").and_then(|v| {
-                v.as_i64()
-                    .or_else(|| v.as_u64().and_then(|n| i64::try_from(n).ok()))
-                    .or_else(|| {
-                        v.as_f64().and_then(|x| {
-                            (x.is_finite() && x.fract() == 0.0).then_some(x as i64)
-                        })
-                    })
-                    .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
-            }).unwrap_or(0);
+            let since = p("since_seq")
+                .as_ref()
+                .and_then(crate::protocol::json_i64)
+                .unwrap_or(0);
             (
                 vec![
-                    Step::Select {
-                        id: "d".into(),
-                        relation: "decision".into(),
-                    },
+                    sel("d", "decision"),
                     Step::TemporalSlice {
                         id: "before".into(),
                         input: "d".into(),
@@ -225,60 +208,22 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
                             value: since as f64,
                         },
                     },
-                    Step::Count {
-                        id: "known_before".into(),
-                        input: "before".into(),
-                    },
-                    Step::Count {
-                        id: "known_now".into(),
-                        input: "d".into(),
-                    },
-                    Step::Project {
-                        id: "out".into(),
-                        input: "after".into(),
-                        fields: vec!["record".into(), "text".into()],
-                    },
+                    count_step("known_before", "before"),
+                    count_step("known_now", "d"),
+                    proj("out", "after", &["record", "text"]),
                 ],
                 vec!["known_before".into(), "known_now".into(), "out".into()],
             )
         }
         "handoff" => (
             vec![
-                Step::Select {
-                    id: "c".into(),
-                    relation: "checkpoint".into(),
-                },
-                Step::Project {
-                    id: "checkpoints".into(),
-                    input: "c".into(),
-                    fields: vec!["record".into(), "goal".into(), "state".into()],
-                },
-                Step::Select {
-                    id: "o".into(),
-                    relation: "obligation".into(),
-                },
-                Step::Filter {
-                    id: "open".into(),
-                    input: "o".into(),
-                    field: "state".into(),
-                    predicate: Predicate::In {
-                        values: open_obligation_states(),
-                    },
-                },
-                Step::Project {
-                    id: "open_work".into(),
-                    input: "open".into(),
-                    fields: vec!["record".into(), "state".into()],
-                },
-                Step::Select {
-                    id: "f".into(),
-                    relation: "failure".into(),
-                },
-                Step::Project {
-                    id: "failed".into(),
-                    input: "f".into(),
-                    fields: vec!["record".into(), "failure".into()],
-                },
+                sel("c", "checkpoint"),
+                proj("checkpoints", "c", &["record", "goal", "state"]),
+                sel("o", "obligation"),
+                filter_in("open", "o", "state", open_obligation_states()),
+                proj("open_work", "open", &["record", "state"]),
+                sel("f", "failure"),
+                proj("failed", "f", &["record", "failure"]),
             ],
             vec!["checkpoints".into(), "open_work".into(), "failed".into()],
         ),
@@ -286,20 +231,6 @@ pub fn template(name: &str, params: &Value) -> Option<(Vec<Step>, Vec<String>)> 
     })
 }
 
-/// Validate an agent-proposed plan structurally by running it against an
-/// empty snapshot with tight limits: unknown operators fail at parse time,
-/// cycles/limits at evaluation. No natural-language interpretation.
-pub fn validate_proposed(plan: &Value) -> Result<(Vec<Step>, Vec<String>), String> {
-    let steps: Vec<Step> = serde_json::from_value(plan.get("steps").cloned().unwrap_or(json!([])))
-        .map_err(|e| format!("invalid step: {e}"))?;
-    let outputs: Vec<String> =
-        serde_json::from_value(plan.get("outputs").cloned().unwrap_or(json!([])))
-            .map_err(|e| format!("invalid outputs: {e}"))?;
-    if steps.is_empty() || outputs.is_empty() {
-        return Err("a recipe needs steps and outputs".into());
-    }
-    let empty = crate::recipe::Snapshot::default();
-    crate::recipe::evaluate(&empty, "default", &steps, &outputs, Limits::default())
-        .map_err(|e| format!("structural validation failed: {e}"))?;
-    Ok((steps, outputs))
-}
+mod run;
+pub(in crate::handlers::operations) use run::run_recipe;
+pub use run::validate_proposed;

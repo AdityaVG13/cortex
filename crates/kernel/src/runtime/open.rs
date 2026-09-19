@@ -4,7 +4,7 @@ use crate::handlers::recall::{RecallContext, execute_unified_recall};
 use crate::handlers::store::{DecisionProvenance, StoreError};
 use crate::state::RuntimeState;
 use asupersync::Cx;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 /// Library-boundary error. Adapters map it to their transport (HTTP status,
@@ -147,8 +147,17 @@ impl CortexRuntime {
         agent: &str,
         owner_id: Option<i64>,
     ) -> Result<DepositOutcome, CortexError> {
-        self.deposit_with_scope(cx, request_id, idempotency_key, text, agent, owner_id, &[], None)
-            .await
+        self.deposit_with_scope(
+            cx,
+            request_id,
+            idempotency_key,
+            text,
+            agent,
+            owner_id,
+            &[],
+            None,
+        )
+        .await
     }
 
     /// Deposit with caller project/thread scope projected onto the row.
@@ -182,6 +191,7 @@ impl CortexRuntime {
                 retention_class: None,
                 anchors: Vec::new(),
                 paths: paths.to_vec(),
+                evidence: Vec::new(),
                 thread: thread.map(str::to_string),
                 fields: None,
                 owner_id,
@@ -232,18 +242,10 @@ impl CortexRuntime {
         let budget = if input.budget == 0 { 320 } else { input.budget };
         let k = if input.k == 0 { 8 } else { input.k };
         let query = input.query.trim();
-        let mut view = execute_unified_recall(
-            cx,
-            &self.state,
-            query,
-            budget,
-            k,
-            &input.agent,
-            &ctx,
-            None,
-        )
-        .await
-        .map_err(CortexError::Recall)?;
+        let mut view =
+            execute_unified_recall(cx, &self.state, query, budget, k, &input.agent, &ctx, None)
+                .await
+                .map_err(CortexError::Recall)?;
         let args = json!({ "paths": input.paths });
         crate::handlers::operations::attach_observation_evidence(
             cx,

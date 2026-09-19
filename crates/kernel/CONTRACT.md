@@ -68,6 +68,25 @@ source registration, `observe`, normalized-JSONL `tail_observations`, source
 cursor inspection, source enable/disable, and exact observation lookup. Source
 roles are registered by the operator, never accepted from event bodies. Raw
 observations remain attributed evidence, not verified facts or learned utility.
+`commit` with `evidence: ["obs:<source_id>"]` is the only upgrade path: unknown,
+disabled, retracted, or path-incompatible cites fail closed and roll the
+deposit back. A cite attaches only to a durable decision id (a new row or a
+merged survivor); a rejected duplicate with evidence fails closed. Cited
+`obs:<id>` values are part of the deposit idempotency identity. A scoped commit may cite the unscoped `project` bucket; it cannot
+cite a sibling repository, and a commit whose roots span sibling repositories
+cannot cite a path-scoped observation from only one of them. Path identity
+collapses `.` and `..` before that check: `repoa/../repob` is `repob`, not a
+child of `repoa`. An unscoped commit cannot lift a path-scoped
+observation. Operator-owned `promote-policy/1` (`db::promotion::set_policy` /
+`load_policy`) can restrict who may run a typed promote rule, which
+observation roles `commit` may cite, and which revocation triggers a
+promoted revision records. Missing policy keeps the builtin defaults
+(`preference` is `solo` / `user:*`; other rules are `*`; every cite role
+except `delivery_only`; the hardcoded revocation strings). A stored
+document that is not that schema, or that has the wrong shape, fails closed.
+Unknown or `delivery_only` `commit_evidence.source_roles` fail at `set_policy`.
+Cite links live in `decision_observation_evidence`, created with the rest of
+schema init and copied by auto-repair.
 
 Capture writes source bytes, a record/revision/head, source linkage, change
 item, invalidation guards, receipt and existing outbox work in one SQLite
@@ -209,7 +228,8 @@ payloads already attested in the current invocation. Default query and
 routes-off reads stay exact observation / CQR until rebuild. `lens` attaches
 the same `assemblies` section beside `results`. SessionStart boot fallback
 compiles the CQR capsule and assemblies from caller `cwd` rather than an empty
-path list or only the `project` bucket. No HDC or
+path list or only the `project` bucket. File inject (`boot_for_paths` /
+`cortex prompt-inject --path`) uses the same roots. No HDC or
 controller is claimed.
 
 **Host entry.** Live host events use `cortex hook <kind>`. `resolve_host_invocation`

@@ -6,8 +6,8 @@
 //! qualifiers, counterevidence and unresolved contrary heads that change its
 //! meaning; a claim is never served without its material exception.
 
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DependencyRole {
@@ -86,11 +86,7 @@ pub fn add_relation(
         )
     })?;
     let relation_id = format!("rel:{from_revision}->{to_revision}:{}", parsed.as_str());
-    conn.execute(
-        "INSERT OR REPLACE INTO relations (relation_id, from_revision, to_revision, scope_id, relation_kind, rule_version, recorded_sequence) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![relation_id, from_revision, to_revision, crate::db::records::DEFAULT_SCOPE, parsed.as_str(), rule_version, sequence],
-    )
-    .map_err(|e| e.to_string())?;
+    conn.execute("INSERT OR REPLACE INTO relations (relation_id, from_revision, to_revision, scope_id, relation_kind, rule_version, recorded_sequence) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![relation_id, from_revision, to_revision, crate::db::records::DEFAULT_SCOPE, parsed.as_str(), rule_version, sequence]).map_err(|e| e.to_string())?;
     Ok(relation_id)
 }
 
@@ -109,9 +105,7 @@ pub fn close_revision(
     legacy_decision_id: Option<i64>,
 ) -> Result<(Vec<ClosureItem>, Vec<Value>), String> {
     let mut items = Vec::new();
-    let mut stmt = conn
-        .prepare("SELECT relation_kind, to_revision FROM relations WHERE from_revision = ?1 ORDER BY relation_kind, to_revision")
-        .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT relation_kind, to_revision FROM relations WHERE from_revision = ?1 ORDER BY relation_kind, to_revision").map_err(|e| e.to_string())?;
     let rows: Vec<(String, String)> = stmt
         .query_map(params![revision_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| e.to_string())?
@@ -126,8 +120,8 @@ pub fn close_revision(
         if !role.is_required() && role != DependencyRole::Support {
             continue;
         }
-        let body = crate::db::records::revision_body(conn, &to_revision)
-            .map_err(|e| e.to_string())?;
+        let body =
+            crate::db::records::revision_body(conn, &to_revision).map_err(|e| e.to_string())?;
         let Some(body) = body else {
             if role.is_required() {
                 return Err(format!(
@@ -137,7 +131,10 @@ pub fn close_revision(
             }
             continue;
         };
-        let text = body["text"].as_str().map(str::to_string).unwrap_or_default();
+        let text = body["text"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_default();
         if text.is_empty() && role.is_required() {
             return Err(format!(
                 "required {role} target `{to_revision}` has no text",
@@ -152,17 +149,8 @@ pub fn close_revision(
     }
     let mut contrary = Vec::new();
     if let Some(decision_id) = legacy_decision_id {
-        let mut stmt = conn
-            .prepare(
-                "SELECT c.id, c.classification, c.status, o.id, o.decision FROM decision_conflicts c JOIN decisions o ON o.id = CASE WHEN c.source_decision_id = ?1 THEN c.target_decision_id ELSE c.source_decision_id END \
-                 WHERE (c.source_decision_id = ?1 OR c.target_decision_id = ?1) AND c.classification = 'CONTRADICTS' AND c.status = 'open' ORDER BY c.id",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![decision_id], |r| Ok(json!({"conflict": r.get::<_, i64>(0)?, "classification": r.get::<_, String>(1)?, "status": r.get::<_, String>(2)?, "other": format!("decision::{}", r.get::<_, i64>(3)?), "text": r.get::<_, String>(4)?})))
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT c.id, c.classification, c.status, o.id, o.decision FROM decision_conflicts c JOIN decisions o ON o.id = CASE WHEN c.source_decision_id = ?1 THEN c.target_decision_id ELSE c.source_decision_id END WHERE (c.source_decision_id = ?1 OR c.target_decision_id = ?1) AND c.classification = 'CONTRADICTS' AND c.status = 'open' ORDER BY c.id").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![decision_id], |r| Ok(json!({"conflict": r.get::<_, i64>(0)?, "classification": r.get::<_, String>(1)?, "status": r.get::<_, String>(2)?, "other": format!("decision::{}", r.get::<_, i64>(3)?), "text": r.get::<_, String>(4)?}))).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
         contrary.extend(rows);
     }
     Ok((items, contrary))

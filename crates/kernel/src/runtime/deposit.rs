@@ -1,15 +1,14 @@
+mod record;
+
 use crate::clockwork::{AnchorKind, ClockOrigin, QueryAnchor};
 use crate::handlers::store::{
-    store_decision_with_input_embedding_and_provenance_retention, DecisionProvenance, StoreError,
+    DecisionProvenance, StoreError, store_decision_with_input_embedding_and_provenance_retention,
 };
-use crate::protocol::{
-    AckProfile, CaptureReceipt, CaptureStatus, DurabilityVector, Frontier, LogicalId,
-    PayloadAvailability, Receipt,
-};
+use crate::protocol::{AckProfile, CaptureReceipt, CaptureStatus, Receipt, nonempty_opt};
 use cortex_logic::api_types::RetentionClass;
+use record::{build_receipt, record_authoritative};
 use rusqlite::Connection;
-use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use serde_json::{Value, json};
 
 /// Validated Deposit of one decision. Redaction has already been applied by
 /// the caller boundary (`handlers::redact_secrets`) or is applied here for
@@ -32,6 +31,9 @@ pub struct DepositInput<'a> {
     /// Caller project roots. Projected as explicit path anchors so later
     /// lens/orient/boot with a cwd can admit this row and drop a foreign repo.
     pub paths: Vec<String>,
+    /// Observation source ids cited on this Deposit. Part of the
+    /// idempotency canonical so a retry cannot amend provenance.
+    pub evidence: Vec<String>,
     /// Optional thread/session label. Task-clock evidence, not an eligibility filter.
     pub thread: Option<String>,
     /// Typed fields (case/procedure/counterexample bodies) merged into the
@@ -62,19 +64,18 @@ pub fn capture_receipt(offered: &str, retained: &str, max_chars: usize) -> Captu
             && retained.chars().count() < offered.chars().count()
             && retained.chars().count() < max_chars);
     let truncated = offered.chars().count() > max_chars;
-    let status = if redacted && truncated {
-        CaptureStatus::Incomplete
-    } else if truncated {
-        CaptureStatus::Incomplete
+    let (status, reason) = if truncated {
+        (
+            CaptureStatus::Incomplete,
+            Some(format!("truncated to {max_chars} chars")),
+        )
     } else if redacted {
-        CaptureStatus::Redacted
+        (
+            CaptureStatus::Redacted,
+            Some("secret-shaped spans replaced".into()),
+        )
     } else {
-        CaptureStatus::Accepted
-    };
-    let reason = match status {
-        CaptureStatus::Incomplete => Some(format!("truncated to {max_chars} chars")),
-        CaptureStatus::Redacted => Some("secret-shaped spans replaced".into()),
-        _ => None,
+        (CaptureStatus::Accepted, None)
     };
     CaptureReceipt {
         status,
@@ -105,6 +106,7 @@ pub fn deposit_decision(
         input.owner_id,
         &input.paths,
         input.thread.as_deref(),
+        &input.evidence,
     );
     let canonical_hash = cortex_logic::traces::content_hash(&canonical);
     conn.execute_batch(crate::store_spi::sqlite::IDEMPOTENCY_DDL)
@@ -135,7 +137,7 @@ pub fn deposit_decision(
             Some(_) => {
                 return Err(StoreError::BadRequest(
                     "idempotency_conflict: key reused with a different payload",
-                ))
+                ));
             }
             None => {}
         }
@@ -166,18 +168,35 @@ fn canonical_deposit(
     owner_id: Option<i64>,
     paths: &[String],
     thread: Option<&str>,
+    evidence: &[String],
 ) -> String {
     // Canonical comparison preserves Unicode and field identity; it is a
     // structured rendering, not an ad hoc string hash of the raw request.
     // The source agent is attribution on the record, not part of the
     // payload: a retry of the same deposit from another surface replays.
     // Paths and thread are the caller's scope: the same sentence in two
-    // repositories is two facts.
-    let mut paths: Vec<&str> = paths.iter().map(String::as_str).filter(|p| !p.is_empty()).collect();
+    // repositories is two facts. Cited observations are the deposit's
+    // provenance: a retry cannot swap them after the identity is sealed.
+    let mut paths: Vec<&str> = paths
+        .iter()
+        .map(String::as_str)
+        .filter(|p| !p.is_empty())
+        .collect();
     paths.sort_unstable();
     paths.dedup();
-    let thread = thread.map(str::trim).filter(|s| !s.is_empty());
-    serde_json::to_string(&json!({"schema":"deposit/1","text":text,"context":context,"type":entry_type,"owner":owner_id,"paths":paths,"thread":thread})).unwrap_or_default()
+    let mut evidence: Vec<&str> = evidence
+        .iter()
+        .map(String::as_str)
+        .filter(|p| !p.is_empty())
+        .collect();
+    evidence.sort_unstable();
+    evidence.dedup();
+    let thread = nonempty_opt(thread);
+    let mut body = json!({"schema":"deposit/1","text":text,"context":context,"type":entry_type,"owner":owner_id,"paths":paths,"thread":thread});
+    if !evidence.is_empty() {
+        body["evidence"] = json!(evidence);
+    }
+    serde_json::to_string(&body).unwrap_or_default()
 }
 
 fn scope_anchors(paths: &[String], thread: Option<&str>) -> Vec<QueryAnchor> {
@@ -193,7 +212,7 @@ fn scope_anchors(paths: &[String], thread: Option<&str>) -> Vec<QueryAnchor> {
             specificity: 3,
         });
     }
-    if let Some(thread) = thread.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(thread) = nonempty_opt(thread) {
         extra.push(QueryAnchor {
             kind: AnchorKind::Session,
             value: thread.to_ascii_lowercase(),
@@ -209,13 +228,7 @@ fn lookup_ledger(
     key: &str,
 ) -> Result<Option<(String, String, String)>, StoreError> {
     use rusqlite::OptionalExtension;
-    conn.query_row(
-        "SELECT canonical_hash, receipt_json, COALESCE(entry_json, 'null') FROM operation_ledger WHERE principal = ?1 AND idempotency_key = ?2",
-        rusqlite::params![principal, key],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-    )
-    .optional()
-    .map_err(|e| StoreError::Internal(e.to_string()))
+    conn.query_row("SELECT canonical_hash, receipt_json, COALESCE(entry_json, 'null') FROM operation_ledger WHERE principal = ?1 AND idempotency_key = ?2", rusqlite::params![principal, key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).optional().map_err(|e| StoreError::Internal(e.to_string()))
 }
 
 fn deposit_inner(
@@ -273,11 +286,9 @@ fn deposit_inner(
             .map_err(|err| {
                 StoreError::Internal(format!("clock projection failed for {id}: {err}"))
             })?;
-    }
-    // Authoritative tables: the commit row, then a record/revision/head for
-    // the decision. A merge/refine produces a successor revision of the
-    // existing record; a new decision a baseline revision.
-    if let Some(id) = target_id {
+        // Authoritative tables: the commit row, then a record/revision/head for
+        // the decision. A merge/refine produces a successor revision of the
+        // existing record; a new decision a baseline revision.
         record_authoritative(conn, input, id, text, &action)
             .map_err(|e| StoreError::Internal(format!("authoritative record: {e}")))?;
     }
@@ -288,18 +299,7 @@ fn deposit_inner(
         crate::handlers::store::MAX_DECISION_CHARS_PUB,
     );
     if let Some(key) = input.idempotency_key.as_deref() {
-        conn.execute(
-            "INSERT INTO operation_ledger (principal, idempotency_key, request_id, canonical_hash, receipt_json, entry_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![
-                input.principal,
-                key,
-                input.request_id,
-                canonical_hash,
-                serde_json::to_string(&receipt).unwrap_or_default(),
-                entry.to_string()
-            ],
-        )
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        conn.execute("INSERT INTO operation_ledger (principal, idempotency_key, request_id, canonical_hash, receipt_json, entry_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", rusqlite::params![input.principal, key, input.request_id, canonical_hash, serde_json::to_string(&receipt).unwrap_or_default(), entry.to_string()]).map_err(|e| StoreError::Internal(e.to_string()))?;
     }
     Ok(DepositOutcome {
         entry,
@@ -309,160 +309,6 @@ fn deposit_inner(
     })
 }
 
-fn record_authoritative(
-    conn: &Connection,
-    input: &DepositInput<'_>,
-    decision_id: i64,
-    text: &str,
-    action: &str,
-) -> rusqlite::Result<()> {
-    use crate::db::records::{
-        append_commit, append_revision, heads, record_for_legacy, NewRevision,
-    };
-    crate::db::records::ensure_authoritative_schema(conn)?;
-    let ack = ack_profile_label(&crate::store_spi::sqlite::ack_profile(conn));
-    let sequence = append_commit(
-        conn,
-        &input.principal,
-        input.idempotency_key.as_deref(),
-        ack,
-    )?;
-    let retention: String = conn
-        .query_row(
-            "SELECT COALESCE(retention_class, 'operational') FROM decisions WHERE id = ?1",
-            rusqlite::params![decision_id],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| "operational".into());
-    let retention =
-        if ["durable", "operational", "audit", "ephemeral"].contains(&retention.as_str()) {
-            retention
-        } else {
-            "operational".into()
-        };
-    let record_id = record_for_legacy(conn, "decision", decision_id)?
-        .unwrap_or_else(|| format!("decision:{decision_id}"));
-    let parents = if matches!(action, "stored" | "inserted") {
-        Vec::new()
-    } else {
-        heads(conn, &record_id)?
-    };
-    // The record kind is the entry type (constraint, exception, attempt,
-    // procedure, decision …): it is the relation recipes select on.
-    let kind: String = conn
-        .query_row(
-            "SELECT COALESCE(type, 'decision') FROM decisions WHERE id = ?1",
-            rusqlite::params![decision_id],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| "decision".into());
-    let subject = text
-        .split(|c: char| c == ':' || c == '—')
-        .next()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .unwrap_or_default();
-    let mut body = json!({"text": text, "agent": input.source_agent, "action": action, "context": input.context, "subject": subject});
-    if let Some(Value::Object(fields)) = &input.fields {
-        for (k, v) in fields {
-            body[k] = v.clone();
-        }
-    }
-    append_revision(
-        conn,
-        sequence,
-        NewRevision {
-            record_id: &record_id,
-            kind: &kind,
-            retention: &retention,
-            body,
-            epistemic_status: "asserted",
-            parents: &parents,
-            replace_parents: true,
-            representation_version: "decision/1",
-        },
-    )?;
-    conn.execute(
-        "INSERT OR IGNORE INTO addresses (scheme, namespace, address, record_id) VALUES ('legacy', 'decision', ?1, ?2)",
-        rusqlite::params![decision_id.to_string(), record_id],
-    )?;
-    // Heavy projection work is durable debt, not writer-lock work: the
-    // outbox rows commit with the deposit; a later caller drains them.
-    crate::db::outbox::enqueue_for_commit(
-        conn,
-        sequence,
-        &["fts_optimize", "checkpoint_wal"],
-        json!({"decision": decision_id}),
-    )?;
-    if sequence % 50 == 0 {
-        crate::db::outbox::enqueue_for_commit(
-            conn,
-            sequence,
-            &["prune_telemetry", "clock_link_audit"],
-            json!({}),
-        )?;
-    }
-    Ok(())
-}
-
-fn build_receipt(
-    conn: &Connection,
-    request_id: &str,
-    target_id: Option<i64>,
-    version_id: Option<i64>,
-    action: &str,
-) -> Receipt {
-    let frontier = crate::store_spi::sqlite::current_frontier(conn);
-    let mut entries = BTreeMap::new();
-    if let Some(id) = target_id {
-        entries.insert(
-            "decision".to_string(),
-            LogicalId::from_legacy("decision", id),
-        );
-    }
-    if let Some(v) = version_id {
-        entries.insert("version".to_string(), LogicalId::from_legacy("version", v));
-    }
-    let receipt_value = version_id
-        .map(|v| v.to_string())
-        .or_else(|| target_id.map(|t| format!("d{t}")))
-        .unwrap_or_else(|| "none".into());
-    let mut omissions = Vec::new();
-    if !matches!(action, "stored" | "inserted") {
-        omissions.push(format!(
-            "store action `{action}`: request merged into or deduplicated against an existing row"
-        ));
-    }
-    Receipt {
-        receipt_id: LogicalId::new("receipt", receipt_value),
-        request_id: request_id.to_string(),
-        durability: DurabilityVector {
-            accepted: true,
-            local_commit: Some(frontier.clone()),
-            projected_through: projected_through(&frontier),
-            replicated_through: BTreeMap::new(),
-            payload_availability: PayloadAvailability::Retained,
-            ack_profile: crate::store_spi::sqlite::ack_profile(conn),
-        },
-        entries,
-        aliases: BTreeMap::new(),
-        omissions,
-        unresolved_needs: Vec::new(),
-    }
-}
-
-/// Every projection today is maintained synchronously inside the store
-/// transaction (FTS triggers, entities, clock anchors), so each index is at
-/// the commit frontier. The outbox bead makes these lag independently.
-fn projected_through(frontier: &Frontier) -> BTreeMap<String, Frontier> {
-    ["exact", "lexical", "entity", "clock"]
-        .iter()
-        .map(|name| (name.to_string(), frontier.clone()))
-        .collect()
-}
-
-pub fn ack_profile_label_pub(profile: &AckProfile) -> &'static str {
-    ack_profile_label(profile)
-}
 pub fn ack_profile_label(profile: &AckProfile) -> &'static str {
     match profile {
         AckProfile::ProcessCrash => "process_crash",

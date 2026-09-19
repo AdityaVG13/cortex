@@ -7,7 +7,7 @@
 
 use cortex_kernel::handlers::operations::{dispatch, Caller, Operation};
 use cortex_tests::support::solo_state;
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn user() -> Caller<'static> {
     Caller {
@@ -22,6 +22,11 @@ fn agent(name: &'static str) -> Caller<'static> {
         agent: name,
         principal: "agent:x".into(),
     }
+}
+
+async fn write_policy(cx: &asupersync::Cx, state: &cortex_kernel::state::RuntimeState, document: Value) {
+    let conn = state.db.lock(cx).await.unwrap();
+    cortex_kernel::db::promotion::set_policy(&conn, &document).unwrap();
 }
 
 #[test]
@@ -128,4 +133,212 @@ fn promotion_rules_are_type_specific_and_carry_population_and_exclusions() {
         assert_eq!(lesson["status"], "ok", "{lesson}");
         assert_eq!(lesson["body"]["scope"], "project:billing");
     });
+}
+
+#[test]
+fn operator_policy_can_deny_a_principal_the_default_allows() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        write_policy(
+            &cx,
+            &state,
+            json!({
+                "schema": "promote-policy/1",
+                "rules": {
+                    "preference": {"principals": ["user:root"]}
+                }
+            }),
+        )
+        .await;
+        let denied = dispatch(
+            &cx,
+            &state,
+            user(),
+            Operation::Commit,
+            &json!({"promote": {"rule": "preference", "text": "prefer tabs in Makefiles"}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            denied["status"], "invalid_request",
+            "operator policy must be able to deny a default-allowed principal: {denied}"
+        );
+        let error = denied["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("may not promote"),
+            "policy overlay deny must not reuse the default preference lecture: {denied}"
+        );
+        assert!(
+            !error.contains("authenticated user statement"),
+            "policy overlay deny must not reuse the default preference lecture: {denied}"
+        );
+    });
+}
+
+#[test]
+fn operator_policy_can_forbid_a_source_role_on_commit_evidence() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        use cortex_kernel::runtime::{
+            CortexRuntime,
+            observation::{ObservationEvent, SourceSpec},
+        };
+        let state = solo_state();
+        let runtime = CortexRuntime::from_state(state.clone());
+        write_policy(
+            &cx,
+            &state,
+            json!({
+                "schema": "promote-policy/1",
+                "commit_evidence": {"source_roles": ["tool_report"]}
+            }),
+        )
+        .await;
+        runtime
+            .register_source(&cx, SourceSpec::document("worklog", "project"))
+            .await
+            .unwrap();
+        let obs = runtime
+            .observe(
+                &cx,
+                "worklog",
+                "g-policy",
+                ObservationEvent {
+                    event_key: "run-policy".into(),
+                    text: "tool reported PAY-POL ledger write used idempotency key key-pol".into(),
+                    observed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let stolen = dispatch(
+            &cx,
+            &state,
+            user(),
+            Operation::Commit,
+            &json!({
+                "decision": "PAY-POL retries must reuse the original idempotency key",
+                "evidence": [format!("obs:{}", obs.source_id)]
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stolen["status"], "invalid_request",
+            "operator policy must be able to forbid a source role: {stolen}"
+        );
+        assert_eq!(stolen["field"], "evidence", "{stolen}");
+    });
+}
+
+#[test]
+fn promoted_revision_records_operator_revocation_triggers() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        write_policy(
+            &cx,
+            &state,
+            json!({
+                "schema": "promote-policy/1",
+                "rules": {
+                    "checker_result": {
+                        "revocation": ["operator retired the checker"]
+                    }
+                }
+            }),
+        )
+        .await;
+        let verified = dispatch(
+            &cx,
+            &state,
+            agent("cargo"),
+            Operation::Commit,
+            &json!({
+                "promote": {
+                    "rule": "checker_result",
+                    "text": "regression passes on a7",
+                    "preconditions": {
+                        "predicate": "crash_after_commit",
+                        "artifact": "a7",
+                        "checker": "cargo",
+                        "passed": true
+                    }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(verified["status"], "ok", "{verified}");
+        let triggers = verified["body"]["revocation_triggers"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            triggers.iter().any(|item| item.as_str() == Some("operator retired the checker")),
+            "promoted revision must record operator revocation triggers: {verified}"
+        );
+    });
+}
+
+#[test]
+fn operator_policy_rejects_unknown_rule_names() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let conn = state.db.lock(&cx).await.unwrap();
+        let err = cortex_kernel::db::promotion::set_policy(
+            &conn,
+            &json!({
+                "schema": "promote-policy/1",
+                "rules": {
+                    "preferance": {"principals": ["solo"]}
+                }
+            }),
+        );
+        assert!(err.is_err(), "unknown rule names must fail closed: {err:?}");
+        let message = err.unwrap_err();
+        assert!(
+            message.contains("unknown rule"),
+            "fail-closed error must name the unknown rule: {message}"
+        );
+    });
+}
+
+#[test]
+fn operator_policy_rejects_unciteable_source_roles() {
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let conn = state.db.lock(&cx).await.unwrap();
+        for (roles, needle) in [
+            (json!(["delivery_only"]), "delivery_only"),
+            (json!(["not_a_role"]), "unknown role"),
+        ] {
+            let err = cortex_kernel::db::promotion::set_policy(
+                &conn,
+                &json!({
+                    "schema": "promote-policy/1",
+                    "commit_evidence": {"source_roles": roles}
+                }),
+            );
+            assert!(err.is_err(), "unciteable source_roles must fail closed: {err:?}");
+            let message = err.unwrap_err();
+            assert!(
+                message.contains(needle),
+                "fail-closed error must name the rejected role: {message}"
+            );
+        }
+    });
+}
+
+#[test]
+fn schema_init_creates_promotion_policy() {
+    let conn = cortex_tests::support::test_conn();
+    for table in ["promotion_policy", "decision_observation_evidence"] {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "initialize_schema must create {table}");
+    }
 }
