@@ -2,7 +2,7 @@
 
 Cortex is a private, local-first memory library for AI tools. `cortex-kernel` owns SQLite semantics; the `cortex` executable provides in-process CLI, hooks and MCP stdio. Asupersync owns runtime capabilities, locks, channels and timers. No HTTP listener or proxy is built. The separate Control Center and HTTP SDKs are legacy clients for earlier tagged releases, not clients of this runtime.
 
-Clock-Quorum Recall (CQR) is the explicit semantic engine (`cortex op`, `cortex boot`, MCP commit/query). Host hooks use the observation cycle: exact attributed capture and any-cue preparation. Observation does not promote captured prose into CQR facts. The daemon does not download, load, or run language, embedding, or reranking models. Older databases may still contain inert `embeddings` rows; they are not read. `~/.cortex/models` is neither required nor created.
+Clock-Quorum Recall (CQR) is the explicit semantic engine (`cortex op`, `cortex boot`, MCP commit/query). Host hooks use the observation cycle: exact attributed capture and any-cue preparation. Observation does not promote captured prose into CQR facts. An explicit `commit` may cite `obs:<id>` evidence in the same path identity; a sibling cite fails closed. Who may run a typed promote, which observation roles may be cited, and which revocation triggers are recorded live in operator-owned `promote-policy/1`; missing policy keeps the builtin defaults. The daemon does not download, load, or run language, embedding, or reranking models. Older databases may still contain inert `embeddings` rows; they are not read. `~/.cortex/models` is neither required nor created.
 
 Current version: **0.6.0**.
 
@@ -41,6 +41,20 @@ each one. Guides for users, developers and operators live in `docs/guides/`.
 Local process/file access is the trust boundary. Async APIs receive the host-owned `&asupersync::Cx`; cancellation errors propagate. Existing owner IDs still scope domain operations, but remote authentication and HTTP headers no longer exist.
 
 ---
+
+## Internal module boundaries
+
+The operation API stays in the kernel. The CLI parses input and renders output. Domain helpers keep these paths separate:
+
+| Path | Responsibility |
+|------|----------------|
+| `daemon/src/cli/capture.rs` and `capture/{source,host,learning}.rs` | Command dispatch, source input, host capture, and learning commands |
+| `kernel/src/handlers/operations/view/evidence.rs` | Required dependencies, contrary evidence, and counterexamples |
+| `kernel/src/handlers/recall/engine_{support,unfold}.rs` | Served-source deduplication and exact source expansion |
+| `kernel/src/db/compiled.rs` | Cache guard validation, reuse, and evaluation |
+| `kernel/src/runtime/associations/explain.rs` | Independent support and deterministic route ranking |
+
+Paths above are relative to `crates/`. These helpers are internal; CLI commands, public JSON formats, and visibility rules stay unchanged.
 
 ## Automatic observation cycle
 

@@ -21,6 +21,7 @@ Clock-Quorum Recall is the only production retrieval engine. The daemon no longe
 
 ### Changed
 
+- **Internal Rust structure**: separate capture commands, evidence closure, recall expansion, cache reuse, and association ranking. Keep public commands and JSON formats unchanged.
 - **Crate layout**: daemon sources live in `crates/daemon`; deterministic types live in `crates/logic`. Tests live in `tests/contracts/`. The Cargo package name remains `cortex-daemon`.
 - **Health**: `{engine:"clock-quorum", modelFree:true}`. sqlite-vec canary is force-off.
 - **Empty home**: does not create `~/.cortex/models`. `cortex embeddings status` is an inert-count shim; rebuild derived state with `cortex rebuild-anchors`.
