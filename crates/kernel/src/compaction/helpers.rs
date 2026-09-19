@@ -44,11 +44,7 @@ pub fn storage_breakdown(conn: &Connection) -> Vec<(String, i64)> {
     ];
     let mut breakdown = Vec::new();
     for table in &tables {
-        let count: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                row.get(0)
-            })
-            .unwrap_or(0);
+        let count = crate::db::count_or_zero(conn, &format!("SELECT COUNT(*) FROM {table}"));
         breakdown.push((table.to_string(), count));
     }
     breakdown

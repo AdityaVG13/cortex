@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 /// One failed destructive/maintenance operation.
 ///
@@ -11,6 +11,26 @@ use rusqlite::{params, Connection};
 pub struct MaintenanceFailure {
     pub op: String,
     pub error: String,
+}
+
+pub fn record_failure(
+    failures: &mut Vec<MaintenanceFailure>,
+    op: impl Into<String>,
+    error: impl ToString,
+) {
+    failures.push(MaintenanceFailure {
+        op: op.into(),
+        error: error.to_string(),
+    });
+}
+
+pub fn fail_zero(
+    failures: &mut Vec<MaintenanceFailure>,
+    op: impl Into<String>,
+    error: impl ToString,
+) -> usize {
+    record_failure(failures, op, error);
+    0
 }
 
 #[derive(Debug, Default)]
@@ -76,21 +96,27 @@ pub fn exec_counted(
     sql: &str,
     params: impl rusqlite::Params,
 ) -> usize {
+    exec_counted_named("compaction", conn, failures, op, sql, params)
+}
+
+pub fn exec_counted_named(
+    channel: &str,
+    conn: &Connection,
+    failures: &mut Vec<MaintenanceFailure>,
+    op: &str,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> usize {
     match conn.execute(sql, params) {
         Ok(n) => n,
         Err(err) => {
-            eprintln!("[compaction] {op} FAILED: {err}");
-            failures.push(MaintenanceFailure {
-                op: op.to_string(),
-                error: err.to_string(),
-            });
+            eprintln!("[{channel}] {op} FAILED: {err}");
+            record_failure(failures, op, err);
             0
         }
     }
 }
 
-/// Same contract as `exec_counted` for batch maintenance statements (VACUUM,
-/// wal_checkpoint) that return no row count.
 pub fn exec_batch_counted(
     conn: &Connection,
     failures: &mut Vec<MaintenanceFailure>,
@@ -99,25 +125,27 @@ pub fn exec_batch_counted(
 ) {
     if let Err(err) = conn.execute_batch(sql) {
         eprintln!("[compaction] {op} FAILED: {err}");
-        failures.push(MaintenanceFailure {
-            op: op.to_string(),
-            error: err.to_string(),
-        });
+        record_failure(failures, op, err);
     }
 }
 pub fn classify_storage_pressure(db_size_bytes: i64) -> &'static str {
-    if db_size_bytes >= STORAGE_HARD_LIMIT_BYTES {
-        "critical"
-    } else if db_size_bytes >= STORAGE_SOFT_LIMIT_BYTES {
-        "elevated"
-    } else {
-        "normal"
-    }
+    classify_pressure(
+        db_size_bytes,
+        STORAGE_HARD_LIMIT_BYTES,
+        STORAGE_SOFT_LIMIT_BYTES,
+    )
 }
 pub fn classify_event_pressure(nonboot_event_rows: i64) -> &'static str {
-    if nonboot_event_rows >= EVENT_NONBOOT_HARD_LIMIT_ROWS {
+    classify_pressure(
+        nonboot_event_rows,
+        EVENT_NONBOOT_HARD_LIMIT_ROWS,
+        EVENT_NONBOOT_SOFT_LIMIT_ROWS,
+    )
+}
+fn classify_pressure(value: i64, hard: i64, soft: i64) -> &'static str {
+    if value >= hard {
         "critical"
-    } else if nonboot_event_rows >= EVENT_NONBOOT_SOFT_LIMIT_ROWS {
+    } else if value >= soft {
         "elevated"
     } else {
         "normal"
@@ -157,350 +185,7 @@ pub fn fts_segment_row_total(conn: &Connection) -> i64 {
     }
     total
 }
-pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
-    run_compaction_governor_with_options(conn, true)
-}
-pub fn run_compaction_governor_startup(conn: &Connection) -> Option<CompactionResult> {
-    run_compaction_governor_with_options(conn, false)
-}
-pub fn run_compaction_governor_with_options(
-    conn: &Connection,
-    allow_vacuum: bool,
-) -> Option<CompactionResult> {
-    let startup_prune_limit = (!allow_vacuum).then_some(STARTUP_EVENT_PRUNE_BATCH_ROWS);
-    let before = db_size_bytes(conn);
-    let freelist_pages = freelist_count(conn);
-    let nonboot_event_rows_before = non_boot_event_count(conn);
-    let fts_segment_rows_before = fts_segment_row_total(conn);
-    let pressure_before = classify_storage_pressure(before);
-    if !should_run_compaction_governor_with_pressure(
-        before,
-        freelist_pages,
-        nonboot_event_rows_before,
-        fts_segment_rows_before,
-    ) {
-        return None;
-    }
-    let mut result = run_compaction_with_options(conn, allow_vacuum);
-    if before >= STORAGE_HARD_LIMIT_BYTES
-        || nonboot_event_rows_before >= EVENT_NONBOOT_HARD_LIMIT_ROWS
-    {
-        result.events_pruned += rollup_old_boot_savings_with_retention(
-            conn,
-            &mut result.failures,
-            AGGRESSIVE_BOOT_SAVINGS_RETENTION_DAYS,
-        );
-        result.events_pruned += rollup_old_savings_events(
-            conn,
-            &mut result.failures,
-            AGGRESSIVE_SAVINGS_EVENT_ROLLUP_RETENTION_DAYS,
-        );
-        result.events_pruned += prune_old_event_savings_rollups(
-            conn,
-            &mut result.failures,
-            AGGRESSIVE_EVENT_SAVINGS_ROLLUP_RETENTION_DAYS,
-        );
-        result.events_pruned += prune_old_events_with_retention_limit(
-            conn,
-            &mut result.failures,
-            AGGRESSIVE_EVENT_RETENTION_DAYS,
-            startup_prune_limit,
-        );
-        result.events_pruned += prune_event_type_caps_with_limit(
-            conn,
-            &mut result.failures,
-            EVENT_TYPE_HARD_CAPS,
-            startup_prune_limit,
-        );
-        result.events_pruned += prune_nonboot_event_overflow_with_limit(
-            conn,
-            &mut result.failures,
-            EVENT_NONBOOT_HARD_KEEP_ROWS,
-            startup_prune_limit,
-        );
-        result.benchmark_pruned += prune_old_benchmark_artifacts(
-            conn,
-            &mut result.failures,
-            AGGRESSIVE_BENCHMARK_RETENTION_DAYS,
-            allow_vacuum,
-        );
-        result.archived_text_stripped += strip_archived_text_with_retention(
-            conn,
-            &mut result.failures,
-            AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS,
-        );
-        result.cluster_members_pruned += prune_orphan_cluster_members(conn, &mut result.failures);
-        result.feedback_aggregated += aggregate_old_feedback_with_window(
-            conn,
-            &mut result.failures,
-            AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS,
-        );
-        let vacuum_sql = if allow_vacuum {
-            "PRAGMA wal_checkpoint(TRUNCATE); VACUUM;"
-        } else {
-            "PRAGMA wal_checkpoint(PASSIVE);"
-        };
-        exec_batch_counted(
-            conn,
-            &mut result.failures,
-            "governor aggressive checkpoint+VACUUM",
-            vacuum_sql,
-        );
-        result.bytes_after = db_size_bytes(conn);
-    }
-    let pressure_after = classify_storage_pressure(result.bytes_after);
-    let fts_segment_rows_after = fts_segment_row_total(conn);
-    eprintln!(
-        "[compaction] governor: pressure {} -> {}, size {}MB -> {}MB, nonboot_events {} -> {}, fts_segments {} -> {}",
-        pressure_before,
-        pressure_after,
-        bytes_to_mb(result.bytes_before),
-        bytes_to_mb(result.bytes_after),
-        nonboot_event_rows_before,
-        non_boot_event_count(conn),
-        fts_segment_rows_before,
-        fts_segment_rows_after,
-    );
-    if !result.failures.is_empty() {
-        eprintln!("[compaction] governor: {} destructive op(s) FAILED; see FAILED lines above, reported in CompactionResult.failures", result.failures.len());
-    }
-    Some(result)
-}
-pub fn run_compaction(conn: &Connection) -> CompactionResult {
-    run_compaction_with_options(conn, true)
-}
-pub fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> CompactionResult {
-    let startup_prune_limit = (!allow_vacuum).then_some(STARTUP_EVENT_PRUNE_BATCH_ROWS);
-    let mut result = CompactionResult {
-        bytes_before: db_size_bytes(conn),
-        ..CompactionResult::default()
-    };
-    result.events_pruned = rollup_old_boot_savings(conn, &mut result.failures);
-    result.events_pruned += rollup_old_savings_events(
-        conn,
-        &mut result.failures,
-        SAVINGS_EVENT_ROLLUP_RETENTION_DAYS,
-    );
-    result.events_pruned += prune_old_event_savings_rollups(
-        conn,
-        &mut result.failures,
-        EVENT_SAVINGS_ROLLUP_RETENTION_DAYS,
-    );
-    result.events_pruned += prune_old_events_with_retention_limit(
-        conn,
-        &mut result.failures,
-        EVENT_RETENTION_DAYS,
-        startup_prune_limit,
-    );
-    result.events_pruned += prune_event_type_caps_with_limit(
-        conn,
-        &mut result.failures,
-        EVENT_TYPE_SOFT_CAPS,
-        startup_prune_limit,
-    );
-    result.events_pruned += prune_nonboot_event_overflow_with_limit(
-        conn,
-        &mut result.failures,
-        EVENT_NONBOOT_SOFT_KEEP_ROWS,
-        startup_prune_limit,
-    );
-    result.benchmark_pruned = prune_old_benchmark_artifacts(
-        conn,
-        &mut result.failures,
-        BENCHMARK_RETENTION_DAYS,
-        allow_vacuum,
-    );
-    result.archived_text_stripped = strip_archived_text(conn, &mut result.failures);
-    result.expired_pruned = prune_expired_entries(conn, &mut result.failures);
-    result.crystal_embeddings_pruned = prune_crystal_member_embeddings(conn);
-    result.cluster_members_pruned = prune_orphan_cluster_members(conn, &mut result.failures);
-    result.feedback_aggregated = aggregate_old_feedback(conn, &mut result.failures);
-    result.stale_embeddings_pruned = prune_stale_embeddings(conn, &mut result.failures);
-    result.co_occurrence_pruned = prune_singleton_co_occurrence(conn, &mut result.failures);
-    result.legacy_embeddings_migrated = migrate_legacy_embeddings_to_pq8(conn);
-    result.fts_optimized = optimize_fts_indexes(conn, &mut result.failures);
-    checkpoint_after_compaction(conn, &mut result.failures, allow_vacuum);
-    let freelist_pages = freelist_count(conn);
-    let total_deleted = result.events_pruned
-        + result.benchmark_pruned
-        + result.archived_text_stripped
-        + result.expired_pruned
-        + result.crystal_embeddings_pruned
-        + result.feedback_aggregated
-        + result.stale_embeddings_pruned
-        + result.co_occurrence_pruned
-        + result.legacy_embeddings_migrated;
-    if allow_vacuum && (freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES || result.fts_optimized) {
-        exec_batch_counted(
-            conn,
-            &mut result.failures,
-            "post-compaction VACUUM",
-            "VACUUM;",
-        );
-    }
-    result.bytes_after = db_size_bytes(conn);
-    if total_deleted > 0 || result.fts_optimized {
-        let saved_kb = (result.bytes_before - result.bytes_after) / 1024;
-        eprintln!(
-"[compaction] Pruned: {} events, {} benchmark rows, {} archived texts, {} expired rows, {} crystal embeddings, {} orphan cluster members, {} feedback rows, {} stale embeddings, {} singleton co-occurrence pairs, {} legacy embeddings migrated; fts_optimized={}. Saved {}KB"
-,result.events_pruned,result.benchmark_pruned,result.archived_text_stripped,result.expired_pruned,result.crystal_embeddings_pruned
-,result.cluster_members_pruned,result.feedback_aggregated,result.stale_embeddings_pruned,result.co_occurrence_pruned,result.
-legacy_embeddings_migrated,result.fts_optimized,saved_kb);
-    }
-    if !result.failures.is_empty() {
-        eprintln!("[compaction] {} destructive op(s) FAILED; see FAILED lines above, reported in CompactionResult.failures", result.failures.len());
-    }
-    result
-}
-pub fn optimize_fts_indexes(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> bool {
-    let tables = ["decisions_fts", "memories_fts"];
-    let mut any = false;
-    for table in tables {
-        if !table_exists(conn, table) {
-            continue;
-        }
-        let sql = format!("INSERT INTO {table}({table}) VALUES ('optimize')");
-        match conn.execute_batch(&sql) {
-            Ok(()) => {
-                any = true;
-            }
-            Err(err) => {
-                eprintln!("[compaction] FTS optimize FAILED for {table}: {err}");
-                failures.push(MaintenanceFailure {
-                    op: format!("optimize_fts_indexes {table}"),
-                    error: err.to_string(),
-                });
-            }
-        }
-    }
-    any
-}
-pub fn table_exists(conn: &Connection, name: &str) -> bool {
-    conn.query_row(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ?1",
-        params![name],
-        |_| Ok(()),
-    )
-    .is_ok()
-}
-// Disabled stub (returns 0 unconditionally); params document the intended
-// contract and are only referenced from the unreachable body.
-#[allow(unused_variables)]
-pub fn prune_stale_embeddings(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
-    return 0;
-    #[allow(unreachable_code)]
-    let conn = conn;
-    let active = String::new();
-    let active_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM embeddings WHERE LOWER(model) = ?1",
-            params![active],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    if active_count < 50 {
-        return 0;
-    }
-    exec_counted(
-        conn,
-        failures,
-        "prune_stale_embeddings DELETE embeddings",
-        "DELETE FROM embeddings WHERE model IS NULL OR LOWER(model) != ?1",
-        params![active],
-    )
-}
-pub fn prune_singleton_co_occurrence(
-    conn: &Connection,
-    failures: &mut Vec<MaintenanceFailure>,
-) -> usize {
-    if !table_exists(conn, "co_occurrence") {
-        return 0;
-    }
-    exec_counted(
-        conn,
-        failures,
-        "prune_singleton_co_occurrence DELETE co_occurrence",
-        "DELETE FROM co_occurrence WHERE \"count\" <= 1",
-        [],
-    )
-}
-pub const PQ8_MIGRATION_BATCH: usize = 1024;
-pub fn migrate_legacy_embeddings_to_pq8(_conn: &Connection) -> usize {
-    0
-}
-
-pub fn migrate_legacy_blob_column_to_pq8(
-    _conn: &Connection,
-    _table: &str,
-    _column: &str,
-    _pk_column: &str,
-) -> usize {
-    return 0;
-    #[allow(unreachable_code)]
-    let conn = _conn;
-    let table = _table;
-    let column = _column;
-    let pk_column = _pk_column;
-    if !table_exists(conn, table) {
-        return 0;
-    }
-    let select_sql = format!(
-        "SELECT \"{pk}\", \"{col}\" FROM \"{tbl}\" \
-         WHERE \"{col}\" IS NOT NULL \
-           AND substr(\"{col}\", 1, 2) != ?1 \
-           AND (LENGTH(\"{col}\") % 4) = 0 \
-         LIMIT ?2",
-        pk = pk_column,
-        col = column,
-        tbl = table,
-    );
-    let mut stmt = match conn.prepare(&select_sql) {
-        Ok(stmt) => stmt,
-        Err(err) => {
-            eprintln!("[compaction] PQ8 migration prepare failed for {table}.{column}: {err}");
-            return 0;
-        }
-    };
-    return 0;
-    let magic_signature = vec![0u8, 0u8];
-    let candidates: Vec<(i64, Vec<u8>)> = match stmt.query_map(
-        params![magic_signature, PQ8_MIGRATION_BATCH as i64],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
-    ) {
-        Ok(rows) => rows.flatten().collect(),
-        Err(err) => {
-            eprintln!("[compaction] PQ8 migration query failed for {table}.{column}: {err}");
-            return 0;
-        }
-    };
-    drop(stmt);
-    if candidates.is_empty() {
-        return 0;
-    }
-    let update_sql = format!(
-        "UPDATE \"{tbl}\" SET \"{col}\" = ?1 WHERE \"{pk}\" = ?2",
-        pk = pk_column,
-        col = column,
-        tbl = table,
-    );
-    let mut migrated = 0usize;
-    for (id, blob) in candidates {
-        let decoded: Vec<f32> = Vec::new();
-        if decoded.is_empty() {
-            continue;
-        }
-        let pq8: Vec<u8> = Vec::new();
-        match conn.execute(&update_sql, params![pq8, id]) {
-            Ok(_) => migrated += 1,
-            Err(err) => {
-                eprintln!(
-                    "[compaction] PQ8 migration update failed for {table}.{column} id={id}: {err}"
-                );
-            }
-        }
-    }
-    migrated
-}
-pub fn purge_benchmark_artifacts(conn: &Connection) -> BenchmarkPurgeResult {
-    purge_benchmark_artifacts_with_retention(conn, None, true)
-}
+mod prune;
+pub use prune::*;
+mod run;
+pub use run::*;

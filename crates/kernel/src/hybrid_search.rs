@@ -11,14 +11,14 @@
 use std::collections::HashMap;
 
 #[cfg(feature = "hybrid-search")]
+use frankensearch::core::generation::EmbeddingIdentityBundleV1;
+#[cfg(feature = "hybrid-search")]
+use frankensearch::core::types::{BoundQueryEmbedding, TieredQueryEmbeddings};
+#[cfg(feature = "hybrid-search")]
 use frankensearch::{
     HashAlgorithm, HashEmbedder, InMemoryTwoTierIndex, InMemoryVectorIndex, ScoreSource,
     ScoredResult, SearchResult, SyncLexicalSearch, SyncTwoTierSearcher, TwoTierConfig,
 };
-#[cfg(feature = "hybrid-search")]
-use frankensearch::core::generation::EmbeddingIdentityBundleV1;
-#[cfg(feature = "hybrid-search")]
-use frankensearch::core::types::{BoundQueryEmbedding, TieredQueryEmbeddings};
 
 #[cfg(feature = "hybrid-search")]
 const EMBED_DIM: usize = 384;

@@ -1,7 +1,8 @@
 use super::*;
+use crate::db::ACTIVE_TEMPORAL_SQL;
 use crate::handlers::estimate_tokens;
 use regex::Regex;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::sync::OnceLock;
 pub fn content_hash(data: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -25,6 +26,15 @@ fn identity_edge_re() -> &'static Regex {
             .expect("static identity edge regex")
     })
 }
+
+fn take_matching(rows: &[(i64, String)], re: &Regex, n: usize, chars: usize) -> Vec<String> {
+    rows.iter()
+        .map(|(_, text)| text.as_str())
+        .filter(|t| re.is_match(t))
+        .take(n)
+        .map(|t| t.chars().take(chars).collect())
+        .collect()
+}
 pub fn cache_get(conn: &Connection, key: &str, expected_hash: &str) -> Option<(String, usize)> {
     let mut stmt = conn
         .prepare_cached(
@@ -32,10 +42,11 @@ pub fn cache_get(conn: &Connection, key: &str, expected_hash: &str) -> Option<(S
         )
         .ok()?;
     stmt.query_row(params![key], |row| {
-        let compressed: String = row.get(0)?;
-        let tokens: usize = row.get::<_, i64>(1)? as usize;
-        let stored_hash: String = row.get(2)?;
-        Ok((compressed, tokens, stored_hash))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)? as usize,
+            row.get::<_, String>(2)?,
+        ))
     })
     .ok()
     .and_then(|(compressed, tokens, stored_hash)| {
@@ -52,24 +63,11 @@ pub fn cache_get(conn: &Connection, key: &str, expected_hash: &str) -> Option<(S
     })
 }
 pub fn cache_set(conn: &Connection, key: &str, hash: &str, compressed: &str, tokens: usize) {
-    if let Ok(mut stmt) = conn.prepare_cached(
-        "INSERT OR REPLACE INTO context_cache (cache_key, content_hash, compressed, tokens) \
-         VALUES (?1, ?2, ?3, ?4)",
-    ) {
-        let _ = stmt.execute(params![key, hash, compressed, tokens as i64]);
-    }
+    if let Ok(mut stmt) = conn.prepare_cached("INSERT OR REPLACE INTO context_cache (cache_key, content_hash, compressed, tokens) VALUES (?1, ?2, ?3, ?4)") { let _ = stmt.execute(params![key, hash, compressed, tokens as i64]); }
 }
 fn identity_feedback_texts(conn: &Connection) -> Result<Vec<(i64, String)>, String> {
     let mem_scope = super::owner_clause(conn, "memories", super::boot_owner());
-    let mut stmt = conn
-        .prepare_cached(&format!(
-            "SELECT id, text FROM memories WHERE type = 'feedback' AND status = 'active' \
-         AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
-         AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
-         AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')){mem_scope} \
-         ORDER BY score DESC, id ASC LIMIT 20"
-        ))
-        .map_err(|err| err.to_string())?;
+    let mut stmt = conn.prepare_cached(&format!("SELECT id, text FROM memories WHERE type = 'feedback' AND {ACTIVE_TEMPORAL_SQL} {mem_scope} ORDER BY score DESC, id ASC LIMIT 20")).map_err(|err| err.to_string())?;
     let rows: Vec<(i64, String)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|err| err.to_string())?
@@ -117,25 +115,11 @@ pub fn build_identity_capsule(conn: &Connection) -> (String, usize) {
         return (cached, tokens);
     }
     let mut parts = vec![detect_identity()];
-    let constraint_re = identity_constraint_re();
-    let constraints: Vec<String> = rows
-        .iter()
-        .map(|(_, text)| text.as_str())
-        .filter(|t| constraint_re.is_match(t))
-        .take(5)
-        .map(|t| t.chars().take(120).collect::<String>())
-        .collect();
+    let constraints = take_matching(&rows, identity_constraint_re(), 5, 120);
     if !constraints.is_empty() {
         parts.push(format!("Rules: {}", constraints.join(" | ")));
     }
-    let edge_re = identity_edge_re();
-    let edges: Vec<String> = rows
-        .iter()
-        .map(|(_, text)| text.as_str())
-        .filter(|t| edge_re.is_match(t))
-        .take(3)
-        .map(|t| t.chars().take(100).collect::<String>())
-        .collect();
+    let edges = take_matching(&rows, identity_edge_re(), 3, 100);
     if !edges.is_empty() {
         parts.push(format!("Sharp edges: {}", edges.join(" | ")));
     }

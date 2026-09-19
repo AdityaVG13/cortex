@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 pub fn aggregate_old_feedback(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
     aggregate_old_feedback_with_window(conn, failures, FEEDBACK_AGGREGATION_DAYS)
 }
@@ -9,34 +9,18 @@ pub fn aggregate_old_feedback_with_window(
     aggregation_days: i64,
 ) -> usize {
     // Candidate SELECT stays fail-safe-swallowed: no candidates -> no deletes.
-    let sources: Vec<(String, f64, i64)> = conn
-        .prepare(
-            "SELECT result_source, SUM(signal), COUNT(*) \
-             FROM recall_feedback \
-             WHERE julianday('now') - julianday(NULLIF(TRIM(created_at), '')) > ?1 \
-             GROUP BY result_source HAVING COUNT(*) > 1",
-        )
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map(params![aggregation_days], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, f64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?;
-            Ok(rows.flatten().collect())
-        })
-        .unwrap_or_default();
+    let sources: Vec<(String, f64, i64)> = conn.prepare("SELECT result_source, SUM(signal), COUNT(*) FROM recall_feedback WHERE julianday('now') - julianday(NULLIF(TRIM(created_at), '')) > ?1 GROUP BY result_source HAVING COUNT(*) > 1").and_then(|mut stmt| Ok(stmt.query_map(params![aggregation_days], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, i64>(2)?)))?.flatten().collect())).unwrap_or_default();
     if sources.is_empty() {
         return 0;
     }
     let mut aggregated = 0usize;
     for (source, net_signal, _count) in &sources {
         let Ok(sp) = crate::db::SqliteSavepoint::enter(conn, "agg_fb") else {
-            failures.push(MaintenanceFailure {
-                op: "aggregate_old_feedback SAVEPOINT".into(),
-                error: "failed to enter savepoint".into(),
-            });
+            record_failure(
+                failures,
+                "aggregate_old_feedback SAVEPOINT",
+                "failed to enter savepoint",
+            );
             continue;
         };
         let deleted = exec_counted(
@@ -63,10 +47,7 @@ pub fn aggregate_old_feedback_with_window(
             continue;
         }
         if let Err(err) = sp.release() {
-            failures.push(MaintenanceFailure {
-                op: "aggregate_old_feedback RELEASE".into(),
-                error: err.to_string(),
-            });
+            record_failure(failures, "aggregate_old_feedback RELEASE", err);
             continue;
         }
         aggregated += deleted;
@@ -94,70 +75,44 @@ pub fn purge_benchmark_artifacts_with_retention(
     };
     let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
     let retention_window = retention_days.map(|days| format!("-{days} days"));
+    let retention = retention_window.as_deref();
+    let kind = if retention.is_some() {
+        "retention"
+    } else {
+        "full"
+    };
     exec_batch_counted(
         conn,
         &mut result.failures,
         "benchmark_purge temp table setup",
-        "DROP TABLE IF EXISTS temp._benchmark_decision_ids;
-         CREATE TEMP TABLE IF NOT EXISTS _benchmark_decision_ids (
-           id INTEGER PRIMARY KEY
-         );
-         DELETE FROM _benchmark_decision_ids;",
+        "DROP TABLE IF EXISTS temp._benchmark_decision_ids; CREATE TEMP TABLE IF NOT EXISTS _benchmark_decision_ids (id INTEGER PRIMARY KEY); DELETE FROM _benchmark_decision_ids;",
     );
-    match retention_window.as_deref() {
-        Some(window) => {
-            exec_counted(
-                conn,
-                &mut result.failures,
-                "benchmark_purge SELECT benchmark decision ids (retention)",
-                "INSERT INTO _benchmark_decision_ids (id) \
-                 SELECT id \
-                 FROM decisions \
-                 WHERE (LOWER(COALESCE(type, '')) = 'benchmark' \
-                        OR LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1)) \
-                   AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?2)",
-                params![benchmark_source_pattern.clone(), window],
-            );
-        }
-        None => {
-            exec_counted(
-                conn,
-                &mut result.failures,
-                "benchmark_purge SELECT benchmark decision ids (full)",
-                "INSERT INTO _benchmark_decision_ids (id) \
-                 SELECT id \
-                 FROM decisions \
-                 WHERE LOWER(COALESCE(type, '')) = 'benchmark' \
-                    OR LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1)",
-                params![benchmark_source_pattern.clone()],
-            );
-        }
-    }
+    exec_counted(
+        conn,
+        &mut result.failures,
+        &format!("benchmark_purge SELECT benchmark decision ids ({kind})"),
+        "INSERT INTO _benchmark_decision_ids (id) SELECT id FROM decisions WHERE (LOWER(COALESCE(type, '')) = 'benchmark' OR LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1)) AND (?2 IS NULL OR julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?2))",
+        params![benchmark_source_pattern.clone(), retention],
+    );
     result.decision_conflicts_deleted = exec_counted(
         conn,
         &mut result.failures,
         "benchmark_purge DELETE decision_conflicts",
-        "DELETE FROM decision_conflicts \
-         WHERE source_decision_id IN (SELECT id FROM _benchmark_decision_ids) \
-            OR target_decision_id IN (SELECT id FROM _benchmark_decision_ids)",
+        "DELETE FROM decision_conflicts WHERE source_decision_id IN (SELECT id FROM _benchmark_decision_ids) OR target_decision_id IN (SELECT id FROM _benchmark_decision_ids)",
         [],
     );
     result.embeddings_deleted = exec_counted(
         conn,
         &mut result.failures,
         "benchmark_purge DELETE embeddings",
-        "DELETE FROM embeddings \
-         WHERE target_type = 'decision' \
-           AND target_id IN (SELECT id FROM _benchmark_decision_ids)",
+        "DELETE FROM embeddings WHERE target_type = 'decision' AND target_id IN (SELECT id FROM _benchmark_decision_ids)",
         [],
     );
     result.cluster_members_deleted = exec_counted(
         conn,
         &mut result.failures,
         "benchmark_purge DELETE cluster_members",
-        "DELETE FROM cluster_members \
-         WHERE target_type = 'decision' \
-           AND target_id IN (SELECT id FROM _benchmark_decision_ids)",
+        "DELETE FROM cluster_members WHERE target_type = 'decision' AND target_id IN (SELECT id FROM _benchmark_decision_ids)",
         [],
     );
     result.cluster_members_deleted += prune_orphan_cluster_members(conn, &mut result.failures);
@@ -165,18 +120,14 @@ pub fn purge_benchmark_artifacts_with_retention(
         conn,
         &mut result.failures,
         "benchmark_purge DELETE recall_feedback",
-        "DELETE FROM recall_feedback \
-         WHERE result_source IN (SELECT 'decision::' || id FROM _benchmark_decision_ids) \
-            OR result_id IN (SELECT id FROM _benchmark_decision_ids)",
+        "DELETE FROM recall_feedback WHERE result_source IN (SELECT 'decision::' || id FROM _benchmark_decision_ids) OR result_id IN (SELECT id FROM _benchmark_decision_ids)",
         [],
     );
     result.co_occurrence_deleted = exec_counted(
         conn,
         &mut result.failures,
         "benchmark_purge DELETE co_occurrence",
-        "DELETE FROM co_occurrence \
-         WHERE source_a IN (SELECT 'decision::' || id FROM _benchmark_decision_ids) \
-            OR source_b IN (SELECT 'decision::' || id FROM _benchmark_decision_ids)",
+        "DELETE FROM co_occurrence WHERE source_a IN (SELECT 'decision::' || id FROM _benchmark_decision_ids) OR source_b IN (SELECT 'decision::' || id FROM _benchmark_decision_ids)",
         [],
     );
     result.decisions_deleted = exec_counted(
@@ -190,59 +141,23 @@ pub fn purge_benchmark_artifacts_with_retention(
         conn,
         &mut result.failures,
         "benchmark_purge DELETE events (decision_stored)",
-        "DELETE FROM events \
-         WHERE type = 'decision_stored' \
-           AND CAST(COALESCE(json_extract(data, '$.id'), 0) AS INTEGER) IN (SELECT id FROM _benchmark_decision_ids)",
+        "DELETE FROM events WHERE type = 'decision_stored' AND CAST(COALESCE(json_extract(data, '$.id'), 0) AS INTEGER) IN (SELECT id FROM _benchmark_decision_ids)",
         [],
     );
-    match retention_window.as_deref() {
-        Some(window) => {
-            result.recall_feedback_deleted += exec_counted(
-                conn,
-                &mut result.failures,
-                "benchmark_purge DELETE recall_feedback (retention)",
-                "DELETE FROM recall_feedback \
-                 WHERE (LOWER(COALESCE(agent, '')) LIKE LOWER(?1) \
-                        OR LOWER(COALESCE(result_source, '')) LIKE LOWER(?1)) \
-                   AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?2)",
-                params![benchmark_source_pattern.clone(), window],
-            );
-            result.events_deleted += exec_counted(
-                conn,
-                &mut result.failures,
-                "benchmark_purge DELETE events (retention)",
-                "DELETE FROM events \
-                 WHERE (LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1) \
-                        OR LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) LIKE LOWER(?1) \
-                        OR LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE LOWER(?1) \
-                        OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark') \
-                   AND julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?2)",
-                params![benchmark_source_pattern.clone(), window],
-            );
-        }
-        None => {
-            result.recall_feedback_deleted += exec_counted(
-                conn,
-                &mut result.failures,
-                "benchmark_purge DELETE recall_feedback (full)",
-                "DELETE FROM recall_feedback \
-                 WHERE LOWER(COALESCE(agent, '')) LIKE LOWER(?1) \
-                    OR LOWER(COALESCE(result_source, '')) LIKE LOWER(?1)",
-                params![benchmark_source_pattern.clone()],
-            );
-            result.events_deleted += exec_counted(
-                conn,
-                &mut result.failures,
-                "benchmark_purge DELETE events (full)",
-                "DELETE FROM events \
-                 WHERE LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1) \
-                    OR LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) LIKE LOWER(?1) \
-                    OR LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE LOWER(?1) \
-                    OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark'",
-                params![benchmark_source_pattern.clone()],
-            );
-        }
-    }
+    result.recall_feedback_deleted += exec_counted(
+        conn,
+        &mut result.failures,
+        &format!("benchmark_purge DELETE recall_feedback ({kind})"),
+        "DELETE FROM recall_feedback WHERE (LOWER(COALESCE(agent, '')) LIKE LOWER(?1) OR LOWER(COALESCE(result_source, '')) LIKE LOWER(?1)) AND (?2 IS NULL OR julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?2))",
+        params![benchmark_source_pattern.clone(), retention],
+    );
+    result.events_deleted += exec_counted(
+        conn,
+        &mut result.failures,
+        &format!("benchmark_purge DELETE events ({kind})"),
+        "DELETE FROM events WHERE (LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1) OR LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) LIKE LOWER(?1) OR LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE LOWER(?1) OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark') AND (?2 IS NULL OR julianday(NULLIF(TRIM(created_at), '')) < julianday('now', ?2))",
+        params![benchmark_source_pattern.clone(), retention],
+    );
     exec_batch_counted(
         conn,
         &mut result.failures,
@@ -255,16 +170,13 @@ pub fn purge_benchmark_artifacts_with_retention(
         "benchmark_purge wal_checkpoint",
         "PRAGMA wal_checkpoint(TRUNCATE);",
     );
-    if allow_vacuum {
-        let freelist_pages = freelist_count(conn);
-        if freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES {
-            exec_batch_counted(
-                conn,
-                &mut result.failures,
-                "benchmark_purge VACUUM",
-                "VACUUM;",
-            );
-        }
+    if allow_vacuum && freelist_count(conn) > VACUUM_FREELIST_THRESHOLD_PAGES {
+        exec_batch_counted(
+            conn,
+            &mut result.failures,
+            "benchmark_purge VACUUM",
+            "VACUUM;",
+        );
     }
     result.bytes_after = db_size_bytes(conn);
     if !result.failures.is_empty() {

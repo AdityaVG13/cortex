@@ -11,11 +11,6 @@ pub use crystals::*;
 pub use events::*;
 pub use feedback::*;
 pub use governor::*;
-pub use governor::{
-    purge_benchmark_artifacts, run_compaction, run_compaction_governor,
-    run_compaction_governor_startup, BenchmarkPurgeResult, MaintenanceFailure,
-};
-pub use helpers::storage_breakdown;
 /// Cold-move pass with an explicit retention window (contract seam).
 pub fn strip_archived_text_with_retention_for_test(
     conn: &rusqlite::Connection,

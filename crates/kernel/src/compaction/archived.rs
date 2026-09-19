@@ -1,5 +1,6 @@
 use super::*;
-use rusqlite::{params, Connection};
+use crate::db::{EXPIRED_SQL, UPDATED_CREATED_STAMP_SQL};
+use rusqlite::{Connection, params};
 pub fn strip_archived_text(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
     strip_archived_text_with_retention(conn, failures, ARCHIVED_TEXT_RETENTION_DAYS)
 }
@@ -28,7 +29,7 @@ pub fn strip_archived_text_with_retention(
         ),
     ] {
         let sql = format!(
-            "SELECT id FROM {table} WHERE {status_clause} AND {text_col} NOT LIKE '[cold:%' AND {text_col} != '[compacted]' AND julianday('now') - julianday(COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))) > ?1 ORDER BY id LIMIT 500"
+            "SELECT id FROM {table} WHERE {status_clause} AND {text_col} NOT LIKE '[cold:%' AND {text_col} != '[compacted]' AND julianday('now') - julianday({UPDATED_CREATED_STAMP_SQL}) > ?1 ORDER BY id LIMIT 500"
         );
         let ids: Vec<i64> = match conn.prepare(&sql).and_then(|mut stmt| {
             stmt.query_map(params![retention_days], |r| r.get::<_, i64>(0))
@@ -61,27 +62,24 @@ pub fn prune_expired_entries(conn: &Connection, failures: &mut Vec<MaintenanceFa
         conn,
         failures,
         "prune_expired_entries DELETE memories",
-        "DELETE FROM memories WHERE expires_at IS NOT NULL AND TRIM(expires_at) != '' AND julianday(expires_at) < julianday('now')",
+        &format!("DELETE FROM memories WHERE {EXPIRED_SQL}"),
         [],
     );
     let decisions_deleted = exec_counted(
         conn,
         failures,
         "prune_expired_entries DELETE decisions",
-        "DELETE FROM decisions WHERE expires_at IS NOT NULL AND TRIM(expires_at) != '' AND julianday(expires_at) < julianday('now')",
+        &format!("DELETE FROM decisions WHERE {EXPIRED_SQL}"),
         [],
     );
     let count = memories_deleted + decisions_deleted;
     if count > 0 {
-        let payload = serde_json::json!({"memories_deleted":memories_deleted,
-"decisions_deleted":decisions_deleted,})
-        .to_string();
+        let payload = serde_json::json!({"memories_deleted":memories_deleted,"decisions_deleted":decisions_deleted,}).to_string();
         exec_counted(
             conn,
             failures,
             "prune_expired_entries INSERT expired_entries_pruned event",
-            "INSERT INTO events (type, data, source_agent, created_at) \
-             VALUES ('expired_entries_pruned', ?1, 'compaction', datetime('now'))",
+            "INSERT INTO events (type, data, source_agent, created_at) VALUES ('expired_entries_pruned', ?1, 'compaction', datetime('now'))",
             params![payload],
         );
     }

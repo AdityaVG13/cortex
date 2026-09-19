@@ -1,7 +1,8 @@
 use super::*;
 use crate::handlers::estimate_tokens;
+use crate::protocol::nonempty_opt;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RankComponents {
     pub class_score: f64,
@@ -56,11 +57,8 @@ pub fn retention_class_score(retention_class: &str) -> f64 {
 /// Blank TEXT is not NULL. `Option::or` sticks on `Some("")` / whitespace,
 /// so boot recency treated a just-created row with empty `updated_at` as
 /// ancient. Skip blanks the same way aging/cold-move fall through.
-fn nonempty_stamp(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|s| !s.is_empty())
-}
 pub fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
-    let value = nonempty_stamp(value)?;
+    let value = nonempty_opt(value)?;
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
         .ok()
@@ -91,8 +89,8 @@ pub fn activity_score(retrievals: i64, last_accessed: Option<&str>, now: DateTim
     (retrieval_score * 0.55) + (access_score * 0.45)
 }
 pub fn rank_components_for(candidate: &RankedCandidate, now: DateTime<Utc>) -> RankComponents {
-    let timestamp = nonempty_stamp(candidate.updated_at.as_deref())
-        .or_else(|| nonempty_stamp(candidate.created_at.as_deref()));
+    let timestamp = nonempty_opt(candidate.updated_at.as_deref())
+        .or_else(|| nonempty_opt(candidate.created_at.as_deref()));
     let class_score = retention_class_score(&candidate.retention_class);
     let recency_score = recency_score(timestamp, now);
     let relevance_score = clamp01(candidate.relevance);
@@ -144,21 +142,8 @@ pub fn rank_candidates(
     candidates
 }
 pub fn rank_audit_json(audit: &RankAudit) -> Value {
-    json!({
-        "sourceKind": audit.source_kind,
-        "sourceId": audit.source_id,
-        "retentionClass": audit.retention_class,
-        "trustSigil": audit.trust_sigil,
-        "validFrom": audit.valid_from,
-        "validUntil": audit.valid_until,
-        "rankComponents": {
-            "class": (audit.components.class_score * 10000.0).round() / 10000.0,
-            "recency": (audit.components.recency_score * 10000.0).round() / 10000.0,
-            "relevance": (audit.components.relevance_score * 10000.0).round() / 10000.0,
-            "activity": (audit.components.activity_score * 10000.0).round() / 10000.0,
-            "total": (audit.components.total_score * 10000.0).round() / 10000.0
-        }
-    })
+    let r4 = |x: f64| (x * 10000.0).round() / 10000.0;
+    json!({"sourceKind":audit.source_kind,"sourceId":audit.source_id,"retentionClass":audit.retention_class,"trustSigil":audit.trust_sigil,"validFrom":audit.valid_from,"validUntil":audit.valid_until,"rankComponents":{"class":r4(audit.components.class_score),"recency":r4(audit.components.recency_score),"relevance":r4(audit.components.relevance_score),"activity":r4(audit.components.activity_score),"total":r4(audit.components.total_score)}})
 }
 pub fn fact_trust_sigil(status: &str, confirmed_by: Option<&str>) -> &'static str {
     if status == "disputed" {
@@ -203,11 +188,9 @@ pub struct ContextItem {
 impl ContextItem {
     pub fn new(name: &str, text: String, priority: f64) -> Self {
         let tokens = estimate_tokens(&text);
-        let utility = if tokens > 0 {
-            priority / (tokens as f64)
-        } else {
-            0.0
-        };
+        let utility = (tokens > 0)
+            .then(|| priority / tokens as f64)
+            .unwrap_or(0.0);
         Self {
             name: name.to_string(),
             text,
@@ -262,10 +245,9 @@ pub struct SourceTokenBounds {
 }
 impl SourceTokenBounds {
     pub fn new(min: usize, max: usize) -> Self {
-        let min = min.max(1);
         Self {
-            min,
-            max: max.max(min),
+            min: min.max(1),
+            max: max.max(min.max(1)),
         }
     }
 }
