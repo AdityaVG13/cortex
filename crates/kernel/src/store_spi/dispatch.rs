@@ -8,6 +8,24 @@ use super::sqlite::{SqliteSnapshot, SqliteStore, SqliteTx};
 use super::*;
 use crate::protocol::{Frontier, LogicalId, Receipt};
 
+macro_rules! each_provider {
+    ($this:expr, $method:ident $(, $arg:expr)* $(,)?) => {
+        match $this {
+            Self::Sqlite(inner) => inner.$method($($arg),*),
+            Self::Memory(inner) => inner.$method($($arg),*),
+        }
+    };
+}
+
+macro_rules! each_provider_map {
+    ($this:expr, $wrap:ident, $method:ident $(, $arg:expr)* $(,)?) => {
+        match $this {
+            Self::Sqlite(inner) => inner.$method($($arg),*).map($wrap::Sqlite),
+            Self::Memory(inner) => inner.$method($($arg),*).map($wrap::Memory),
+        }
+    };
+}
+
 pub enum StoreHandle {
     Sqlite(SqliteStore),
     Memory(MemoryStore),
@@ -55,16 +73,10 @@ impl StoreHandle {
 
 impl ReadSnapshot for SnapshotHandle<'_> {
     fn frontier(&self) -> &Frontier {
-        match self {
-            Self::Sqlite(s) => s.frontier(),
-            Self::Memory(s) => s.frontier(),
-        }
+        each_provider!(self, frontier)
     }
     fn get(&self, refs: &[LogicalId]) -> Result<Vec<Row>, StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.get(refs),
-            Self::Memory(s) => s.get(refs),
-        }
+        each_provider!(self, get, refs)
     }
     fn scan(
         &self,
@@ -72,10 +84,7 @@ impl ReadSnapshot for SnapshotHandle<'_> {
         continuation: Option<&str>,
         limits: ScanLimits,
     ) -> Result<Page, StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.scan(predicate, continuation, limits),
-            Self::Memory(s) => s.scan(predicate, continuation, limits),
-        }
+        each_provider!(self, scan, predicate, continuation, limits)
     }
     fn candidates(
         &self,
@@ -83,31 +92,19 @@ impl ReadSnapshot for SnapshotHandle<'_> {
         keys: &[String],
         limits: ScanLimits,
     ) -> Result<Page, StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.candidates(profile, keys, limits),
-            Self::Memory(s) => s.candidates(profile, keys, limits),
-        }
+        each_provider!(self, candidates, profile, keys, limits)
     }
 }
 
 impl WriteTransaction for TxHandle<'_> {
     fn apply(&mut self, op: Op) -> Result<(), StoreSpiError> {
-        match self {
-            Self::Sqlite(t) => t.apply(op),
-            Self::Memory(t) => t.apply(op),
-        }
+        each_provider!(self, apply, op)
     }
     fn commit(self, durability: Durability) -> Result<Receipt, StoreSpiError> {
-        match self {
-            Self::Sqlite(t) => t.commit(durability),
-            Self::Memory(t) => t.commit(durability),
-        }
+        each_provider!(self, commit, durability)
     }
     fn abort(self) {
-        match self {
-            Self::Sqlite(t) => t.abort(),
-            Self::Memory(t) => t.abort(),
-        }
+        each_provider!(self, abort)
     }
 }
 
@@ -115,44 +112,26 @@ impl BrainStore for StoreHandle {
     type Snapshot<'a> = SnapshotHandle<'a>;
     type Tx<'a> = TxHandle<'a>;
     fn read_snapshot(&self) -> Result<SnapshotHandle<'_>, StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.read_snapshot().map(SnapshotHandle::Sqlite),
-            Self::Memory(s) => s.read_snapshot().map(SnapshotHandle::Memory),
-        }
+        each_provider_map!(self, SnapshotHandle, read_snapshot)
     }
     fn begin_write(&mut self, intent: WriteIntent) -> Result<TxHandle<'_>, StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.begin_write(intent).map(TxHandle::Sqlite),
-            Self::Memory(s) => s.begin_write(intent).map(TxHandle::Memory),
-        }
+        each_provider_map!(self, TxHandle, begin_write, intent)
     }
     fn read_changes(
         &self,
         after: &Frontier,
         limit: u32,
     ) -> Result<(Vec<Change>, Frontier), StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.read_changes(after, limit),
-            Self::Memory(s) => s.read_changes(after, limit),
-        }
+        each_provider!(self, read_changes, after, limit)
     }
     fn export_snapshot(&self, destination: &std::path::Path) -> Result<(), StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.export_snapshot(destination),
-            Self::Memory(s) => s.export_snapshot(destination),
-        }
+        each_provider!(self, export_snapshot, destination)
     }
     fn diagnose(&self) -> Result<Diagnosis, StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.diagnose(),
-            Self::Memory(s) => s.diagnose(),
-        }
+        each_provider!(self, diagnose)
     }
     fn maintain_slice(&mut self, max_work_units: u64) -> Result<u64, StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.maintain_slice(max_work_units),
-            Self::Memory(s) => s.maintain_slice(max_work_units),
-        }
+        each_provider!(self, maintain_slice, max_work_units)
     }
     fn replay(
         &self,
@@ -160,10 +139,7 @@ impl BrainStore for StoreHandle {
         key: &str,
         canonical_ops: &[Op],
     ) -> Result<Option<Receipt>, StoreSpiError> {
-        match self {
-            Self::Sqlite(s) => s.replay(principal, key, canonical_ops),
-            Self::Memory(s) => s.replay(principal, key, canonical_ops),
-        }
+        each_provider!(self, replay, principal, key, canonical_ops)
     }
 }
 

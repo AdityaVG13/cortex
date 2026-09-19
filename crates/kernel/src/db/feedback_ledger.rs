@@ -5,22 +5,12 @@
 //! can never lower authorization, erase, relabel as verified or withhold a
 //! constraint.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-pub const DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS outcome_feedback (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  scope TEXT NOT NULL DEFAULT 'default', task_family TEXT NOT NULL DEFAULT 'general',
-  task TEXT, prior_view_receipt TEXT, selected_action TEXT,
-  outcome TEXT NOT NULL CHECK(outcome IN ('success','partial','failure')),
-  exposed_json TEXT NOT NULL DEFAULT '[]', used_json TEXT NOT NULL DEFAULT '[]',
-  harmful_reuse INTEGER NOT NULL DEFAULT 0, wrong_scope INTEGER NOT NULL DEFAULT 0,
-  agent TEXT NOT NULL, recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-"#;
+pub const DDL: &str = "CREATE TABLE IF NOT EXISTS outcome_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL DEFAULT 'default', task_family TEXT NOT NULL DEFAULT 'general', task TEXT, prior_view_receipt TEXT, selected_action TEXT, outcome TEXT NOT NULL CHECK(outcome IN ('success','partial','failure')), exposed_json TEXT NOT NULL DEFAULT '[]', used_json TEXT NOT NULL DEFAULT '[]', harmful_reuse INTEGER NOT NULL DEFAULT 0, wrong_scope INTEGER NOT NULL DEFAULT 0, agent TEXT NOT NULL, recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));";
 
 pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(DDL)
@@ -64,23 +54,7 @@ pub fn record(conn: &Connection, fb: &OutcomeFeedback) -> Result<i64, String> {
     };
     let exposed_json = serde_json::to_string(&fb.exposed).map_err(|e| e.to_string())?;
     let used_json = serde_json::to_string(&fb.used).map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO outcome_feedback (scope, task_family, task, prior_view_receipt, selected_action, outcome, exposed_json, used_json, harmful_reuse, wrong_scope, agent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            if fb.scope.is_empty() { "default" } else { &fb.scope },
-            if fb.task_family.is_empty() { "general" } else { &fb.task_family },
-            fb.task,
-            fb.prior_view_receipt,
-            fb.selected_action,
-            outcome,
-            exposed_json,
-            used_json,
-            fb.harmful_reuse as i64,
-            fb.wrong_scope as i64,
-            fb.agent
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO outcome_feedback (scope, task_family, task, prior_view_receipt, selected_action, outcome, exposed_json, used_json, harmful_reuse, wrong_scope, agent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)", params![if fb.scope.is_empty() { "default" } else { &fb.scope }, if fb.task_family.is_empty() { "general" } else { &fb.task_family }, fb.task, fb.prior_view_receipt, fb.selected_action, outcome, exposed_json, used_json, fb.harmful_reuse as i64, fb.wrong_scope as i64, fb.agent]).map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
 }
 
@@ -116,9 +90,7 @@ pub fn family_stats(
     task_family: &str,
 ) -> Result<FamilyStats, String> {
     ensure(conn).map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT outcome, exposed_json, used_json, harmful_reuse, wrong_scope FROM outcome_feedback WHERE scope = ?1 AND task_family = ?2")
-        .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT outcome, exposed_json, used_json, harmful_reuse, wrong_scope FROM outcome_feedback WHERE scope = ?1 AND task_family = ?2").map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![scope, task_family], |r| {
             Ok((

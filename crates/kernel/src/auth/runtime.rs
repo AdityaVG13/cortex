@@ -1,5 +1,5 @@
 use super::keys::cortex_dir;
-use super::paths::{CortexPaths, BASE62};
+use super::paths::{BASE62, CortexPaths};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -35,10 +35,10 @@ fn read_pid_file(path: &Path) -> Option<String> {
 /// exclusion; this file is the documented, inspectable gate.
 pub fn write_pid_file(paths: &CortexPaths) -> Result<(), String> {
     fs::create_dir_all(&paths.home).map_err(|e| format!("create home: {e}"))?;
-    let mut file = open_pid_nofollow(&paths.pid, true)
-        .map_err(|e| format!("write {}: {e}", paths.pid.display()))?;
+    let err = |e| format!("write {}: {e}", paths.pid.display());
+    let mut file = open_pid_nofollow(&paths.pid, true).map_err(err)?;
     file.write_all(format!("{}\n", std::process::id()).as_bytes())
-        .map_err(|e| format!("write {}: {e}", paths.pid.display()))
+        .map_err(err)
 }
 
 /// Remove `path` only when it still records `expected`.
@@ -98,12 +98,14 @@ pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
     let _lock = super::locks::acquire_daemon_lock(paths).ok()?;
     cleanup_stale_pid_file(paths)
 }
+fn recorded_pid(paths: &CortexPaths) -> Option<u32> {
+    read_pid_file(&paths.pid)?.trim().parse::<u32>().ok()
+}
+fn pid_is_this_or_running(pid: u32) -> bool {
+    pid == std::process::id() || process_is_running(pid)
+}
 pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
-    let pid = read_pid_file(&paths.pid)?.trim().parse::<u32>().ok()?;
-    if pid == std::process::id() || process_is_running(pid) {
-        return None;
-    }
-    Some(pid)
+    recorded_pid(paths).filter(|pid| !pid_is_this_or_running(*pid))
 }
 
 /// Returns the pid recorded in the daemon pid file while that process is
@@ -112,11 +114,7 @@ pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
 /// `stale_pid_candidate`; used by destructive CLI paths (`cortex restore`)
 /// that must refuse while a daemon may be running.
 pub fn pid_file_live_pid(paths: &CortexPaths) -> Option<u32> {
-    let pid = read_pid_file(&paths.pid)?.trim().parse::<u32>().ok()?;
-    if pid == std::process::id() || process_is_running(pid) {
-        return Some(pid);
-    }
-    None
+    recorded_pid(paths).filter(|pid| pid_is_this_or_running(*pid))
 }
 /// True when `pid` names a live process. Pid 0 is never a recorded daemon
 /// (POSIX `kill(0, ·)` is process-group; Windows 0 is the Idle process), so

@@ -1,0 +1,457 @@
+use std::fs;
+use std::io;
+use std::path::Path;
+
+// K1-K9 cluster: (A) STRICTLY_UNAVOIDABLE. Owner-only DACL on a secret file
+// is a Win32 token/ACL FFI surface. Unavoidable BECAUSE HANDLE / PSID / ACL
+// pointers and the C ABI are outside Rust's type system (Nomicon § FFI
+// https://doc.rust-lang.org/nomicon/ffi.html ; Reference § External blocks
+// https://doc.rust-lang.org/reference/items/external-blocks.html ; canonical
+// unavoidable §2: nix/rustix/windows crates bottom out in the same unsafe).
+// Cluster alternatives FAIL: (1) std::fs::Permissions -- Windows std has no
+// owner-SID DACL; (2) skip ACL -- not equivalent to unix 0o600
+// restrict_file_to_owner; (3) windows-acl / `windows` crate -- convenience
+// wrap of the same FFI, not a safe language form.
+// Safe facade: `restrict_file_to_owner` is the only crate-visible entry and
+// holds no raw HANDLE / ACL. OwnedHandle / LocalMemory Drop are the only
+// CloseHandle / LocalFree sites. Inner K1-K5 and K8-K9 stay (A) FFI.
+// K6-K7 are safe reads of the K5-filled TOKEN_USER buffer (PSID at offset 0;
+// documented IsValidSid checks: SID_REVISION and SubAuthorityCount).
+//
+// FFI boundary contract (60-FFI-PATTERNS):
+// C/Win32 promises: OpenProcessToken, GetTokenInformation, and CloseHandle are
+// BOOL APIs (0 = failure). BOOL failures convey GetLastError, which is
+// per-thread and valid only until the next Win32 call on this thread.
+// SetEntriesInAclW and SetNamedSecurityInfoW return a DWORD Win32 code
+// (ERROR_SUCCESS or a WinError.h value); do not call GetLastError for those.
+// None of these APIs callback into Rust, longjmp, or unwind through Rust
+// frames. GetCurrentProcess is a non-owning pseudo-handle and must never be
+// CloseHandle'd. SetNamedSecurityInfoW copies DACL data; it does not take
+// ownership of the ACL pointer. TOKEN_USER / EXPLICIT_ACCESS_W / TRUSTEE_W /
+// ACL are windows_sys #[repr(C)] layouts; SID bytes in the token buffer are
+// little-endian (Win32). SID validation is a safe in-buffer parse (Revision
+// == SID_REVISION and SubAuthorityCount <= 15), matching the documented
+// IsValidSid contract without a Win32 call.
+// Rust promises: `restrict_file_to_owner` is the thin safe wrapper (F-1).
+// Paths become UTF-16 with a trailing NUL and no interior NUL. This crate
+// calls Win32; Win32 never calls back, so catch_unwind at an extern-"C" entry
+// (F-3) does not apply. Between a BOOL FFI call and last_os_error() there is
+// no other FFI and no panic. DWORD APIs map via win32_error(result).
+// Handle / heap ownership: OpenProcessToken's HANDLE is owned by OwnedHandle
+// (take on success; adopt on failure so a closeable write cannot leak).
+// SetEntriesInAclW's ACL is LocalAlloc memory owned by LocalMemory, adopt()'d
+// before the error branch so LocalFree runs on success, error, and unwind.
+// Panic-in-Drop: OwnedHandle / LocalMemory Drop null the field first, then
+// CloseHandle / LocalFree, discard the return, and never call last_os_error
+// (Drop cannot surface an error; a second FFI in Drop would clobber a pending
+// GetLastError). Drop is non-panicking.
+// Thread safety: these calls are safe on distinct objects; GetLastError is
+// per-thread; the facade holds no shared state.
+fn handle_is_closeable(handle: windows_sys::Win32::Foundation::HANDLE) -> bool {
+    !handle.is_null() && handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+}
+struct OwnedHandle(windows_sys::Win32::Foundation::HANDLE);
+impl OwnedHandle {
+    fn adopt(handle: windows_sys::Win32::Foundation::HANDLE) -> Self {
+        Self(handle)
+    }
+    fn take(handle: windows_sys::Win32::Foundation::HANDLE) -> io::Result<Self> {
+        if !handle_is_closeable(handle) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows returned an invalid process token handle",
+            ));
+        }
+        Ok(Self(handle))
+    }
+    fn as_raw(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        self.0
+    }
+}
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        let handle = std::mem::replace(&mut self.0, std::ptr::null_mut());
+        if !handle_is_closeable(handle) {
+            return;
+        }
+        // SAFETY (K1, A): `handle` is a process-token HANDLE this wrapper
+        // obtained from OpenProcessToken and owns exclusively. Null and
+        // INVALID_HANDLE_VALUE were rejected. CloseHandle is the documented
+        // destructor; Drop cannot surface the BOOL, so the result is discarded.
+        // The field is nulled first so a second Drop cannot CloseHandle twice.
+        // Win32 CloseHandle: BOOL, no callback, no longjmp, no unwind. Drop is
+        // non-panicking and does not call last_os_error (panic-in-Drop
+        // forbidden; a GetLastError read here would also clobber a pending
+        // error from the thread that is dropping us).
+        // Unavoidable BECAUSE HANDLE close is Win32 FFI (Nomicon § FFI).
+        // Alternatives FAIL: (1) leak -- handle exhaustion, not equivalent;
+        // (2) std OwnedHandle::from_raw_handle -- still unsafe, same
+        // obligation; (3) skip Drop -- leaks the token opened at K3.
+        unsafe {
+            let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
+        }
+    }
+}
+struct LocalMemory(*mut std::ffi::c_void);
+impl LocalMemory {
+    fn adopt(ptr: *mut std::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+    fn as_acl(&self) -> *const windows_sys::Win32::Security::ACL {
+        self.0.cast()
+    }
+}
+impl Drop for LocalMemory {
+    fn drop(&mut self) {
+        let ptr = std::mem::replace(&mut self.0, std::ptr::null_mut());
+        if ptr.is_null() {
+            return;
+        }
+        // SAFETY (K2, A): `ptr` is the ACL pointer SetEntriesInAclW
+        // returned. Win32 allocates that ACL with LocalAlloc and requires
+        // LocalFree. Non-null was checked; we own the pointer. The field
+        // is nulled first so a second Drop cannot LocalFree twice.
+        // Win32 LocalFree: matching deallocator for that LocalAlloc, no
+        // callback, no longjmp, no unwind. Drop is non-panicking: the return
+        // is discarded and last_os_error is not called (panic-in-Drop;
+        // would also clobber a pending GetLastError).
+        // Unavoidable BECAUSE LocalAlloc heap identity is not the Rust
+        // allocator (Nomicon § FFI).
+        // Alternatives FAIL: (1) leak -- LocalAlloc leak, not equivalent;
+        // (2) Box/Vec drop -- wrong heap, UB; (3) GlobalFree/HeapFree --
+        // wrong Win32 heap, UB.
+        unsafe {
+            let _ = windows_sys::Win32::Foundation::LocalFree(ptr);
+        }
+    }
+}
+struct CurrentUserSid {
+    _token_info: Vec<usize>,
+    sid: std::ptr::NonNull<std::ffi::c_void>,
+}
+fn windows_path_to_wide(path: &Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows path contains an interior NUL",
+        ));
+    }
+    wide.push(0);
+    Ok(wide)
+}
+fn win32_error(code: u32) -> io::Error {
+    io::Error::from_raw_os_error(code as i32)
+}
+/// Little-endian byte from a `Vec<usize>` token buffer. Win32 writes the
+/// in-memory SID as bytes; Windows hosts are little-endian.
+fn token_info_le_byte(words: &[usize], offset: usize) -> Option<u8> {
+    let word_size = std::mem::size_of::<usize>();
+    let word = *words.get(offset / word_size)?;
+    let shift = (offset % word_size) * 8;
+    Some(((word >> shift) & 0xff) as u8)
+}
+fn current_user_sid() -> io::Result<CurrentUserSid> {
+    use std::ptr::{NonNull, null_mut};
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, SID_AND_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut token: HANDLE = null_mut();
+    // SAFETY (K3, A): GetCurrentProcess returns a pseudo-handle valid for
+    // this process for the duration of the call -- it is never owned and
+    // must never be CloseHandle'd. `token` is a writable out-param on our
+    // stack. TOKEN_QUERY is a documented access mask.
+    // Win32 OpenProcessToken: BOOL; on success writes an owned token HANDLE
+    // the caller must CloseHandle; on failure returns 0 and GetLastError
+    // is set. last_os_error is captured BEFORE adopt/Drop so CloseHandle
+    // cannot clobber it. Success then take() owns the HANDLE; failure still
+    // adopt()'s whatever was written so a closeable handle cannot leak.
+    // Unavoidable BECAUSE process-token open is Win32 FFI with no std API
+    // (Nomicon § FFI; Reference § External blocks).
+    // Alternatives FAIL: (1) std::process -- no token/SID API; (2) whoami /
+    // windows-acl crates -- same OpenProcessToken FFI; (3) well-known
+    // Everyone SID -- weaker than owner-only, not equivalent to 0o600.
+    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+    if opened == 0 {
+        let err = io::Error::last_os_error();
+        drop(OwnedHandle::adopt(token));
+        return Err(err);
+    }
+    let token = OwnedHandle::take(token)?;
+    let mut required_len = 0u32;
+    // SAFETY (K4, A): `token.as_raw()` is an open token we own (borrowed, not
+    // consumed). A null buffer with length 0 is the documented size query;
+    // Win32 does not write through that null pointer. It writes `required_len`
+    // and returns a length error we ignore.
+    // GetLastError is read immediately only if `required_len` stays 0; no
+    // other FFI sits between the call and last_os_error.
+    // Unavoidable BECAUSE token-info size query is Win32 FFI (Nomicon § FFI).
+    // Alternatives FAIL: (1) guess TOKEN_USER size -- SID payload is
+    // variable-length, under-alloc is a write overflow; (2) skip query and
+    // use a huge stack buffer -- still the same FFI write; (3) crate-wrapped
+    // GetTokenInformation -- same extern-C call.
+    unsafe {
+        let _ = GetTokenInformation(token.as_raw(), TokenUser, null_mut(), 0, &mut required_len);
+    }
+    if required_len == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let word_size = std::mem::size_of::<usize>();
+    let word_count = (required_len as usize).div_ceil(word_size);
+    let mut token_info = vec![0usize; word_count];
+    let mut returned_len = 0u32;
+    // SAFETY (K5, A): `token_info` is a heap Vec whose byte length is at
+    // least `required_len`. The exclusive pointer is valid for that many
+    // bytes; Win32 writes at most TokenInformationLength bytes before we read.
+    // The token HANDLE is borrowed, not consumed. BOOL 0 => last_os_error
+    // immediately (the Error is built before OwnedHandle Drop runs, so
+    // CloseHandle cannot clobber it).
+    // Unavoidable BECAUSE filling TOKEN_USER is Win32 FFI into caller
+    // memory (Nomicon § FFI; Reference § Behavior considered undefined
+    // https://doc.rust-lang.org/reference/behavior-considered-undefined.html).
+    // Alternatives FAIL: (1) read SID from env/whoami text -- not the
+    // process token, wrong principal; (2) MaybeUninit without FFI -- no
+    // bytes to init; (3) crate-wrapped GetTokenInformation -- same FFI write.
+    let filled = unsafe {
+        GetTokenInformation(
+            token.as_raw(),
+            TokenUser,
+            token_info.as_mut_ptr().cast(),
+            (token_info.len() * word_size) as u32,
+            &mut returned_len,
+        )
+    };
+    if filled == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if returned_len < std::mem::size_of::<TOKEN_USER>() as u32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user information is too small",
+        ));
+    }
+    // K6 (C): TOKEN_USER.User.Sid is a PSID at offset 0 of the buffer K5
+    // filled. windows-sys SID_AND_ATTRIBUTES.Sid is the first field, so the
+    // leading usize is that pointer. Reading the owned Vec needs no unsafe.
+    // Later FFI (K8) uses wrapping_add on this Vec after the in-buffer check.
+    const _: () = {
+        assert!(std::mem::offset_of!(TOKEN_USER, User) == 0);
+        assert!(std::mem::offset_of!(SID_AND_ATTRIBUTES, Sid) == 0);
+    };
+    let sid_addr = token_info[0];
+    if sid_addr == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID is missing",
+        ));
+    }
+    let init_len = std::cmp::min(returned_len as usize, token_info.len() * word_size);
+    let buf_start = token_info.as_ptr() as usize;
+    let buf_end = buf_start.saturating_add(init_len);
+    if sid_addr < buf_start || sid_addr >= buf_end {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID is outside the token buffer",
+        ));
+    }
+    let sid_offset = sid_addr - buf_start;
+    const SID_FIXED: usize = 8;
+    const SID_MAX_SUB_AUTHORITIES: u8 = 15;
+    const SID_REVISION: u8 = 1;
+    if sid_offset.saturating_add(SID_FIXED) > init_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID header is truncated",
+        ));
+    }
+    // K7 (C): documented IsValidSid contract is Revision == SID_REVISION and
+    // SubAuthorityCount <= SID_MAX_SUB_AUTHORITIES, plus a readable SID. The
+    // SID bytes live in this owned Vec; a Win32 IsValidSid call is not required.
+    let Some(revision) = token_info_le_byte(&token_info, sid_offset) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID header is truncated",
+        ));
+    };
+    if revision != SID_REVISION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID is invalid",
+        ));
+    }
+    let Some(sub_count) = token_info_le_byte(&token_info, sid_offset + 1) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID header is truncated",
+        ));
+    };
+    if sub_count > SID_MAX_SUB_AUTHORITIES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID has too many sub-authorities",
+        ));
+    }
+    let sid_len = SID_FIXED + (sub_count as usize) * 4;
+    if sid_offset.saturating_add(sid_len) > init_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID extends past the token buffer",
+        ));
+    }
+    // Unique owner: NonNull::new takes *mut. as_ptr().cast_mut() would be a
+    // *const-to-*mut cast (bucket 14). Later FFI only reads this SID.
+    let sid = NonNull::new(
+        token_info
+            .as_mut_ptr()
+            .cast::<u8>()
+            .wrapping_add(sid_offset)
+            .cast(),
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID is missing",
+        )
+    })?;
+    Ok(CurrentUserSid {
+        _token_info: token_info,
+        sid,
+    })
+}
+impl CurrentUserSid {
+    fn owner_only_acl(&self) -> io::Result<LocalMemory> {
+        use std::ptr::{null, null_mut};
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::Security::Authorization::{
+            EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SET_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID,
+            TRUSTEE_IS_USER, TRUSTEE_W,
+        };
+        use windows_sys::Win32::Security::{ACL, NO_INHERITANCE};
+        use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+        let access = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: FILE_ALL_ACCESS,
+            grfAccessMode: SET_ACCESS,
+            grfInheritance: NO_INHERITANCE,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_USER,
+                ptstrName: self.sid.as_ptr().cast(),
+            },
+        };
+        let mut acl: *mut ACL = null_mut();
+        // SAFETY (K8, A): `access` is a fully initialized EXPLICIT_ACCESS_W on
+        // the stack; its trustee SID points into `self`, which is borrowed for
+        // this call. `acl` is a writable out-param. The old ACL is null
+        // (no merge). Adopt wraps whatever pointer Windows wrote so LocalFree
+        // runs on success, error, and unwind.
+        // Win32 SetEntriesInAclW returns a DWORD error code (not GetLastError);
+        // map via win32_error(result). On success *NewAcl is LocalAlloc memory
+        // we must LocalFree. No panic between the FFI call and adopt. No
+        // callback / longjmp. TRUSTEE_IS_SID: ptstrName is a SID pointer, not
+        // a string (no NUL-termination obligation on that field).
+        // Unavoidable BECAUSE ACL construction is Win32 FFI that returns a
+        // LocalAlloc pointer (Nomicon § FFI).
+        // Alternatives FAIL: (1) std fs permissions -- no DACL builder;
+        // (2) hand-written SECURITY_DESCRIPTOR bytes -- still SetNamedSecurityInfo
+        // FFI plus layout UB; (3) windows-acl crate -- same FFI.
+        let result = unsafe { SetEntriesInAclW(1, &access, null(), &mut acl) };
+        let acl = LocalMemory::adopt(acl.cast());
+        if result != ERROR_SUCCESS {
+            return Err(win32_error(result));
+        }
+        if acl.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows returned a null ACL",
+            ));
+        }
+        Ok(acl)
+    }
+}
+fn apply_protected_file_dacl(path: &Path, acl: &LocalMemory) -> io::Result<()> {
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    if acl.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows ACL handle is null",
+        ));
+    }
+    let wide_path = windows_path_to_wide(path)?;
+    // SAFETY (K9, A): `wide_path` is a NUL-terminated UTF-16 path with no
+    // interior NUL. `acl` is the ACL we created and still own via
+    // LocalMemory. Owner/group/SACL pointers are null, which Win32 allows
+    // when those security-info bits are unset.
+    // Win32 SetNamedSecurityInfoW returns a DWORD (not GetLastError); map
+    // via win32_error(result). It copies DACL data and does not take ownership
+    // of the ACL (LocalMemory still owns it; Drop still LocalFree's). LPCWSTR
+    // ObjectName is our `wide_path` (trailing NUL, interior NUL rejected in
+    // windows_path_to_wide). No callback / longjmp. No panic between the FFI
+    // call and the DWORD check.
+    // Unavoidable BECAUSE applying a DACL is Win32 FFI (Nomicon § FFI).
+    // Alternatives FAIL: (1) std::fs::set_permissions -- cannot express a
+    // PROTECTED owner-only DACL; (2) icacls via Command -- locale/PATH
+    // fragile, not a language form; (3) skip -- unix path stays 0o600,
+    // Windows would leave the secret world-readable.
+    let result = unsafe {
+        SetNamedSecurityInfoW(
+            wide_path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            acl.as_acl(),
+            null(),
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(win32_error(result));
+    }
+    Ok(())
+}
+pub fn restrict_file_to_owner(path: &Path) -> io::Result<()> {
+    let acl = current_user_sid()?.owner_only_acl()?;
+    apply_protected_file_dacl(path, &acl)
+}
+
+pub(super) fn open_windows_rejecting_name_surrogate(
+    path: &Path,
+    configure: impl Fn(&mut fs::OpenOptions),
+) -> io::Result<fs::File> {
+    use std::os::windows::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    let mut inspect = fs::OpenOptions::new();
+    configure(&mut inspect);
+    let file = inspect
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let meta = file.metadata()?;
+    let file_type = meta.file_type();
+    if file_type.is_symlink() || file_type.is_symlink_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to follow a name-surrogate reparse point",
+        ));
+    }
+    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return Ok(file);
+    }
+    drop(file);
+    let mut follow = fs::OpenOptions::new();
+    configure(&mut follow);
+    follow.open(path)
+}

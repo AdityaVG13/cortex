@@ -22,7 +22,9 @@ pub fn redact_secrets(text: &str) -> String {
     // occurrence (`capture_secret_rejected`). Labeled secret patterns below
     // still catch Bearer / token:= / sk- / ghp_ / xox / AKIA material.
     let credential = CREDENTIAL_REDACTION_RE
-        .get_or_init(|| Regex::new(r#"(?i)["']?\b(?:token|key|secret|password)\b["']?\s*[:=]\s*["']?\S+"#).ok())
+        .get_or_init(|| {
+            Regex::new(r#"(?i)["']?\b(?:token|key|secret|password)\b["']?\s*[:=]\s*["']?\S+"#).ok()
+        })
         .as_ref()
         .map(|re| re.replace_all(&bearer, "[CREDENTIAL_REDACTED]").to_string())
         .unwrap_or(bearer);
@@ -46,13 +48,7 @@ pub fn redact_secrets(text: &str) -> String {
         .as_ref()
         .map(|re| re.replace_all(&slack, "[redacted]").to_string())
         .unwrap_or(slack);
-    let generic = GENERIC_SECRET_REDACTION_RE
-        .get_or_init(|| {
-            Regex::new(r#"(?i)["']?\b(?:api[_-]?key|secret|token)\b["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]{20,}"#).ok()
-        })
-        .as_ref()
-        .map(|re| re.replace_all(&aws, "[redacted]").to_string())
-        .unwrap_or(aws);
+    let generic = GENERIC_SECRET_REDACTION_RE.get_or_init(|| Regex::new(r#"(?i)["']?\b(?:api[_-]?key|secret|token)\b["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]{20,}"#).ok()).as_ref().map(|re| re.replace_all(&aws, "[redacted]").to_string()).unwrap_or(aws);
     AUTHORIZATION_REDACTION_RE
         .get_or_init(|| Regex::new(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+").ok())
         .as_ref()

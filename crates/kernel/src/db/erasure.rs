@@ -5,9 +5,9 @@
 //! retracted externally (delivered exports, disconnected replicas) is
 //! disclosed, never hidden.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 pub const LEDGER_FILE: &str = "erasures.ledger.jsonl";
@@ -46,238 +46,48 @@ pub fn ledger_path(home: &Path) -> PathBuf {
     home.join(LEDGER_FILE)
 }
 
-fn ledger_bytes(home: &Path) -> Result<Option<String>, String> {
-    use std::io::Read;
-    let file = match crate::auth::open_nofollow(&ledger_path(home)) {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.to_string()),
-    };
-    let mut raw = String::new();
-    file.take(MAX_ERASURE_LEDGER_BYTES + 1)
-        .read_to_string(&mut raw)
-        .map_err(|e| e.to_string())?;
-    if raw.len() as u64 > MAX_ERASURE_LEDGER_BYTES {
-        return Err("erasure_ledger_byte_limit".into());
-    }
-    Ok(Some(raw))
+fn id_present(conn: &Connection, sql: &str, id: &str, err: &str) -> Result<bool, String> {
+    conn.query_row(sql, [id], |r| r.get::<_, i64>(0))
+        .map(|n| n > 0)
+        .map_err(|e| format!("{err}: {e}"))
 }
 
-fn parse_ledger(raw: &str) -> Result<Vec<ErasureRecord>, String> {
-    let mut out = Vec::new();
-    for (idx, line) in raw.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let rec = serde_json::from_str(line).map_err(|e| {
-            format!("erasure_ledger_line_{}: {e}", idx + 1)
-        })?;
-        out.push(rec);
-    }
-    Ok(out)
-}
+mod ledger;
+pub use ledger::read_ledger;
+use ledger::{append_ledger, parse_or_fail};
 
-pub fn read_ledger(home: &Path) -> Vec<ErasureRecord> {
-    match ledger_bytes(home) {
-        Ok(Some(raw)) => parse_ledger(&raw).unwrap_or_default(),
-        Ok(None) | Err(_) => Vec::new(),
-    }
-}
-
-fn append_ledger(home: &Path, record: &ErasureRecord) -> Result<(), String> {
-    use std::io::Write;
-    let mut f = crate::auth::open_append_nofollow(&ledger_path(home)).map_err(|e| e.to_string())?;
-    writeln!(
-        f,
-        "{}",
-        serde_json::to_string(record).map_err(|e| e.to_string())?
-    )
-    .map_err(|e| e.to_string())?;
-    f.sync_all().map_err(|e| e.to_string())
-}
-
-pub fn erasure_floor(conn: &Connection) -> i64 {
+fn floor_raw(conn: &Connection) -> rusqlite::Result<Option<String>> {
     conn.query_row(
         "SELECT erasure_floor FROM brain_meta WHERE singleton = 1",
         [],
         |r| r.get::<_, String>(0),
     )
     .optional()
-    .ok()
-    .flatten()
-    .and_then(|s| s.parse().ok())
-    .unwrap_or(0)
+}
+
+pub fn erasure_floor(conn: &Connection) -> i64 {
+    floor_raw(conn)
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 fn legacy_target(conn: &Connection, record_id: &str) -> Result<Option<(String, i64)>, String> {
     // SQL error is not "no legacy row": that would tombstone the record while
     // leaving memories/decisions plaintext in place. Unreadable or
     // non-integer locators fail closed so erase cannot report success.
-    let row = conn
-        .query_row(
-            "SELECT namespace, address FROM addresses WHERE record_id = ?1 AND scheme = 'legacy' LIMIT 1",
-            [record_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("legacy address lookup failed: {e}"))?;
-    match row {
-        None => Ok(None),
-        Some((namespace, addr)) => {
-            let id = addr.parse::<i64>().map_err(|_| {
-                format!("legacy address `{addr}` for {record_id} is not an integer id")
-            })?;
-            Ok(Some((namespace, id)))
-        }
-    }
+    let row = conn.query_row("SELECT namespace, address FROM addresses WHERE record_id = ?1 AND scheme = 'legacy' LIMIT 1", [record_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).optional().map_err(|e| format!("legacy address lookup failed: {e}"))?;
+    row.map(|(namespace, addr)| {
+        addr.parse::<i64>()
+            .map(|id| (namespace, id))
+            .map_err(|_| format!("legacy address `{addr}` for {record_id} is not an integer id"))
+    })
+    .transpose()
 }
 
-/// Apply the erasure to every derived and retained representation. Idempotent.
-fn apply(
-    conn: &Connection,
-    record_id: &str,
-    erasure_id: &str,
-) -> Result<(usize, usize, usize, usize, usize, usize), String> {
-    let tombstone = json!({"erased": true, "erasure_id": erasure_id}).to_string();
-    let revisions = conn
-        .execute(
-            "UPDATE revisions SET body_json = ?1, epistemic_status = 'retracted' WHERE record_id = ?2 AND json_extract(body_json, '$.erased') IS NOT 1",
-            params![tombstone, record_id],
-        )
-        .map_err(|e| e.to_string())?;
-    let sources = conn
-        .execute(
-            "UPDATE sources SET inline_payload = NULL, provider_locator = NULL, availability = 'erased' WHERE availability != 'erased' AND source_id IN (SELECT rs.source_id FROM revision_sources rs JOIN revisions r ON r.revision_id = rs.revision_id WHERE r.record_id = ?1)",
-            params![record_id],
-        )
-        .map_err(|e| e.to_string())?;
-    let mut legacy_rows = 0usize;
-    let mut projections = 0usize;
-    if let Some((namespace, id)) = legacy_target(conn, record_id)? {
-        let (table, col) = match namespace.as_str() {
-            "decision" => ("decisions", "decision"),
-            "memory" => ("memories", "text"),
-            other => {
-                return Err(format!(
-                    "legacy address namespace {other} is not a memories/decisions table"
-                ));
-            }
-        };
-        let extra = if crate::db::table_has_column(conn, table, "compressed_text") {
-            ", compressed_text = NULL"
-        } else {
-            ""
-        };
-        let side = if namespace == "decision" {
-            ", context = NULL"
-        } else {
-            ", tags = NULL"
-        };
-        legacy_rows += conn
-            .execute(
-                &format!(
-                    "UPDATE {table} SET {col} = '[erased]'{side}{extra}, status = 'erased' WHERE id = ?1 AND status != 'erased'"
-                ),
-                params![id],
-            )
-            .map_err(|e| e.to_string())?;
-        projections += delete_if_present(
-            conn,
-            "clock_anchor_evidence",
-            "DELETE FROM clock_anchor_evidence WHERE target_type = ?1 AND target_id = ?2",
-            params![namespace, id],
-        )?;
-        projections += delete_if_present(
-            conn,
-            "clock_links",
-            "DELETE FROM clock_links WHERE (src_type = ?1 AND src_id = ?2) OR (dst_type = ?1 AND dst_id = ?2)",
-            params![namespace, id],
-        )?;
-        projections += delete_if_present(
-            conn,
-            "entity_mentions",
-            "DELETE FROM entity_mentions WHERE target_type = ?1 AND target_id = ?2",
-            params![namespace, id],
-        )?;
-        if table == "decisions" {
-            fts_delete_if_present(
-                conn,
-                "decisions_fts",
-                "INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) SELECT 'delete', id, '[erased]', NULL FROM decisions WHERE id = ?1",
-                params![id],
-            )?;
-        } else {
-            fts_delete_if_present(
-                conn,
-                "memories_fts",
-                "INSERT INTO memories_fts(memories_fts, rowid, text, source, tags) SELECT 'delete', id, '[erased]', NULL, NULL FROM memories WHERE id = ?1",
-                params![id],
-            )?;
-        }
-    }
-    // persist_receipt stores `{profile, cards: N}`, not the record id. LIKE on
-    // receipt_json therefore leaves production receipts in place and, on the
-    // test shape, also matches unrelated JSON keys / prefix ids.
-    let receipt_ids: Vec<String> = {
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT receipt_id FROM view_aliases WHERE record_id = ?1")
-            .map_err(|e| e.to_string())?;
-        stmt.query_map(params![record_id], |r| r.get(0))
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
-    };
-    let aliases = conn
-        .execute(
-            "DELETE FROM view_aliases WHERE record_id = ?1",
-            params![record_id],
-        )
-        .map_err(|e| e.to_string())?;
-    let mut views = 0usize;
-    for receipt_id in receipt_ids {
-        views += conn
-            .execute(
-                "DELETE FROM view_receipts WHERE receipt_id = ?1 AND NOT EXISTS (SELECT 1 FROM view_aliases WHERE receipt_id = ?1)",
-                params![receipt_id],
-            )
-            .map_err(|e| e.to_string())?;
-    }
-    delete_if_present(
-        conn,
-        "compiled_reads",
-        "DELETE FROM compiled_reads WHERE 1 = 1 AND EXISTS (SELECT 1 FROM records WHERE record_id = ?1)",
-        params![record_id],
-    )?;
-    super::compiled::bump_guard(conn, super::records::DEFAULT_SCOPE, "*")
-        .map_err(|e| e.to_string())?;
-    Ok((revisions, sources, legacy_rows, projections, views, aliases))
-}
-
-fn delete_if_present(
-    conn: &Connection,
-    table: &str,
-    sql: &str,
-    params: impl rusqlite::Params,
-) -> Result<usize, String> {
-    if !super::table_exists(conn, table) {
-        return Ok(0);
-    }
-    conn.execute(sql, params).map_err(|e| e.to_string())
-}
-
-fn fts_delete_if_present(
-    conn: &Connection,
-    table: &str,
-    sql: &str,
-    params: impl rusqlite::Params,
-) -> Result<(), String> {
-    if !super::table_exists(conn, table) {
-        return Ok(());
-    }
-    conn.execute(sql, params).map(|_| ()).map_err(|e| e.to_string())
-}
-
+mod apply;
+use apply::apply;
 /// Erase one record with authority. Appends the erasure to the ledger before
 /// touching data, so a crash between the two leaves a replayable intent.
 pub fn erase(
@@ -291,22 +101,17 @@ pub fn erase(
         return Err("erasure requires an authority".into());
     }
     super::records::ensure_authoritative_schema(conn).map_err(|e| e.to_string())?;
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM records WHERE record_id = ?1",
-            [record_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|n| n > 0)
-        .map_err(|e| format!("record lookup failed: {e}"))?;
-    if !exists {
+    if !id_present(
+        conn,
+        "SELECT COUNT(*) FROM records WHERE record_id = ?1",
+        record_id,
+        "record lookup failed",
+    )? {
         return Err(format!("unknown record {record_id}"));
     }
-    let ack = crate::runtime::ack_profile_label_pub(&crate::store_spi::sqlite::ack_profile(conn));
     let sp = crate::db::SqliteSavepoint::enter(conn, "erase").map_err(|e| e.to_string())?;
     let result = (|| {
-        let sequence =
-            super::records::append_commit(conn, authority, None, ack).map_err(|e| e.to_string())?;
+        let sequence = super::records::append_ack_commit(conn, authority)?;
         let erasure_id = format!("erasure:{record_id}@{sequence}");
         let record = ErasureRecord {
             erasure_id: erasure_id.clone(),
@@ -320,16 +125,7 @@ pub fn erase(
             erased_at: chrono::Utc::now().to_rfc3339(),
         };
         append_ledger(home, &record)?;
-        conn.execute(
-            "INSERT INTO erasures (erasure_id, scope_id, target_descriptor, sequence, propagation_state) VALUES (?1, ?2, ?3, ?4, 'local')",
-            params![
-                erasure_id,
-                super::records::DEFAULT_SCOPE,
-                json!({"record_id": record_id, "authority": authority, "reason": reason}).to_string(),
-                sequence
-            ],
-        )
-        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO erasures (erasure_id, scope_id, target_descriptor, sequence, propagation_state) VALUES (?1, ?2, ?3, ?4, 'local')", params![erasure_id, super::records::DEFAULT_SCOPE, json!({"record_id": record_id, "authority": authority, "reason": reason}).to_string(), sequence]).map_err(|e| e.to_string())?;
         let (revisions, sources, legacy_rows, projections, views, aliases) =
             apply(conn, record_id, &erasure_id)?;
         conn.execute(
@@ -337,11 +133,7 @@ pub fn erase(
             params![sequence.to_string()],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO change_items (sequence, ordinal, scope_id, record_id, change_kind) VALUES (?1, 0, ?2, ?3, 'erased')",
-            params![sequence, super::records::DEFAULT_SCOPE, record_id],
-        )
-        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO change_items (sequence, ordinal, scope_id, record_id, change_kind) VALUES (?1, 0, ?2, ?3, 'erased')", params![sequence, super::records::DEFAULT_SCOPE, record_id]).map_err(|e| e.to_string())?;
         Ok(ErasureReport {
             erasure: record,
             revisions_tombstoned: revisions,
@@ -387,20 +179,12 @@ pub struct Reconciliation {
 /// resurrect an erased record.
 pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconciliation, String> {
     super::records::ensure_authoritative_schema(conn).map_err(|e| e.to_string())?;
-    let ledger = match ledger_bytes(home) {
-        Ok(Some(raw)) => parse_ledger(&raw)?,
-        Ok(None) => Vec::new(),
-        Err(err) => return Err(err),
-    };
-    let floor_before = match conn.query_row(
-        "SELECT erasure_floor FROM brain_meta WHERE singleton = 1",
-        [],
-        |r| r.get::<_, String>(0),
-    ) {
-        Ok(raw) => raw
+    let ledger = parse_or_fail(home)?;
+    let floor_before = match floor_raw(conn) {
+        Ok(Some(raw)) => raw
             .parse::<i64>()
             .map_err(|_| "erasure floor is not an integer".to_string())?,
-        Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+        Ok(None) => 0,
         Err(err) => return Err(format!("erasure floor unreadable: {err}")),
     };
     let db_has_ledger: i64 = conn
@@ -419,44 +203,24 @@ pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconci
             foreign += 1;
             continue;
         }
-        let present: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM erasures WHERE erasure_id = ?1",
-                [&entry.erasure_id],
-                |r| r.get::<_, i64>(0),
-            )
-            .map(|n| n > 0)
-            .map_err(|e| format!("erasure presence unreadable: {e}"))?;
-        let exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM records WHERE record_id = ?1",
-                [&entry.record_id],
-                |r| r.get::<_, i64>(0),
-            )
-            .map(|n| n > 0)
-            .map_err(|e| format!("record presence unreadable: {e}"))?;
+        let present = id_present(
+            conn,
+            "SELECT COUNT(*) FROM erasures WHERE erasure_id = ?1",
+            &entry.erasure_id,
+            "erasure presence unreadable",
+        )?;
+        let exists = id_present(
+            conn,
+            "SELECT COUNT(*) FROM records WHERE record_id = ?1",
+            &entry.record_id,
+            "record presence unreadable",
+        )?;
         if present {
             already += 1;
         } else if exists {
-            let ack =
-                crate::runtime::ack_profile_label_pub(&crate::store_spi::sqlite::ack_profile(conn));
-            let sequence = super::records::append_commit(
-                conn,
-                &format!("reconcile:{}", entry.authority),
-                None,
-                ack,
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute(
-                "INSERT OR IGNORE INTO erasures (erasure_id, scope_id, target_descriptor, sequence, propagation_state) VALUES (?1, ?2, ?3, ?4, 'reconciled')",
-                params![
-                    entry.erasure_id,
-                    super::records::DEFAULT_SCOPE,
-                    json!({"record_id": entry.record_id, "authority": entry.authority, "reason": entry.reason, "reconciled": true}).to_string(),
-                    sequence
-                ],
-            )
-            .map_err(|e| e.to_string())?;
+            let sequence =
+                super::records::append_ack_commit(conn, &format!("reconcile:{}", entry.authority))?;
+            conn.execute("INSERT OR IGNORE INTO erasures (erasure_id, scope_id, target_descriptor, sequence, propagation_state) VALUES (?1, ?2, ?3, ?4, 'reconciled')", params![entry.erasure_id, super::records::DEFAULT_SCOPE, json!({"record_id": entry.record_id, "authority": entry.authority, "reason": entry.reason, "reconciled": true}).to_string(), sequence]).map_err(|e| e.to_string())?;
             apply(conn, &entry.record_id, &entry.erasure_id)?;
             reapplied += 1;
         }
@@ -485,40 +249,21 @@ pub fn reconcile_after_restore(conn: &Connection, home: &Path) -> Result<Reconci
 /// only deliverable when no erasure happened after it. Stronger deployments
 /// serialize this check; disconnected replicas get no instant-revocation claim.
 pub fn fence_check(conn: &Connection, through_sequence: i64) -> Result<(), Value> {
-    let floor = match conn.query_row(
-        "SELECT erasure_floor FROM brain_meta WHERE singleton = 1",
-        [],
-        |r| r.get::<_, String>(0),
-    ) {
-        Ok(raw) => raw.parse::<i64>().map_err(|_| {
-            json!({"status": "unavailable", "error": "erasure floor is not an integer"})
-        })?,
-        Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+    let floor = match floor_raw(conn) {
+        Ok(Some(raw)) => raw.parse::<i64>().map_err(
+            |_| json!({"status": "unavailable", "error": "erasure floor is not an integer"}),
+        )?,
+        Ok(None) => 0,
         Err(_) => {
-            return Err(
-                json!({"status": "unavailable", "error": "erasure floor unreadable"}),
-            );
+            return Err(json!({"status": "unavailable", "error": "erasure floor unreadable"}));
         }
     };
-    if through_sequence < floor {
-        Err(
-            json!({"status": "resnapshot_required", "error": "revocation fence: an erasure happened after this View was minted", "erasure_floor": floor, "through_sequence": through_sequence}),
-        )
-    } else {
-        Ok(())
-    }
+    (through_sequence >= floor).then_some(()).ok_or_else(|| {
+        json!({"status": "resnapshot_required", "error": "revocation fence: an erasure happened after this View was minted", "erasure_floor": floor, "through_sequence": through_sequence})
+    })
 }
 
 pub fn is_erased(conn: &Connection, record_id: &str) -> bool {
-    match conn.query_row(
-        "SELECT COUNT(*) FROM erasures WHERE COALESCE(json_extract(target_descriptor, '$.record_id'), target_descriptor) = ?1",
-        [record_id],
-        |r| r.get::<_, i64>(0),
-    ) {
-        Ok(n) => n > 0,
-        // COUNT(*) always returns a row when the table is readable. Any
-        // other error (locked, corrupt, missing table during a partial
-        // open) must not look like "not erased" on the alias expand path.
-        Err(_) => true,
-    }
+    // Unreadable COUNT is fail-closed: alias expand must not look like "not erased".
+    conn.query_row("SELECT COUNT(*) FROM erasures WHERE COALESCE(json_extract(target_descriptor, '$.record_id'), target_descriptor) = ?1", [record_id], |r| r.get::<_, i64>(0)).map(|n| n > 0).unwrap_or(true)
 }

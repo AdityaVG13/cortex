@@ -12,9 +12,5 @@ pub fn claude_project_slug() -> Option<String> {
 /// prefix, and walk the working tree (or `cwd/memory`) instead.
 pub fn encode_claude_project_slug(cwd: &Path) -> Option<String> {
     let slug = cwd.to_string_lossy().replace(['/', '\\', ':'], "-");
-    if slug.is_empty() {
-        None
-    } else {
-        Some(slug)
-    }
+    if slug.is_empty() { None } else { Some(slug) }
 }

@@ -3,17 +3,10 @@
 //! no automatic delivery). The state is data the control center can show and
 //! flip; hooks consult it before every capture and never infer it.
 
-use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::{json, Value};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::{Value, json};
 
-pub const DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS capture_policy (
-  scope TEXT PRIMARY KEY,
-  state TEXT NOT NULL CHECK(state IN ('active','paused','stopped')),
-  reason TEXT,
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-"#;
+pub const DDL: &str = "CREATE TABLE IF NOT EXISTS capture_policy (scope TEXT PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('active','paused','stopped')), reason TEXT, updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));";
 
 pub const DEFAULT_SCOPE: &str = "*";
 
@@ -50,6 +43,19 @@ impl CaptureState {
 
 pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(DDL)
+}
+
+/// Exact scope wins, then `*`. `bind` is a parameter slot (`"?1"`, `"?2"`).
+pub fn scope_state_select_sql(bind: &str) -> String {
+    format!(
+        "SELECT state FROM capture_policy WHERE scope IN ({bind},'*') ORDER BY CASE WHEN scope={bind} THEN 0 ELSE 1 END LIMIT 1"
+    )
+}
+
+pub fn raw_state_for(conn: &Connection, scope: &str) -> Result<Option<String>, String> {
+    conn.query_row(&scope_state_select_sql("?1"), params![scope], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())
 }
 
 /// Effective state for a scope: the exact scope row wins, then the global
@@ -94,11 +100,7 @@ pub fn set_state(
     } else {
         scope.trim()
     };
-    conn.execute(
-        "INSERT INTO capture_policy (scope, state, reason) VALUES (?1, ?2, ?3)
-         ON CONFLICT(scope) DO UPDATE SET state = excluded.state, reason = excluded.reason, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-        params![scope, state.as_str(), reason],
-    )?;
+    conn.execute("INSERT INTO capture_policy (scope, state, reason) VALUES (?1, ?2, ?3) ON CONFLICT(scope) DO UPDATE SET state = excluded.state, reason = excluded.reason, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')", params![scope, state.as_str(), reason])?;
     Ok(())
 }
 
@@ -110,9 +112,7 @@ pub fn inspect(conn: &Connection) -> Value {
     if let Ok(mut stmt) =
         conn.prepare("SELECT scope, state, reason, updated_at FROM capture_policy ORDER BY scope")
     {
-        if let Ok(rows) = stmt.query_map([], |r| Ok(json!({"scope": r.get::<_, String>(0)?, "state": r.get::<_, String>(1)?, "reason": r.get::<_, Option<String>>(2)?, "updated_at": r.get::<_, String>(3)?}))) {
-            scopes.extend(rows.flatten());
-        }
+        if let Ok(rows) = stmt.query_map([], |r| Ok(json!({"scope": r.get::<_, String>(0)?, "state": r.get::<_, String>(1)?, "reason": r.get::<_, Option<String>>(2)?, "updated_at": r.get::<_, String>(3)?}))) { scopes.extend(rows.flatten()); }
     }
     json!({"global": state_for(conn, DEFAULT_SCOPE).as_str(), "scopes": scopes})
 }

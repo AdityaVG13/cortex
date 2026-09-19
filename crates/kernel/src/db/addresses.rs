@@ -4,23 +4,12 @@
 //! Content addressing is optional and no digest size is assumed; a short
 //! address is measured for collision and ambiguity, never trusted blindly.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::db::like_prefix;
+use rusqlite::{Connection, OptionalExtension, params};
 
 fn ensure(conn: &Connection) -> rusqlite::Result<()> {
     crate::db::records::ensure_authoritative_schema(conn)
         .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))
-}
-
-fn like_prefix(prefix: &str) -> String {
-    let mut out = String::with_capacity(prefix.len() + 1);
-    for ch in prefix.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out.push('%');
-    out
 }
 
 /// Bind a locator under `(scheme, namespace)` to a record. Returns how many
@@ -33,11 +22,7 @@ pub fn assign(
     locator: &str,
 ) -> rusqlite::Result<i64> {
     ensure(conn)?;
-    conn.execute(
-        "INSERT INTO addresses (scheme, namespace, address, record_id) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(scheme, namespace, address) DO UPDATE SET record_id = excluded.record_id",
-        params![scheme, namespace, locator, record_id],
-    )?;
+    conn.execute("INSERT INTO addresses (scheme, namespace, address, record_id) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(scheme, namespace, address) DO UPDATE SET record_id = excluded.record_id", params![scheme, namespace, locator, record_id])?;
     conn.query_row(
         "SELECT COUNT(*) FROM addresses WHERE record_id = ?1 AND namespace = ?2",
         params![record_id, namespace],
@@ -92,11 +77,11 @@ pub fn resolve_short(
     if prefix.is_empty() {
         return Ok(ShortAddress::Unknown);
     }
-    let mut stmt = conn.prepare_cached(
-        "SELECT DISTINCT record_id FROM addresses WHERE scheme = ?1 AND namespace = ?2 AND address LIKE ?3 ESCAPE '\\' ORDER BY record_id LIMIT 16",
-    )?;
+    let mut stmt = conn.prepare_cached("SELECT DISTINCT record_id FROM addresses WHERE scheme = ?1 AND namespace = ?2 AND address LIKE ?3 ESCAPE '\\' ORDER BY record_id LIMIT 16")?;
     let ids: Vec<String> = stmt
-        .query_map(params![scheme, namespace, like_prefix(prefix)], |r| r.get(0))?
+        .query_map(params![scheme, namespace, like_prefix(prefix)], |r| {
+            r.get(0)
+        })?
         .collect::<Result<_, _>>()?;
     Ok(match ids.len() {
         0 => ShortAddress::Unknown,

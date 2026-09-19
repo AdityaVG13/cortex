@@ -6,8 +6,7 @@
 //! provenance gap and stay addressable through `addresses`. Nothing here
 //! rewrites legacy rows; the new tables are additive.
 
-use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params};
 
 pub const AUTHORITATIVE_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS brain_meta (
@@ -161,6 +160,9 @@ CREATE INDEX IF NOT EXISTS guards_reverse ON compiled_guards(scope_id,guard_key)
 pub const DEFAULT_SCOPE: &str = "default";
 pub const SCHEMA_LABEL: &str = "authoritative-records";
 
+mod import;
+pub use import::import_legacy;
+
 /// Create tables, the brain singleton and the default scope. Idempotent.
 pub fn ensure_authoritative_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(AUTHORITATIVE_DDL)?;
@@ -171,25 +173,10 @@ pub fn ensure_authoritative_schema(conn: &Connection) -> rusqlite::Result<()> {
     })? > 0;
     if !exists {
         let brain_id = format!("brain-{}", uuid_like(conn));
-        conn.execute(
-            "INSERT INTO brain_meta (singleton, brain_id, restore_epoch, policy_epoch, schema_version, erasure_floor) VALUES (1, ?1, '0', '0', ?2, '0')",
-            params![brain_id, SCHEMA_LABEL],
-        )?;
+        conn.execute("INSERT INTO brain_meta (singleton, brain_id, restore_epoch, policy_epoch, schema_version, erasure_floor) VALUES (1, ?1, '0', '0', ?2, '0')", params![brain_id, SCHEMA_LABEL])?;
     }
-    conn.execute(
-        "INSERT OR IGNORE INTO scopes (scope_id, parent_scope, owner_id, kind, descriptor) VALUES (?1, NULL, 'local', 'brain', '{}')",
-        params![DEFAULT_SCOPE],
-    )?;
+    conn.execute("INSERT OR IGNORE INTO scopes (scope_id, parent_scope, owner_id, kind, descriptor) VALUES (?1, NULL, 'local', 'brain', '{}')", params![DEFAULT_SCOPE])?;
     Ok(())
-}
-
-fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
-    conn.prepare(&format!("PRAGMA table_info({table})"))
-        .and_then(|mut stmt| {
-            stmt.query_map([], |r| r.get::<_, String>(1))
-                .map(|rows| rows.filter_map(Result::ok).any(|c| c == column))
-        })
-        .unwrap_or(false)
 }
 
 fn uuid_like(conn: &Connection) -> String {
@@ -206,6 +193,8 @@ pub fn try_brain_epochs(conn: &Connection) -> rusqlite::Result<(String, String, 
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
 }
+
+pub const POLICY_EPOCH_SELECT: &str = "SELECT policy_epoch FROM brain_meta WHERE singleton=1";
 
 /// Bootstrap/display helper. Missing `brain_meta` (not yet inserted, or
 /// schema not yet applied) is the seed epoch `"0"`. A locked/corrupt read
@@ -228,272 +217,5 @@ pub fn brain_epochs(conn: &Connection) -> (String, String, String) {
     }
 }
 
-/// Append one commit row and return its sequence. The origin is this brain
-/// unless a replicated origin is supplied.
-pub fn append_commit(
-    conn: &Connection,
-    principal: &str,
-    idempotency_key: Option<&str>,
-    ack_profile: &str,
-) -> rusqlite::Result<i64> {
-    let (brain_id, _, _) = try_brain_epochs(conn)?;
-    let counter: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(origin_counter), -1) + 1 FROM commits WHERE origin_id = ?1",
-        params![brain_id],
-        |r| r.get(0),
-    )?;
-    let commit_id = format!("{brain_id}:{counter}");
-    conn.execute(
-        "INSERT INTO commits (commit_id, principal_id, idempotency_key, ack_profile, origin_id, origin_counter) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![commit_id, principal, idempotency_key, ack_profile, brain_id, counter],
-    )?;
-    Ok(conn.last_insert_rowid())
-}
-
-pub struct NewRevision<'a> {
-    pub record_id: &'a str,
-    pub kind: &'a str,
-    pub retention: &'a str,
-    pub body: Value,
-    pub epistemic_status: &'a str,
-    /// Parent revisions this revision descends from. Empty = baseline.
-    pub parents: &'a [String],
-    /// When true the parents are removed from the head set (a normal
-    /// successor). When false the new revision is a concurrent head.
-    pub replace_parents: bool,
-    pub representation_version: &'a str,
-}
-
-/// Insert a record (if new) and an immutable revision, maintain the head set,
-/// and append a change item. Never deletes a revision.
-pub fn append_revision(
-    conn: &Connection,
-    sequence: i64,
-    rev: NewRevision<'_>,
-) -> rusqlite::Result<String> {
-    conn.execute(
-        "INSERT OR IGNORE INTO records (record_id, scope_id, kind, retention, created_sequence) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![rev.record_id, DEFAULT_SCOPE, rev.kind, rev.retention, sequence],
-    )?;
-    let ordinal: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM revisions WHERE record_id = ?1",
-        params![rev.record_id],
-        |r| r.get(0),
-    )?;
-    let revision_id = format!("{}@{}", rev.record_id, ordinal + 1);
-    conn.execute(
-        "INSERT INTO revisions (revision_id, record_id, body_json, epistemic_status, recorded_sequence, representation_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![revision_id, rev.record_id, rev.body.to_string(), rev.epistemic_status, sequence, rev.representation_version],
-    )?;
-    for parent in rev.parents {
-        conn.execute(
-            "INSERT INTO revision_parents (record_id, revision_id, parent_revision) VALUES (?1, ?2, ?3)",
-            params![rev.record_id, revision_id, parent],
-        )?;
-        if rev.replace_parents {
-            conn.execute(
-                "DELETE FROM record_heads WHERE record_id = ?1 AND revision_id = ?2",
-                params![rev.record_id, parent],
-            )?;
-        }
-    }
-    conn.execute(
-        "INSERT INTO record_heads (record_id, revision_id) VALUES (?1, ?2)",
-        params![rev.record_id, revision_id],
-    )?;
-    // Negative-dependency guard: any cached read that searched this
-    // record kind (or the scope at large) is invalidated by this insert.
-    super::compiled::bump_guard(conn, DEFAULT_SCOPE, rev.kind)?;
-    let change_ordinal: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM change_items WHERE sequence = ?1",
-        params![sequence],
-        |r| r.get(0),
-    )?;
-    conn.execute(
-        "INSERT INTO change_items (sequence, ordinal, scope_id, record_id, change_kind) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![sequence, change_ordinal, DEFAULT_SCOPE, rev.record_id, if rev.parents.is_empty() { "created" } else { "revised" }],
-    )?;
-    Ok(revision_id)
-}
-
-pub fn heads(conn: &Connection, record_id: &str) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT revision_id FROM record_heads WHERE record_id = ?1 ORDER BY revision_id",
-    )?;
-    let rows = stmt.query_map(params![record_id], |r| r.get::<_, String>(0))?;
-    rows.collect()
-}
-
-pub fn revision_body(conn: &Connection, revision_id: &str) -> rusqlite::Result<Option<Value>> {
-    let raw = conn
-        .query_row(
-            "SELECT body_json FROM revisions WHERE revision_id = ?1",
-            params![revision_id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?;
-    match raw {
-        None => Ok(None),
-        Some(s) => serde_json::from_str(&s).map(Some).map_err(|err| {
-            rusqlite::Error::InvalidParameterName(format!(
-                "revision `{revision_id}` body is not valid JSON: {err}"
-            ))
-        }),
-    }
-}
-
-/// A resolution names the heads it considered, its authority and rationale;
-/// it becomes the single head. Heads not listed stay unresolved.
-pub fn resolve_heads(
-    conn: &Connection,
-    sequence: i64,
-    record_id: &str,
-    considered: &[String],
-    authority: &str,
-    rationale: &str,
-    body: Value,
-) -> rusqlite::Result<String> {
-    let current = heads(conn, record_id)?;
-    for head in considered {
-        if !current.contains(head) {
-            return Err(rusqlite::Error::InvalidParameterName(format!(
-                "{head} is not a current head of {record_id}"
-            )));
-        }
-    }
-    let (kind, retention): (String, String) = conn.query_row(
-        "SELECT kind, retention FROM records WHERE record_id = ?1",
-        params![record_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let resolution_body = json!({"resolution": {"considered": considered, "authority": authority, "rationale": rationale}, "body": body});
-    append_revision(
-        conn,
-        sequence,
-        NewRevision {
-            record_id,
-            kind: &kind,
-            retention: &retention,
-            body: resolution_body,
-            epistemic_status: "supported",
-            parents: considered,
-            replace_parents: true,
-            representation_version: "resolution/1",
-        },
-    )
-}
-
-/// Legacy address of a `memories`/`decisions` row → record id, if imported.
-pub fn record_for_legacy(
-    conn: &Connection,
-    table_kind: &str,
-    id: i64,
-) -> rusqlite::Result<Option<String>> {
-    conn.query_row("SELECT record_id FROM addresses WHERE scheme = 'legacy' AND namespace = ?1 AND address = ?2", params![table_kind, id.to_string()], |r| {
-        r.get(0)
-    })
-    .optional()
-}
-
-/// Import every legacy row that has no record yet as a baseline revision.
-/// Timestamps become observed metadata; provenance gaps are labeled, never
-/// manufactured. Returns the number of records created.
-pub fn import_legacy(conn: &Connection) -> rusqlite::Result<usize> {
-    ensure_authoritative_schema(conn)?;
-    let mut created = 0usize;
-    let mut sequence: Option<i64> = None;
-    for (table, kind, text_col) in [
-        ("decisions", "decision", "decision"),
-        ("memories", "memory", "text"),
-    ] {
-        // Column-tolerant: this migration may run on a database whose later
-        // legacy columns (retention_class, trust_score, version_id) do not
-        // exist yet; missing columns are reported as absent, not invented.
-        let has = |col: &str| table_has_column(conn, table, col);
-        let retention_expr = if has("retention_class") {
-            "COALESCE(t.retention_class, 'operational')"
-        } else {
-            "'operational'"
-        };
-        let trust_expr = if has("trust_score") {
-            "COALESCE(t.trust_score, 0.8)"
-        } else {
-            "0.8"
-        };
-        let version_expr = if has("version_id") {
-            "t.version_id"
-        } else {
-            "NULL"
-        };
-        let sql = format!(
-            "SELECT t.id, t.{text_col}, t.status, t.source_agent, t.created_at, {retention_expr}, {trust_expr}, {version_expr} \
-             FROM {table} t WHERE NOT EXISTS (SELECT 1 FROM addresses a WHERE a.scheme = 'legacy' AND a.namespace = ?1 AND a.address = CAST(t.id AS TEXT)) ORDER BY t.id"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows: Vec<(
-            i64,
-            String,
-            String,
-            String,
-            String,
-            String,
-            f64,
-            Option<i64>,
-        )> = stmt
-            .query_map(params![kind], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                ))
-            })?
-            .collect::<Result<_, _>>()?;
-        for (id, text, status, agent, created_at, retention, trust, version_id) in rows {
-            let seq = match sequence {
-                Some(s) => s,
-                None => {
-                    let s = append_commit(conn, "system:legacy-import", None, "process_crash")?;
-                    sequence = Some(s);
-                    s
-                }
-            };
-            let record_id = format!("{kind}:{id}");
-            let retention =
-                if ["durable", "operational", "audit", "ephemeral"].contains(&retention.as_str()) {
-                    retention
-                } else {
-                    "operational".to_string()
-                };
-            let body = json!({
-                "text": text,
-                "legacy": {"table": table, "id": id, "status": status, "agent": agent, "observed_created_at": created_at, "trust_score": trust, "trust_basis": "legacy_model_weight", "version_id": version_id},
-                "provenance_gap": "imported from a pre-revision schema: no source lineage, validity or verification was recorded"
-            });
-            append_revision(
-                conn,
-                seq,
-                NewRevision {
-                    record_id: &record_id,
-                    kind,
-                    retention: &retention,
-                    body,
-                    epistemic_status: "asserted",
-                    parents: &[],
-                    replace_parents: false,
-                    representation_version: "legacy-import/1",
-                },
-            )?;
-            conn.execute(
-                "INSERT OR IGNORE INTO addresses (scheme, namespace, address, record_id) VALUES ('legacy', ?1, ?2, ?3)",
-                params![kind, id.to_string(), record_id],
-            )?;
-            created += 1;
-        }
-    }
-    Ok(created)
-}
+mod mutate;
+pub use mutate::*;

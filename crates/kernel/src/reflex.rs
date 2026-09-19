@@ -9,7 +9,8 @@
 //! publish rebuilds it. A stale snapshot is `Expired`, never "no memory".
 
 use crate::adapter::SnapshotState;
-use crate::clockwork::{extract_anchors, Anchor, AnchorKind};
+use crate::clockwork::{Anchor, AnchorKind, extract_anchors};
+use crate::db::{ACTIVE_TEMPORAL_SQL, UNORPHANED_VERSION_SQL};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -98,17 +99,7 @@ pub fn build(
     // enough: TTL expiry, valid-time, and orphaned versions already hide a
     // row from recall and boot capsules. Serving those rows here would
     // inject stale constraints into the warm hook path.
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, decision, status FROM decisions \
-             WHERE status = 'active' \
-               AND (expires_at IS NULL OR TRIM(expires_at) = '' OR julianday(expires_at) > julianday('now')) \
-               AND (valid_from IS NULL OR TRIM(valid_from) = '' OR julianday(valid_from) <= julianday('now')) \
-               AND (valid_until IS NULL OR TRIM(valid_until) = '' OR julianday(valid_until) > julianday('now')) \
-               AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned')) \
-             ORDER BY id DESC LIMIT ?1",
-        )
-        .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&format!("SELECT id, decision, status FROM decisions WHERE {ACTIVE_TEMPORAL_SQL} AND {UNORPHANED_VERSION_SQL} ORDER BY id DESC LIMIT ?1")).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([max_records as i64], |r| {
             Ok((
@@ -189,14 +180,7 @@ pub fn build(
 
 /// A ticket anchor of the decision that superseded this one, if any.
 fn superseder_anchor(conn: &Connection, decision_id: i64) -> Result<Option<String>, String> {
-    let text: Option<String> = conn
-        .query_row(
-            "SELECT d2.decision FROM decisions d2 WHERE d2.supersedes_id = ?1 ORDER BY d2.id DESC LIMIT 1",
-            [decision_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
+    let text: Option<String> = conn.query_row("SELECT d2.decision FROM decisions d2 WHERE d2.supersedes_id = ?1 ORDER BY d2.id DESC LIMIT 1", [decision_id], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
     Ok(text.and_then(|text| {
         extract_anchors(&text, &[], 8)
             .into_iter()
@@ -246,25 +230,20 @@ pub fn state_for(snapshot: Option<&ReflexSnapshot>, conn: &Connection) -> Snapsh
         return SnapshotState::Unavailable;
     };
     let (brain_id, restore_epoch, policy_epoch) = crate::db::records::brain_epochs(conn);
-    if s.header.brain_id != brain_id
-        || s.header.restore_epoch != restore_epoch
-        || s.header.policy_epoch != policy_epoch
-    {
-        return SnapshotState::Expired;
+    let epochs_ok = s.header.brain_id == brain_id
+        && s.header.restore_epoch == restore_epoch
+        && s.header.policy_epoch == policy_epoch;
+    let frontier_ok = frontier_sequence(conn).ok() == Some(s.header.frontier_sequence);
+    let clock_ok = crate::clockwork::current_generation(conn)
+        .ok()
+        .map(|g| g.to_string())
+        .as_ref()
+        == s.header.projection_versions.get("clock");
+    if epochs_ok && frontier_ok && clock_ok {
+        SnapshotState::Fresh
+    } else {
+        SnapshotState::Expired
     }
-    let Ok(frontier) = frontier_sequence(conn) else {
-        return SnapshotState::Expired;
-    };
-    if s.header.frontier_sequence != frontier {
-        return SnapshotState::Expired;
-    }
-    let Ok(clock_now) = crate::clockwork::current_generation(conn).map(|g| g.to_string()) else {
-        return SnapshotState::Expired;
-    };
-    if s.header.projection_versions.get("clock") != Some(&clock_now) {
-        return SnapshotState::Expired;
-    }
-    SnapshotState::Fresh
 }
 
 /// Warm Level-0 decision: exact anchor triggers over the dictionary with

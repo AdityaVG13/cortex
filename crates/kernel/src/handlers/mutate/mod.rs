@@ -4,8 +4,9 @@
 mod types;
 pub use types::*;
 
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use crate::db::like_contains;
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 
 pub fn parse_conflict_id(raw: &str) -> Option<(i64, i64)> {
     let trimmed = raw.trim();
@@ -30,19 +31,8 @@ pub fn normalize_conflict_classification(raw: &str) -> Option<String> {
 }
 
 pub fn list_permissions(conn: &Connection, owner_id: i64) -> Result<Vec<Value>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT client_id, permission, scope, granted_by, granted_at FROM client_permissions WHERE owner_id = ?1 ORDER BY client_id, permission, scope",
-        )
-        .map_err(|err| err.to_string())?;
-    let rows = stmt
-        .query_map(params![owner_id], |row| {
-            Ok(json!({"client":row.get::<_,String>(0)?,"permission":row.get::<_,String>(1)?,"scope":row.get::<_,String>(2)?,
-                "grantedBy":row.get::<_,String>(3)?,"grantedAt":row.get::<_,String>(4)?}))
-        })
-        .map_err(|err| err.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())?;
+    let mut stmt = conn.prepare("SELECT client_id, permission, scope, granted_by, granted_at FROM client_permissions WHERE owner_id = ?1 ORDER BY client_id, permission, scope").map_err(|err| err.to_string())?;
+    let rows = stmt.query_map(params![owner_id], |row| Ok(json!({"client":row.get::<_,String>(0)?,"permission":row.get::<_,String>(1)?,"scope":row.get::<_,String>(2)?,"grantedBy":row.get::<_,String>(3)?,"grantedAt":row.get::<_,String>(4)?}))).map_err(|err| err.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())?;
     Ok(rows)
 }
 
@@ -68,14 +58,7 @@ pub fn grant_permission(
     // The first row closes default-open. Storing `Admin` or `foo` would
     // report success, trip the configured-row gate, and grant nothing.
     let permission = normalize_client_permission(permission)?;
-    conn.execute(
-        "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by, granted_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
-         ON CONFLICT(owner_id, client_id, permission, scope) DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at",
-        params![owner_id, client, permission, scope, granted_by],
-    )
-    .map(|_| ())
-    .map_err(|err| err.to_string())
+    conn.execute("INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by, granted_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) ON CONFLICT(owner_id, client_id, permission, scope) DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at", params![owner_id, client, permission, scope, granted_by]).map(|_| ()).map_err(|err| err.to_string())
 }
 
 pub fn revoke_permission(
@@ -86,11 +69,7 @@ pub fn revoke_permission(
     scope: &str,
 ) -> Result<usize, String> {
     let permission = normalize_client_permission(permission)?;
-    conn.execute(
-        "DELETE FROM client_permissions WHERE owner_id = ?1 AND client_id = ?2 AND lower(permission) = ?3 AND scope = ?4",
-        params![owner_id, client, permission, scope],
-    )
-    .map_err(|err| err.to_string())
+    conn.execute("DELETE FROM client_permissions WHERE owner_id = ?1 AND client_id = ?2 AND lower(permission) = ?3 AND scope = ?4", params![owner_id, client, permission, scope]).map_err(|err| err.to_string())
 }
 
 pub fn list_conflicts_payload(
@@ -98,23 +77,8 @@ pub fn list_conflicts_payload(
     options: &ConflictListOptions,
 ) -> Result<Value, String> {
     Ok(
-        json!({"statusFilter":options.status.as_str(),"classificationFilter":options.classification,"conflictIdFilter":options.conflict_id,
-        "openCount":0,"resolvedCount":0,"count":0,"pairs":[],"conflicts":[],"conflict":Value::Null}),
+        json!({"statusFilter":options.status.as_str(),"classificationFilter":options.classification,"conflictIdFilter":options.conflict_id,"openCount":0,"resolvedCount":0,"count":0,"pairs":[],"conflicts":[],"conflict":Value::Null}),
     )
-}
-
-/// Contains-pattern for `LIKE ? ESCAPE '\'`. Keyword `%` `_` `\` must stay
-/// literals or `forget` of `100%` matches every memory whose text contains `100`.
-fn like_contains(keyword: &str) -> String {
-    let mut out = String::from("%");
-    for ch in keyword.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out.push('%');
-    out
 }
 
 pub fn forget_keyword_scoped(
@@ -127,10 +91,7 @@ pub fn forget_keyword_scoped(
     }
     let pattern = like_contains(&keyword.to_lowercase());
     let updated = if let Some(owner_id) = owner_id {
-        conn.execute(
-            "UPDATE memories SET score = score * 0.3 WHERE owner_id = ?2 AND lower(text) LIKE ?1 ESCAPE '\\'",
-            params![pattern, owner_id],
-        )
+        conn.execute("UPDATE memories SET score = score * 0.3 WHERE owner_id = ?2 AND lower(text) LIKE ?1 ESCAPE '\\'", params![pattern, owner_id])
     } else {
         conn.execute(
             "UPDATE memories SET score = score * 0.3 WHERE lower(text) LIKE ?1 ESCAPE '\\'",
@@ -138,6 +99,14 @@ pub fn forget_keyword_scoped(
         )
     };
     updated.map_err(|err| err.to_string())
+}
+
+fn set_decision_status(tx: &rusqlite::Connection, id: i64, status: &str) -> Result<(), String> {
+    let updated = tx.execute("UPDATE decisions SET status = ?2, disputes_id = NULL, updated_at = datetime('now') WHERE id = ?1", params![id, status]).map_err(|err| err.to_string())?;
+    if updated == 0 {
+        return Err(format!("decision `{id}` was not found"));
+    }
+    Ok(())
 }
 
 pub fn resolve_decision_with_metadata(
@@ -159,15 +128,7 @@ pub fn resolve_decision_with_metadata(
         "active"
     };
     let tx = conn.savepoint().map_err(|err| err.to_string())?;
-    let kept = tx
-        .execute(
-            "UPDATE decisions SET status = ?2, disputes_id = NULL, updated_at = datetime('now') WHERE id = ?1",
-            params![keep_id, status],
-        )
-        .map_err(|err| err.to_string())?;
-    if kept == 0 {
-        return Err(format!("decision `{keep_id}` was not found"));
-    }
+    set_decision_status(&tx, keep_id, status)?;
     if let Some(other) = superseded_id {
         // keep and merge both retire the loser; archive retires both sides.
         let other_status = if action == "archive" {
@@ -175,41 +136,10 @@ pub fn resolve_decision_with_metadata(
         } else {
             "superseded"
         };
-        let other_updated = tx
-            .execute(
-                "UPDATE decisions SET status = ?2, disputes_id = NULL, updated_at = datetime('now') WHERE id = ?1",
-                params![other, other_status],
-            )
-            .map_err(|err| err.to_string())?;
-        if other_updated == 0 {
-            return Err(format!("decision `{other}` was not found"));
-        }
-        tx.execute(
-            "UPDATE decision_conflicts
-             SET status = 'user_resolved',
-                 resolution_strategy = ?3,
-                 resolved_by = 'user',
-                 resolved_at = datetime('now')
-             WHERE status = 'open'
-               AND (
-                 (source_decision_id = ?1 AND target_decision_id = ?2)
-                 OR (source_decision_id = ?2 AND target_decision_id = ?1)
-               )",
-            params![keep_id, other, action],
-        )
-        .map_err(|err| err.to_string())?;
+        set_decision_status(&tx, other, other_status)?;
+        tx.execute("UPDATE decision_conflicts SET status = 'user_resolved', resolution_strategy = ?3, resolved_by = 'user', resolved_at = datetime('now') WHERE status = 'open' AND ((source_decision_id = ?1 AND target_decision_id = ?2) OR (source_decision_id = ?2 AND target_decision_id = ?1))", params![keep_id, other, action]).map_err(|err| err.to_string())?;
     } else {
-        tx.execute(
-            "UPDATE decision_conflicts
-             SET status = 'user_resolved',
-                 resolution_strategy = ?2,
-                 resolved_by = 'user',
-                 resolved_at = datetime('now')
-             WHERE status = 'open'
-               AND (source_decision_id = ?1 OR target_decision_id = ?1)",
-            params![keep_id, action],
-        )
-        .map_err(|err| err.to_string())?;
+        tx.execute("UPDATE decision_conflicts SET status = 'user_resolved', resolution_strategy = ?2, resolved_by = 'user', resolved_at = datetime('now') WHERE status = 'open' AND (source_decision_id = ?1 OR target_decision_id = ?1)", params![keep_id, action]).map_err(|err| err.to_string())?;
     }
     tx.commit().map_err(|err| err.to_string())?;
     Ok(

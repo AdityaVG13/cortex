@@ -1,8 +1,9 @@
 use super::*;
 use crate::api_types::RetentionClass;
-use crate::conflict::{jaccard_similarity, ConflictClassification, ConflictResult};
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use crate::conflict::{ConflictClassification, ConflictResult, jaccard_similarity};
+use crate::handlers::{contains_ascii_ignore_case, looks_like_fs_path};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 pub fn insert_decision_with_state(
     tx: &rusqlite::Connection,
     decision: &str,
@@ -78,9 +79,7 @@ pub fn decorate_entry_with_relation(
     }
 }
 pub fn relation_to_json(relation: &ConflictResult) -> Value {
-    json!({"matched_id":relation.matched_id,
-"matched_agent":relation.matched_agent,"matched_trust_score":relation.matched_trust_score.map(round4),"similarity":{"jaccard":
-round4(relation.similarity_jaccard),"cosine":relation.similarity_cosine.map(round4),},})
+    json!({"matched_id":relation.matched_id,"matched_agent":relation.matched_agent,"matched_trust_score":relation.matched_trust_score.map(round4),"similarity":{"jaccard":round4(relation.similarity_jaccard),"cosine":relation.similarity_cosine.map(round4),},})
 }
 pub fn conflict_record_json(
     record_id: i64,
@@ -90,11 +89,7 @@ pub fn conflict_record_json(
     status: &str,
     strategy: Option<&str>,
 ) -> Value {
-    json!({"id":record_id,"source_decision_id":source_decision_id,"target_decision_id":target_decision_id,
-"classification":classification.as_str(),"status":status,"resolution_strategy":strategy,})
-}
-pub fn round4(value: f64) -> f64 {
-    (value * 10_000.0).round() / 10_000.0
+    json!({"id":record_id,"source_decision_id":source_decision_id,"target_decision_id":target_decision_id,"classification":classification.as_str(),"status":status,"resolution_strategy":strategy,})
 }
 pub fn assess_quality(text: &str) -> QualityAssessment {
     let trimmed = text.trim();
@@ -103,14 +98,11 @@ pub fn assess_quality(text: &str) -> QualityAssessment {
     } else {
         trimmed.chars().count()
     };
-    let length_score = if len < 10 {
-        0
-    } else if len < 50 {
-        30
-    } else if len < 200 {
-        70
-    } else {
-        100
+    let length_score = match len {
+        0..=9 => 0,
+        10..=49 => 30,
+        50..=199 => 70,
+        _ => 100,
     };
     let specificity_bonus = if has_specificity_markers(trimmed) {
         20
@@ -137,29 +129,19 @@ pub fn has_specificity_markers(text: &str) -> bool {
         "fn ", "func ", "def ", "class ", "struct ", "impl ", "select ", "insert ", "update ",
         "delete ",
     ];
-    let has_path = text.contains('/') || text.contains('\\');
-    let has_extension = file_extensions
-        .iter()
-        .any(|ext| contains_ascii_ignore_case(text, ext));
-    let has_function = text.contains("::")
+    looks_like_fs_path(text)
+        || file_extensions
+            .iter()
+            .any(|ext| contains_ascii_ignore_case(text, ext))
+        || text.contains("::")
         || text.contains("()")
         || text.contains("->")
         || code_prefixes
             .iter()
-            .any(|needle| contains_ascii_ignore_case(text, needle));
-    let has_identifier = text
-        .split_whitespace()
-        .any(|token| token.contains('_') && token.chars().any(|ch| ch.is_ascii_alphabetic()));
-    has_path || has_extension || has_function || has_identifier
-}
-fn contains_ascii_ignore_case(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    haystack
-        .as_bytes()
-        .windows(needle.len())
-        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+            .any(|needle| contains_ascii_ignore_case(text, needle))
+        || text
+            .split_whitespace()
+            .any(|token| token.contains('_') && token.chars().any(|ch| ch.is_ascii_alphabetic()))
 }
 #[allow(dead_code)]
 pub fn choose_semantic_dedup_action(
@@ -179,11 +161,9 @@ pub fn choose_semantic_dedup_action(
     SemanticDedupAction::Insert
 }
 pub fn should_merge_candidate(similarity: f32, jaccard: f64) -> bool {
-    if similarity > HARD_MERGE_THRESHOLD {
-        return true;
-    }
-    (REVIEW_MERGE_THRESHOLD..=HARD_MERGE_THRESHOLD).contains(&similarity)
-        && jaccard > JACCARD_MERGE_THRESHOLD
+    similarity > HARD_MERGE_THRESHOLD
+        || ((REVIEW_MERGE_THRESHOLD..=HARD_MERGE_THRESHOLD).contains(&similarity)
+            && jaccard > JACCARD_MERGE_THRESHOLD)
 }
 
 #[allow(dead_code)]

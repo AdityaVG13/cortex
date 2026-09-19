@@ -1,4 +1,6 @@
-use super::paths::{default_home_root, write_secret_file, CortexPaths, CORTEX_DIR_NAME};
+use super::paths::{
+    CORTEX_DIR_NAME, CortexPaths, default_home_root, nonempty_env_path, write_secret_file,
+};
 use super::runtime::{base62_encode_bytes, fnv1a16, left_pad_base62};
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use std::fs;
@@ -8,13 +10,7 @@ pub fn cortex_dir() -> PathBuf {
     if let Some(paths) = CortexPaths::process_paths() {
         return paths.home.clone();
     }
-    if let Ok(explicit) = std::env::var("CORTEX_HOME") {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-    default_home_root().join(CORTEX_DIR_NAME)
+    nonempty_env_path("CORTEX_HOME").unwrap_or_else(|| default_home_root().join(CORTEX_DIR_NAME))
 }
 pub fn try_generate_token_for(paths: &CortexPaths) -> Result<String, String> {
     let token = Uuid::new_v4().simple().to_string();
@@ -36,8 +32,7 @@ pub fn read_token_from(paths: &CortexPaths) -> Option<String> {
     super::paths::read_secret_file(&paths.token)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
+        .and_then(crate::protocol::nonempty_trimmed)
 }
 pub fn read_token() -> Option<String> {
     read_token_from(&CortexPaths::resolve())

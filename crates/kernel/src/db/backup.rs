@@ -8,8 +8,8 @@
 //! integrity plus sample exact reads, and records a verification report the
 //! health surface exposes as `last_verified_restore`.
 
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 pub const MANIFEST_SUFFIX: &str = ".manifest.json";
@@ -33,33 +33,9 @@ pub fn copy_database(source: &Connection, destination: &Path) -> Result<(), Stri
         .map_err(|e| format!("backup run: {e}"))
 }
 
-fn count(conn: &Connection, sql: &str) -> i64 {
-    conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0)
-}
-
 pub fn manifest_for(conn: &Connection, file: &Path) -> Value {
     let (brain_id, restore_epoch, policy_epoch) = super::records::brain_epochs(conn);
-    json!({
-        "file": file.file_name().map(|n| n.to_string_lossy().to_string()),
-        "created_at": chrono::Utc::now().to_rfc3339(),
-        "sqlite_version": super::sqlite_version(),
-        "durability_profile": super::DurabilityProfile::from_env().as_str(),
-        "brain_id": brain_id,
-        "restore_epoch": restore_epoch,
-        "policy_epoch": policy_epoch,
-        "schema_user_version": super::current_schema_user_version(conn).unwrap_or(0),
-        "counts": {
-            "memories": count(conn, "SELECT COUNT(*) FROM memories"),
-            "decisions": count(conn, "SELECT COUNT(*) FROM decisions"),
-            "records": count(conn, "SELECT COUNT(*) FROM records"),
-            "revisions": count(conn, "SELECT COUNT(*) FROM revisions"),
-            "versions": count(conn, "SELECT COUNT(*) FROM versions"),
-        },
-        "bytes": std::fs::metadata(file).map(|m| m.len()).unwrap_or(0),
-        "integrity_ok": super::quick_check(conn),
-        "external_payloads": [],
-        "note": "coherent online-backup snapshot; external payload manifest is empty because all sources are inline"
-    })
+    json!({"file":file.file_name().map(|n| n.to_string_lossy().to_string()),"created_at":chrono::Utc::now().to_rfc3339(),"sqlite_version":super::sqlite_version(),"durability_profile":super::DurabilityProfile::from_env().as_str(),"brain_id":brain_id,"restore_epoch":restore_epoch,"policy_epoch":policy_epoch,"schema_user_version":super::current_schema_user_version(conn).unwrap_or(0),"counts":{"memories":super::count_or_zero(conn,"SELECT COUNT(*) FROM memories"),"decisions":super::count_or_zero(conn,"SELECT COUNT(*) FROM decisions"),"records":super::count_or_zero(conn,"SELECT COUNT(*) FROM records"),"revisions":super::count_or_zero(conn,"SELECT COUNT(*) FROM revisions"),"versions":super::count_or_zero(conn,"SELECT COUNT(*) FROM versions")},"bytes":std::fs::metadata(file).map(|m| m.len()).unwrap_or(0),"integrity_ok":super::quick_check(conn),"external_payloads":[],"note":"coherent online-backup snapshot; external payload manifest is empty because all sources are inline"})
 }
 
 /// Write a coherent backup and its manifest. Returns (db path, manifest path).
@@ -79,10 +55,9 @@ pub fn backup_to(db_path: &Path, destination: &Path) -> Result<(PathBuf, PathBuf
     }
     let manifest = manifest_for(&verify, destination);
     let manifest_path = PathBuf::from(format!("{}{MANIFEST_SUFFIX}", destination.display()));
-    let manifest_json = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| format!("serialize manifest: {e}"))?;
-    std::fs::write(&manifest_path, manifest_json)
-        .map_err(|e| format!("write manifest: {e}"))?;
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest).map_err(|e| format!("serialize manifest: {e}"))?;
+    std::fs::write(&manifest_path, manifest_json).map_err(|e| format!("write manifest: {e}"))?;
     Ok((destination.to_path_buf(), manifest_path))
 }
 
@@ -106,24 +81,7 @@ pub struct RestoreReport {
 
 impl RestoreReport {
     pub fn to_json(&self) -> Value {
-        json!({
-            "verified_at": chrono::Utc::now().to_rfc3339(),
-            "new_restore_epoch": self.new_restore_epoch,
-            "previous_restore_epoch": self.previous_restore_epoch,
-            "integrity_ok": self.integrity_ok,
-            "sample_reads_ok": self.sample_reads_ok,
-            "counts": {"records": self.records, "decisions": self.decisions, "memories": self.memories},
-            "aliases_expired": self.aliases_expired,
-            "projections_rebuilt": self.projections_rebuilt,
-            "erasure_ledger_present": self.erasure_ledger_present,
-            "erasures_reapplied": self.erasures_reapplied,
-            "quarantined": self.quarantined,
-            "projections_ok": self.projections_ok,
-            "verified": self.integrity_ok
-                && self.sample_reads_ok
-                && !self.quarantined
-                && self.projections_ok,
-        })
+        json!({"verified_at":chrono::Utc::now().to_rfc3339(),"new_restore_epoch":self.new_restore_epoch,"previous_restore_epoch":self.previous_restore_epoch,"integrity_ok":self.integrity_ok,"sample_reads_ok":self.sample_reads_ok,"counts":{"records":self.records,"decisions":self.decisions,"memories":self.memories},"aliases_expired":self.aliases_expired,"projections_rebuilt":self.projections_rebuilt,"erasure_ledger_present":self.erasure_ledger_present,"erasures_reapplied":self.erasures_reapplied,"quarantined":self.quarantined,"projections_ok":self.projections_ok,"verified":self.integrity_ok&&self.sample_reads_ok&&!self.quarantined&&self.projections_ok})
     }
 }
 
@@ -191,14 +149,18 @@ pub fn restore_from(
         params![new_epoch],
     )
     .map_err(|e| e.to_string())?;
-    let aliases_expired = conn.execute("DELETE FROM view_aliases", []).map_err(|e| e.to_string())? as i64
-        + conn.execute("DELETE FROM view_receipts", []).map_err(|e| e.to_string())? as i64;
+    let aliases_expired = conn
+        .execute("DELETE FROM view_aliases", [])
+        .map_err(|e| e.to_string())? as i64
+        + conn
+            .execute("DELETE FROM view_receipts", [])
+            .map_err(|e| e.to_string())? as i64;
     // Erasure floor first: the home ledger re-applies every erasure the
     // backup predates, so a restore can never resurrect an erased record. A
     // backup without the ledger while the home has one is quarantined.
     let reconciliation = super::erasure::reconcile_after_restore(&conn, home)?;
-    let erasure_ledger_present =
-        count(&conn, "SELECT COUNT(*) FROM erasures") > 0 || reconciliation.ledger_entries == 0;
+    let erasure_ledger_present = super::count_or_zero(&conn, "SELECT COUNT(*) FROM erasures") > 0
+        || reconciliation.ledger_entries == 0;
     // Disposable projections are rebuilt, never trusted from the backup.
     // `rebuild_fts` is INSERT OR IGNORE (keeps backup FTS rows); wipe first.
     let mut projections_rebuilt = 0usize;
@@ -212,23 +174,11 @@ pub fn restore_from(
     }
     let projections_ok = fts_ok && clock_ok;
     let integrity_ok = super::verify_integrity(&conn).unwrap_or(false);
-    let records = count(&conn, "SELECT COUNT(*) FROM records");
-    let decisions = count(&conn, "SELECT COUNT(*) FROM decisions");
-    let memories = count(&conn, "SELECT COUNT(*) FROM memories");
+    let records = super::count_or_zero(&conn, "SELECT COUNT(*) FROM records");
+    let decisions = super::count_or_zero(&conn, "SELECT COUNT(*) FROM decisions");
+    let memories = super::count_or_zero(&conn, "SELECT COUNT(*) FROM memories");
     // Sample exact reads: every legacy address must resolve to a head with a body.
-    let sample_reads_ok = conn
-        .prepare("SELECT a.record_id FROM addresses a WHERE a.scheme='legacy' ORDER BY a.record_id LIMIT 25")
-        .and_then(|mut stmt| {
-            let ids: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<_, _>>()?;
-            for id in ids {
-                let heads = super::records::heads(&conn, &id)?;
-                if heads.is_empty() || super::records::revision_body(&conn, &heads[0])?.is_none() {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        })
-        .unwrap_or(false);
+    let sample_reads_ok = conn.prepare("SELECT a.record_id FROM addresses a WHERE a.scheme='legacy' ORDER BY a.record_id LIMIT 25").and_then(|mut stmt| { let ids: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<_, _>>()?; for id in ids { let heads = super::records::heads(&conn, &id)?; if heads.is_empty() || super::records::revision_body(&conn, &heads[0])?.is_none() { return Ok(false); } } Ok(true) }).unwrap_or(false);
     let report = RestoreReport {
         new_restore_epoch: new_epoch,
         previous_restore_epoch: if backup_epoch != previous_epoch {
@@ -251,8 +201,7 @@ pub fn restore_from(
     };
     let report_json = serde_json::to_string_pretty(&report.to_json())
         .map_err(|e| format!("serialize restore report: {e}"))?;
-    std::fs::write(&report.report_path, report_json)
-        .map_err(|e| format!("write report: {e}"))?;
+    std::fs::write(&report.report_path, report_json).map_err(|e| format!("write report: {e}"))?;
     Ok(report)
 }
 

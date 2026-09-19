@@ -3,23 +3,12 @@
 //! effects. Convergence is not consensus: replicas converge on the *evidence*
 //! while contradictory heads stay contradictory.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-pub const DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS pending_commits (
-  origin_id TEXT NOT NULL, origin_counter INTEGER NOT NULL,
-  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
-  received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  PRIMARY KEY(origin_id, origin_counter)
-);
-CREATE TABLE IF NOT EXISTS fences (
-  resource TEXT PRIMARY KEY, holder TEXT NOT NULL, token INTEGER NOT NULL,
-  expires_at TEXT, issued_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-"#;
+pub const DDL: &str = "CREATE TABLE IF NOT EXISTS pending_commits (origin_id TEXT NOT NULL, origin_counter INTEGER NOT NULL, payload_json TEXT NOT NULL CHECK(json_valid(payload_json)), received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY(origin_id, origin_counter)); CREATE TABLE IF NOT EXISTS fences (resource TEXT PRIMARY KEY, holder TEXT NOT NULL, token INTEGER NOT NULL, expires_at TEXT, issued_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));";
 
 pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(DDL)
@@ -70,6 +59,16 @@ fn have(conn: &Connection, r: &CausalRef) -> rusqlite::Result<bool> {
     .map(|n| n > 0)
 }
 
+fn missing_parents(conn: &Connection, parents: &[CausalRef]) -> Result<Vec<CausalRef>, String> {
+    let mut missing = Vec::new();
+    for parent in parents {
+        if !have(conn, parent).map_err(|e| e.to_string())? {
+            missing.push(parent.clone());
+        }
+    }
+    Ok(missing)
+}
+
 fn last_counter(conn: &Connection, origin: &str) -> rusqlite::Result<Option<i64>> {
     conn.query_row(
         "SELECT MAX(origin_counter) FROM commits WHERE origin_id = ?1",
@@ -92,27 +91,16 @@ pub fn ingest(conn: &Connection, commit: &ReplicatedCommit) -> Result<Ingest, St
     if have(conn, &me).map_err(|e| e.to_string())? {
         return Ok(Ingest::Duplicate);
     }
-    let mut missing: Vec<CausalRef> = Vec::new();
-    for parent in &commit.parents {
-        if !have(conn, parent).map_err(|e| e.to_string())? {
-            missing.push(parent.clone());
-        }
-    }
+    let mut missing = missing_parents(conn, &commit.parents)?;
     let last = last_counter(conn, &commit.origin_id).map_err(|e| e.to_string())?;
-    if let Some(counter) = last {
-        if commit.origin_counter != counter + 1 {
-            missing.push(CausalRef {
-                origin_id: commit.origin_id.clone(),
-                origin_counter: counter + 1,
-            });
-        }
+    if let Some(counter) = last.filter(|&c| commit.origin_counter != c + 1) {
+        missing.push(CausalRef {
+            origin_id: commit.origin_id.clone(),
+            origin_counter: counter + 1,
+        });
     }
     if !missing.is_empty() {
-        conn.execute(
-            "INSERT OR REPLACE INTO pending_commits (origin_id, origin_counter, payload_json) VALUES (?1, ?2, ?3)",
-            params![commit.origin_id, commit.origin_counter, serde_json::to_string(commit).map_err(|e| e.to_string())?],
-        )
-        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT OR REPLACE INTO pending_commits (origin_id, origin_counter, payload_json) VALUES (?1, ?2, ?3)", params![commit.origin_id, commit.origin_counter, serde_json::to_string(commit).map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
         missing.sort_by(|a, b| {
             (&a.origin_id, a.origin_counter).cmp(&(&b.origin_id, b.origin_counter))
         });
@@ -133,17 +121,7 @@ pub fn ingest(conn: &Connection, commit: &ReplicatedCommit) -> Result<Ingest, St
 
 fn apply(conn: &Connection, commit: &ReplicatedCommit) -> Result<(i64, String), String> {
     let commit_id = format!("{}:{}", commit.origin_id, commit.origin_counter);
-    conn.execute(
-        "INSERT INTO commits (commit_id, principal_id, idempotency_key, ack_profile, origin_id, origin_counter) VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
-        params![
-            commit_id,
-            commit.principal,
-            if commit.ack_profile == "power_loss_assumed" { "power_loss_assumed" } else { "process_crash" },
-            commit.origin_id,
-            commit.origin_counter
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO commits (commit_id, principal_id, idempotency_key, ack_profile, origin_id, origin_counter) VALUES (?1, ?2, NULL, ?3, ?4, ?5)", params![commit_id, commit.principal, if commit.ack_profile == "power_loss_assumed" { "power_loss_assumed" } else { "process_crash" }, commit.origin_id, commit.origin_counter]).map_err(|e| e.to_string())?;
     let sequence = conn.last_insert_rowid();
     // Concurrent heads stay concurrent: a peer revision never replaces a
     // local head it did not descend from.
@@ -170,9 +148,7 @@ fn apply(conn: &Connection, commit: &ReplicatedCommit) -> Result<(i64, String), 
 pub fn drain_pending(conn: &Connection) -> Result<usize, String> {
     let mut total = 0usize;
     loop {
-        let mut stmt = conn
-            .prepare("SELECT origin_id, origin_counter, payload_json FROM pending_commits ORDER BY origin_id, origin_counter")
-            .map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT origin_id, origin_counter, payload_json FROM pending_commits ORDER BY origin_id, origin_counter").map_err(|e| e.to_string())?;
         let rows: Vec<(String, i64, String)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(|e| e.to_string())?
@@ -183,13 +159,7 @@ pub fn drain_pending(conn: &Connection) -> Result<usize, String> {
             let Ok(commit) = serde_json::from_str::<ReplicatedCommit>(&payload) else {
                 continue;
             };
-            let mut parents_ok = true;
-            for parent in &commit.parents {
-                if !have(conn, parent).map_err(|e| e.to_string())? {
-                    parents_ok = false;
-                    break;
-                }
-            }
+            let parents_ok = missing_parents(conn, &commit.parents)?.is_empty();
             let order_ok = match last_counter(conn, &origin).map_err(|e| e.to_string())? {
                 Some(c) => c + 1 == counter,
                 None => true,
@@ -213,8 +183,7 @@ pub fn drain_pending(conn: &Connection) -> Result<usize, String> {
 
 pub fn pending_count(conn: &Connection) -> i64 {
     ensure(conn).ok();
-    conn.query_row("SELECT COUNT(*) FROM pending_commits", [], |r| r.get(0))
-        .unwrap_or(0)
+    super::count_or_zero(conn, "SELECT COUNT(*) FROM pending_commits")
 }
 
 /// Origin-lineage support: copies of a claim collapse to their origin, agent
@@ -228,15 +197,14 @@ pub struct SupportWitness {
 }
 
 pub fn independent_support(witnesses: &[SupportWitness]) -> usize {
-    let mut origins: BTreeSet<String> = BTreeSet::new();
-    for w in witnesses {
-        let Some(origin) = w.origin_id.as_deref() else {
-            continue;
-        };
-        let root = w.copied_from.as_deref().unwrap_or(origin);
-        origins.insert(root.to_string());
-    }
-    origins.len()
+    witnesses
+        .iter()
+        .filter_map(|w| {
+            let origin = w.origin_id.as_deref()?;
+            Some(w.copied_from.as_deref().unwrap_or(origin).to_string())
+        })
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 /// Fencing token for an exclusive effect. A lease is advisory; the effect
@@ -272,11 +240,7 @@ pub fn acquire_fence(
     }
     let token = current.map(|(_, t, _)| t + 1).unwrap_or(1);
     let expires = (now + chrono::Duration::seconds(ttl_seconds.max(1))).to_rfc3339();
-    conn.execute(
-        "INSERT INTO fences (resource, holder, token, expires_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(resource) DO UPDATE SET holder = excluded.holder, token = excluded.token, expires_at = excluded.expires_at, issued_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-        params![resource, holder, token, expires],
-    )
-    .map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO fences (resource, holder, token, expires_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(resource) DO UPDATE SET holder = excluded.holder, token = excluded.token, expires_at = excluded.expires_at, issued_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')", params![resource, holder, token, expires]).map_err(|e| e.to_string())?;
     Ok(Fence {
         resource: resource.to_string(),
         holder: holder.to_string(),
@@ -288,12 +252,11 @@ pub fn acquire_fence(
 /// a garbage `expires_at` must not lock the resource forever or authorize
 /// exclusive effects.
 fn fence_unexpired(expires_at: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> bool {
-    match expires_at {
-        None => true,
-        Some(raw) => chrono::DateTime::parse_from_rfc3339(raw)
+    expires_at.is_none_or(|raw| {
+        chrono::DateTime::parse_from_rfc3339(raw)
             .map(|expires| expires > now)
-            .unwrap_or(false),
-    }
+            .unwrap_or(false)
+    })
 }
 
 /// The resource owner's check before an exclusive effect. A stale token
@@ -305,16 +268,7 @@ pub fn check_fence(conn: &Connection, resource: &str, token: i64) -> Result<(), 
             json!({"status": "denied", "error": format!("fence table unavailable: {err}"), "resource": resource}),
         );
     }
-    let current: Option<(i64, Option<String>)> = conn
-        .query_row(
-            "SELECT token, expires_at FROM fences WHERE resource = ?1",
-            [resource],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(|err| {
-            json!({"status": "denied", "error": format!("fence lookup failed: {err}"), "resource": resource})
-        })?;
+    let current: Option<(i64, Option<String>)> = conn.query_row("SELECT token, expires_at FROM fences WHERE resource = ?1", [resource], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|err| json!({"status": "denied", "error": format!("fence lookup failed: {err}"), "resource": resource}))?;
     match current {
         Some((t, expires)) if t == token => {
             if fence_unexpired(expires.as_deref(), chrono::Utc::now()) {

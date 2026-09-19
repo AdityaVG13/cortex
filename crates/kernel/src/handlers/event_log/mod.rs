@@ -1,6 +1,7 @@
 use super::truncate_chars;
+use crate::protocol::nonempty_str;
 use rusqlite;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 const MAX_EVENT_JSON_BYTES: usize = 1_200;
 const MAX_EVENT_VALUE_CHARS: usize = 240;
 const MERGE_EVENT_PREVIEW_CHARS: usize = 240;
@@ -24,22 +25,12 @@ const HIGH_VOLUME_EVENT_CAPS: &[(&str, i64)] = &[
     ("forget", 3_000),
     ("diary_write", 3_000),
 ];
-const NON_PERSISTENT_BENCHMARK_EVENT_KINDS: &[&str] = &[
-    "agent_boot",
-    "boot_savings",
-    "recall_query",
-    "store_savings",
-    "tool_call_savings",
-    "decision_stored",
-    "decision_conflict",
-    "decision_rejected_duplicate",
-    "decision_supersede",
-    "decision_refine_pending",
-    "decision_agreement_merge",
-    "decision_truncated",
-    "decision_resolve",
-    "merge",
-];
+fn skip_benchmark_persistence(kind: &str) -> bool {
+    HIGH_VOLUME_EVENT_CAPS
+        .iter()
+        .any(|(event_kind, _)| *event_kind == kind)
+        && !matches!(kind, "forget" | "diary_write")
+}
 fn compact_event_payload(kind: &str, data: Value) -> Value {
     let projected = match kind {
         "recall_query" => compact_recall_query_payload(data),
@@ -57,32 +48,19 @@ fn compact_recall_query_payload(data: Value) -> Value {
     };
     let semantic_route = compact_semantic_route(obj.get("semantic_route"));
     let shadow_semantic = compact_shadow_semantic(obj.get("shadow_semantic"));
-    json!({"agent":obj.get("agent").cloned(
-).unwrap_or(Value::Null),"query":obj.get("query").and_then(Value::as_str).map(|q|truncate_chars(q,120)).unwrap_or_default(),
-"budget":extract_i64(obj.get("budget")),"spent":extract_i64(obj.get("spent")),"saved":extract_i64(obj.get("saved")),"hits":
-extract_i64(obj.get("hits")),"mode":obj.get("mode").cloned().unwrap_or(Value::Null),"cached":obj.get("cached").cloned().unwrap_or(
-Value::Null),"tier":obj.get("tier").cloned().unwrap_or(Value::Null),"latency_ms":extract_i64(obj.get("latency_ms")),
-"method_breakdown":truncate_event_value(obj.get("method_breakdown").cloned().unwrap_or(Value::Null),0),"semantic_route":
-semantic_route,"shadow_semantic":shadow_semantic,})
+    json!({"agent":obj.get("agent").cloned().unwrap_or(Value::Null),"query":obj.get("query").and_then(Value::as_str).map(|q|truncate_chars(q,120)).unwrap_or_default(),"budget":extract_i64(obj.get("budget")),"spent":extract_i64(obj.get("spent")),"saved":extract_i64(obj.get("saved")),"hits":extract_i64(obj.get("hits")),"mode":obj.get("mode").cloned().unwrap_or(Value::Null),"cached":obj.get("cached").cloned().unwrap_or(Value::Null),"tier":obj.get("tier").cloned().unwrap_or(Value::Null),"latency_ms":extract_i64(obj.get("latency_ms")),"method_breakdown":truncate_event_value(obj.get("method_breakdown").cloned().unwrap_or(Value::Null),0),"semantic_route":semantic_route,"shadow_semantic":shadow_semantic,})
 }
 fn compact_semantic_route(value: Option<&Value>) -> Value {
     let Some(route) = value.and_then(Value::as_object) else {
         return Value::Null;
     };
-    json!({"mode":route.get("mode").cloned().unwrap_or(Value::Null),"reason":route
-    .get("reason").cloned().unwrap_or(Value::Null),"sampled":route.get("sampled").cloned().unwrap_or(Value::Null),"trialPercent":route
-    .get("trialPercent").cloned().unwrap_or(Value::Null),"candidateCount":route.get("candidateCount").cloned().unwrap_or(Value::Null),
-    })
+    json!({"mode":route.get("mode").cloned().unwrap_or(Value::Null),"reason":route.get("reason").cloned().unwrap_or(Value::Null),"sampled":route.get("sampled").cloned().unwrap_or(Value::Null),"trialPercent":route.get("trialPercent").cloned().unwrap_or(Value::Null),"candidateCount":route.get("candidateCount").cloned().unwrap_or(Value::Null),})
 }
 fn compact_shadow_semantic(value: Option<&Value>) -> Value {
     let Some(shadow) = value.and_then(Value::as_object) else {
         return Value::Null;
     };
-    json!({"status":shadow.get("status").cloned().unwrap_or(Value::Null),"reason":shadow.get("reason").cloned().unwrap_or(Value
-::Null),"baselineCount":shadow.get("baselineCount").cloned().unwrap_or(Value::Null),"shadowCount":shadow.get("shadowCount").cloned
-().unwrap_or(Value::Null),"overlapCount":shadow.get("overlapCount").cloned().unwrap_or(Value::Null),"baselineTopSimilarity":shadow
-.get("baselineTopSimilarity").cloned().unwrap_or(Value::Null),"shadowTopSimilarity":shadow.get("shadowTopSimilarity").cloned().
-unwrap_or(Value::Null),"baselineTopSources":Value::Null,"shadowTopSources":Value::Null,})
+    json!({"status":shadow.get("status").cloned().unwrap_or(Value::Null),"reason":shadow.get("reason").cloned().unwrap_or(Value::Null),"baselineCount":shadow.get("baselineCount").cloned().unwrap_or(Value::Null),"shadowCount":shadow.get("shadowCount").cloned().unwrap_or(Value::Null),"overlapCount":shadow.get("overlapCount").cloned().unwrap_or(Value::Null),"baselineTopSimilarity":shadow.get("baselineTopSimilarity").cloned().unwrap_or(Value::Null),"shadowTopSimilarity":shadow.get("shadowTopSimilarity").cloned().unwrap_or(Value::Null),"baselineTopSources":Value::Null,"shadowTopSources":Value::Null,})
 }
 fn compact_merge_event_payload(data: Value) -> Value {
     let Some(obj) = data.as_object() else {
@@ -93,24 +71,13 @@ fn compact_merge_event_payload(data: Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let incoming_chars = incoming.chars().count() as i64;
-    json!({"source_id":obj.get(
-"source_id").cloned().unwrap_or(Value::Null),"target_id":obj.get("target_id").cloned().unwrap_or(Value::Null),"target_type":obj.
-get("target_type").cloned().unwrap_or(Value::Null),"similarity":obj.get("similarity").cloned().unwrap_or(Value::Null),"jaccard":
-obj.get("jaccard").cloned().unwrap_or(Value::Null),"source_agent":obj.get("source_agent").cloned().unwrap_or(Value::Null),
-"incoming_chars":incoming_chars,"incoming_preview":truncate_chars(incoming,MERGE_EVENT_PREVIEW_CHARS),})
+    json!({"source_id":obj.get("source_id").cloned().unwrap_or(Value::Null),"target_id":obj.get("target_id").cloned().unwrap_or(Value::Null),"target_type":obj.get("target_type").cloned().unwrap_or(Value::Null),"similarity":obj.get("similarity").cloned().unwrap_or(Value::Null),"jaccard":obj.get("jaccard").cloned().unwrap_or(Value::Null),"source_agent":obj.get("source_agent").cloned().unwrap_or(Value::Null),"incoming_chars":incoming_chars,"incoming_preview":truncate_chars(incoming,MERGE_EVENT_PREVIEW_CHARS),})
 }
 fn compact_savings_event_payload(data: Value) -> Value {
     let Some(obj) = data.as_object() else {
         return truncate_event_value(data, 0);
     };
-    json!({
-"agent":obj.get("agent").cloned().unwrap_or(Value::Null),"query":obj.get("query").and_then(Value::as_str).map(|q|truncate_chars(q,
-120)).unwrap_or_default(),"saved":extract_i64(obj.get("saved")),"served":extract_i64(obj.get("served")),"baseline":extract_i64(obj
-.get("baseline")),"spent":extract_i64(obj.get("spent")),"budget":extract_i64(obj.get("budget")),"hits":extract_i64(obj.get("hits")
-),"boots":extract_i64(obj.get("boots")),"percent":extract_i64(obj.get("percent")),"admitted":extract_i64(obj.get("admitted")),
-"rejected":extract_i64(obj.get("rejected")),"mode":obj.get("mode").cloned().unwrap_or(Value::Null),"cached":obj.get("cached").
-cloned().unwrap_or(Value::Null),"tier":obj.get("tier").cloned().unwrap_or(Value::Null),"latency_ms":extract_i64(obj.get(
-"latency_ms")),})
+    json!({"agent":obj.get("agent").cloned().unwrap_or(Value::Null),"query":obj.get("query").and_then(Value::as_str).map(|q|truncate_chars(q,120)).unwrap_or_default(),"saved":extract_i64(obj.get("saved")),"served":extract_i64(obj.get("served")),"baseline":extract_i64(obj.get("baseline")),"spent":extract_i64(obj.get("spent")),"budget":extract_i64(obj.get("budget")),"hits":extract_i64(obj.get("hits")),"boots":extract_i64(obj.get("boots")),"percent":extract_i64(obj.get("percent")),"admitted":extract_i64(obj.get("admitted")),"rejected":extract_i64(obj.get("rejected")),"mode":obj.get("mode").cloned().unwrap_or(Value::Null),"cached":obj.get("cached").cloned().unwrap_or(Value::Null),"tier":obj.get("tier").cloned().unwrap_or(Value::Null),"latency_ms":extract_i64(obj.get("latency_ms")),})
 }
 fn extract_i64(value: Option<&Value>) -> i64 {
     value
@@ -139,14 +106,12 @@ fn truncate_event_value(value: Value, depth: usize) -> Value {
                 .map(|item| truncate_event_value(item, depth + 1))
                 .collect(),
         ),
-        Value::Object(map) => {
-            let compacted = map
-                .into_iter()
+        Value::Object(map) => Value::Object(
+            map.into_iter()
                 .take(24)
                 .map(|(key, val)| (key, truncate_event_value(val, depth + 1)))
-                .collect();
-            Value::Object(compacted)
-        }
+                .collect(),
+        ),
         other => other,
     }
 }
@@ -244,8 +209,7 @@ fn payload_field_has_benchmark_prefix(payload: &Value, key: &str, lowercase_pref
     payload
         .get(key)
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .and_then(nonempty_str)
         .map(|value| value.to_ascii_lowercase().starts_with(lowercase_prefix))
         .unwrap_or(false)
 }
@@ -263,8 +227,7 @@ fn should_skip_benchmark_event_persistence(
     payload: &Value,
     source_agent: &str,
 ) -> bool {
-    NON_PERSISTENT_BENCHMARK_EVENT_KINDS.contains(&kind)
-        && is_benchmark_event_source(source_agent, payload)
+    skip_benchmark_persistence(kind) && is_benchmark_event_source(source_agent, payload)
 }
 pub fn log_event(
     conn: &rusqlite::Connection,
@@ -303,16 +266,7 @@ fn prune_event_type_keep_latest(
     if keep_rows < 1 {
         return Ok(());
     }
-    let mut stmt = conn.prepare_cached(
-        "DELETE FROM events
-         WHERE id IN (
-           SELECT id
-           FROM events
-           WHERE type = ?1
-           ORDER BY id DESC
-           LIMIT -1 OFFSET ?2
-         )",
-    )?;
+    let mut stmt = conn.prepare_cached("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE type = ?1 ORDER BY id DESC LIMIT -1 OFFSET ?2)")?;
     stmt.execute(rusqlite::params![event_type, keep_rows])?;
     Ok(())
 }

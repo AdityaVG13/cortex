@@ -1,6 +1,6 @@
 use crate::handlers::estimate_tokens;
-use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::{json, Value};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::{Value, json};
 
 /// Pass 45 recovered a corrupt `raw_entries` blob on append so later
 /// deposits still land. `focus_current` used to fail the JSON parse and
@@ -20,55 +20,44 @@ fn parse_focus_entries(raw_json: &str) -> Vec<String> {
     }
 }
 
-fn sql_same_agent() -> &'static str {
-    "(lower(trim(agent)) = ?1 OR lower(trim(agent)) LIKE ?2 ESCAPE '\\')"
+fn sql_same_agent() -> String {
+    crate::handlers::ident_match_sql("agent", 1)
+}
+
+fn close_open_session(conn: &Connection, id: i64) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE focus_sessions SET status = 'closed', ended_at = datetime('now') WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {
     let existing: Option<(i64, String)> = if let Some((ident, like)) =
-        crate::compiler::capsules::boot_agent_match_params(agent)
+        crate::handlers::agent_match_params(agent)
     {
-        conn.query_row(
-            &format!(
-                "SELECT id, label FROM focus_sessions WHERE {} AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
-                sql_same_agent()
-            ),
-            params![ident, like],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to look up focus: {e}"))?
+        conn.query_row(&format!("SELECT id, label FROM focus_sessions WHERE {} AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1", sql_same_agent()), params![ident, like], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|e| format!("Failed to look up focus: {e}"))?
     } else {
         None
     };
     if let Some((id, open_label)) = existing {
         return Ok(
-            json!({"id":id,"label":open_label,"status":"already_open","message":
-format!("Focus session already open with label '{open_label}'")}),
+            json!({"id":id,"label":open_label,"status":"already_open","message":format!("Focus session already open with label '{open_label}'")}),
         );
     }
-    conn.execute("INSERT INTO focus_sessions (label, agent, status, raw_entries) VALUES (?1, ?2, 'open', '[]')", params![label, agent])
-        .map_err(|e| format!("Failed to start focus: {e}"))?;
+    conn.execute("INSERT INTO focus_sessions (label, agent, status, raw_entries) VALUES (?1, ?2, 'open', '[]')", params![label, agent]).map_err(|e| format!("Failed to start focus: {e}"))?;
     let id = conn.last_insert_rowid();
-    Ok(json!({"id":id,"label":label,"status":"opened",
-"message":format!("Focus started: '{label}'. Store decisions normally — they'll be tracked. Call focus_end when done.")}))
+    Ok(
+        json!({"id":id,"label":label,"status":"opened","message":format!("Focus started: '{label}'. Store decisions normally — they'll be tracked. Call focus_end when done.")}),
+    )
 }
 pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
-    let Some((ident, like)) = crate::compiler::capsules::boot_agent_match_params(agent) else {
+    let Some((ident, like)) = crate::handlers::agent_match_params(agent) else {
         return false;
     };
-    let result = conn.query_row(
-        &format!(
-            "SELECT id, raw_entries FROM focus_sessions WHERE {} AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1",
-            sql_same_agent()
-        ),
-        params![ident, like],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-    );
-    let (id, raw_json) = match result {
-        Ok(row) => row,
-        Err(rusqlite::Error::QueryReturnedNoRows) => return false,
-        Err(_) => return false,
+    let result = conn.query_row(&format!("SELECT id, raw_entries FROM focus_sessions WHERE {} AND status = 'open' ORDER BY julianday(started_at) DESC, id DESC LIMIT 1", sql_same_agent()), params![ident, like], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)));
+    let Ok((id, raw_json)) = result else {
+        return false;
     };
     // Corrupt raw_entries used to make every later append no-op while the
     // session stayed "open". Keep the unreadable blob as one entry so the
@@ -91,41 +80,25 @@ pub fn focus_end(
     agent: &str,
     owner_id: Option<i64>,
 ) -> Result<Value, String> {
-    let Some((ident, like)) = crate::compiler::capsules::boot_agent_match_params(agent) else {
+    let Some((ident, like)) = crate::handlers::agent_match_params(agent) else {
         return Err(format!("No open focus session with label '{label}'"));
     };
-    let session: Option<(i64, String)> = conn
-        .query_row(
-            "SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND (lower(trim(agent)) = ?2 OR lower(trim(agent)) LIKE ?3 ESCAPE '\\') AND status = 'open'",
-            params![label, ident, like],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to look up focus: {e}"))?;
+    let session: Option<(i64, String)> = conn.query_row(&format!("SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND {} AND status = 'open'", crate::handlers::ident_match_sql("agent", 2)), params![label, ident, like], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|e| format!("Failed to look up focus: {e}"))?;
     let (id, raw_json) =
         session.ok_or_else(|| format!("No open focus session with label '{label}'"))?;
     let entries: Vec<String> = match serde_json::from_str(&raw_json) {
         Ok(entries) => entries,
         Err(e) => {
-            conn.execute(
-                "UPDATE focus_sessions SET status = 'closed', ended_at = datetime('now') WHERE id = ?1",
-                params![id],
-            )
-            .map_err(|err| err.to_string())?;
+            close_open_session(conn, id)?;
             return Err(format!(
                 "focus session '{label}' raw_entries is not valid JSON: {e}; session closed without a summary"
             ));
         }
     };
     if entries.is_empty() {
-        conn.execute(
-            "UPDATE focus_sessions SET status = 'closed', ended_at = datetime('now') WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
+        close_open_session(conn, id)?;
         return Ok(
-            json!({"id":id,"label":label,"status":"closed","entries":0,"summary":null,"message":
-"Focus closed (no entries captured)"}),
+            json!({"id":id,"label":label,"status":"closed","entries":0,"summary":null,"message":"Focus closed (no entries captured)"}),
         );
     }
     let tokens_before = entries.iter().map(|e| estimate_tokens(e)).sum::<usize>();
@@ -139,24 +112,12 @@ pub fn focus_end(
         .transaction()
         .map_err(|e| format!("Failed to start focus close transaction: {e}"))?;
     let stored_summary = if let Some(oid) = owner_id {
-        tx.execute(
-            "INSERT INTO memories (text, source, type, source_agent, confidence, owner_id, observed_at, valid_from) \
-             VALUES (?1, ?2, 'focus_summary', ?3, 0.9, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            params![summary, format!("focus::{label}"), agent, oid],
-        )
+        tx.execute("INSERT INTO memories (text, source, type, source_agent, confidence, owner_id, observed_at, valid_from) VALUES (?1, ?2, 'focus_summary', ?3, 0.9, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", params![summary, format!("focus::{label}"), agent, oid])
     } else {
-        tx.execute(
-            "INSERT INTO memories (text, source, type, source_agent, confidence, observed_at, valid_from) \
-             VALUES (?1, ?2, 'focus_summary', ?3, 0.9, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            params![summary, format!("focus::{label}"), agent],
-        )
+        tx.execute("INSERT INTO memories (text, source, type, source_agent, confidence, observed_at, valid_from) VALUES (?1, ?2, 'focus_summary', ?3, 0.9, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", params![summary, format!("focus::{label}"), agent])
     };
     stored_summary.map_err(|e| format!("Failed to store focus summary: {e}"))?;
-    tx.execute(
-        "UPDATE focus_sessions SET status = 'closed', summary = ?1, ended_at = datetime('now'), tokens_before = ?2, tokens_after = ?3 WHERE id = ?4",
-        params![summary, tokens_before as i64, tokens_after as i64, id],
-    )
-    .map_err(|e| e.to_string())?;
+    tx.execute("UPDATE focus_sessions SET status = 'closed', summary = ?1, ended_at = datetime('now'), tokens_before = ?2, tokens_after = ?3 WHERE id = ?4", params![summary, tokens_before as i64, tokens_after as i64, id]).map_err(|e| e.to_string())?;
     tx.commit()
         .map_err(|e| format!("Failed to commit focus close: {e}"))?;
     let savings = if tokens_before > 0 {
@@ -164,24 +125,14 @@ pub fn focus_end(
     } else {
         0
     };
-    Ok(json!({"id":id,"label":label,"status":"closed",
-"entries":entries.len(),"tokensBefore":tokens_before,"tokensAfter":tokens_after,"savings":format!("{savings}%"),"summary":summary,
-"message":format!("Focus '{label}' consolidated: {} entries → {} tokens ({}% reduction)",entries.len(),tokens_after,savings)}))
+    Ok(
+        json!({"id":id,"label":label,"status":"closed","entries":entries.len(),"tokensBefore":tokens_before,"tokensAfter":tokens_after,"savings":format!("{savings}%"),"summary":summary,"message":format!("Focus '{label}' consolidated: {} entries → {} tokens ({}% reduction)",entries.len(),tokens_after,savings)}),
+    )
 }
 pub fn focus_current(conn: &Connection, agent: &str, owner: Option<i64>) -> Option<Value> {
-    let (ident, like) = crate::compiler::capsules::boot_agent_match_params(agent)?;
+    let (ident, like) = crate::handlers::agent_match_params(agent)?;
     let scope = crate::db::owner_and_clause(conn, "focus_sessions", owner);
-    conn.query_row(
-        &format!("SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE (lower(trim(agent)) = ?1 OR lower(trim(agent)) LIKE ?2 ESCAPE '\\') AND status = 'open'{scope} ORDER BY julianday(started_at) DESC, id DESC LIMIT 1"),
-        params![ident, like],
-        |row| {
-            let raw: String = row.get(2)?;
-            let entries = parse_focus_entries(&raw);
-            Ok(json!({
-"id":row.get::<_,i64>(0)?,"label":row.get::<_,String>(1)?,"entries":entries.len(),"startedAt":row.get::<_,String>(3)?,}))
-        },
-    )
-    .ok()
+    conn.query_row(&format!("SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE {} AND status = 'open'{scope} ORDER BY julianday(started_at) DESC, id DESC LIMIT 1", crate::handlers::ident_match_sql("agent", 1)), params![ident, like], |row| { let raw: String = row.get(2)?; let entries = parse_focus_entries(&raw); Ok(json!({"id":row.get::<_,i64>(0)?,"label":row.get::<_,String>(1)?,"entries":entries.len(),"startedAt":row.get::<_,String>(3)?,})) }).ok()
 }
 fn summarize_entries(entries: &[String]) -> String {
     if entries.len() <= 3 {

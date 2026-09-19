@@ -1,3 +1,4 @@
+use crate::protocol::nonempty_opt;
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::atomic::AtomicI64;
@@ -51,6 +52,24 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 pub fn sqlite_version() -> String {
     rusqlite::version().to_string()
 }
+
+/// Fail-closed `SELECT COUNT(*)` (or any single i64). Distinct from backup/debt
+/// census helpers that substitute 0 or a pressure cap on read failure.
+pub fn count_sql(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<i64, String> {
+    conn.query_row(sql, params, |r| r.get(0))
+        .map_err(|e| e.to_string())
+}
+
+/// Census COUNT that treats an unreadable query as empty. Distinct from
+/// `count_sql`, which fails closed, and from debt pressure which substitutes
+/// the hard job cap.
+pub fn count_or_zero(conn: &Connection, sql: &str) -> i64 {
+    conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0)
+}
 /// Whether a SQLite release contains the WAL-reset race fix documented at
 /// https://sqlite.org/wal.html: fixed in 3.51.3 and backported to 3.44.6 and
 /// 3.50.7. Anything else in 3.7.0..=3.51.2 is affected; unparsable input is
@@ -100,7 +119,7 @@ impl DurabilityProfile {
         Self::parse(std::env::var("CORTEX_DURABILITY").ok().as_deref())
     }
     pub fn parse(raw: Option<&str>) -> Self {
-        match raw.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        match nonempty_opt(raw).map(|v| v.to_ascii_lowercase()).as_deref() {
             Some("fast") | Some("process_crash") | Some("normal") => Self::Fast,
             _ => Self::Durable,
         }
@@ -136,22 +155,14 @@ pub fn configure_with_profile(
     let cache_size = -(cache_size_kib as i64);
     let busy_timeout_ms = SQLITE_BUSY_TIMEOUT_MS;
     let wal_autocheckpoint_pages = SQLITE_WAL_AUTOCHECKPOINT_PAGES;
-    let pragmas = format!(
-        r#"
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = {synchronous};
-        PRAGMA busy_timeout = {busy_timeout_ms};
-        PRAGMA foreign_keys = ON;
-        PRAGMA mmap_size = {mmap_size};
-        PRAGMA cache_size = {cache_size};
-        PRAGMA temp_store = MEMORY;
-        PRAGMA wal_autocheckpoint = {wal_autocheckpoint_pages};
-        "#
-    );
-    conn.execute_batch(&pragmas)?;
+    conn.execute_batch(&format!("PRAGMA journal_mode = WAL; PRAGMA synchronous = {synchronous}; PRAGMA busy_timeout = {busy_timeout_ms}; PRAGMA foreign_keys = ON; PRAGMA mmap_size = {mmap_size}; PRAGMA cache_size = {cache_size}; PRAGMA temp_store = MEMORY; PRAGMA wal_autocheckpoint = {wal_autocheckpoint_pages};"))?;
     Ok(())
 }
 pub type MigrationDef = (&'static str, &'static str);
+
+fn rollback_savepoint(conn: &Connection, name: &str) {
+    let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+}
 
 fn savepoint_ident(name: &'static str) {
     assert!(
@@ -222,8 +233,7 @@ impl<'a> SqliteSavepoint<'a> {
     }
 
     pub fn release(mut self) -> rusqlite::Result<()> {
-        self.conn
-            .execute_batch(&format!("RELEASE {}", self.name))?;
+        self.conn.execute_batch(&format!("RELEASE {}", self.name))?;
         self.released = true;
         Ok(())
     }
@@ -232,10 +242,7 @@ impl<'a> SqliteSavepoint<'a> {
 impl Drop for SqliteSavepoint<'_> {
     fn drop(&mut self) {
         if !self.released {
-            let _ = self.conn.execute_batch(&format!(
-                "ROLLBACK TO {}; RELEASE {}",
-                self.name, self.name
-            ));
+            rollback_savepoint(self.conn, self.name);
         }
     }
 }
@@ -259,17 +266,17 @@ pub fn with_savepoint_mut<T, E>(
                 // named savepoint back so this connection is not returned to
                 // the write mutex still inside a transaction (the next
                 // BEGIN/SAVEPOINT would fail or join leftover writes).
-                let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+                rollback_savepoint(conn, name);
                 return Err(map_sql(err));
             }
             Ok(value)
         }
         Ok(Err(err)) => {
-            let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+            rollback_savepoint(conn, name);
             Err(err)
         }
         Err(payload) => {
-            let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+            rollback_savepoint(conn, name);
             std::panic::resume_unwind(payload);
         }
     }

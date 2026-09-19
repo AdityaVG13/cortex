@@ -4,7 +4,7 @@
 //! route back to its bytes. Codec and dictionary are versioned so a future
 //! decoder can be pinned; a roundtrip contract guards the bytes.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::io::{Read, Write};
 
 pub const COLD_CODEC: &str = "deflate/1";
@@ -13,20 +13,7 @@ pub const COLD_MARKER_PREFIX: &str = "[cold:";
 /// bomb on the recall/unfold path must not allocate past this.
 pub const COLD_MAX_DECODE_BYTES: usize = 2 * 1024 * 1024;
 
-pub const COLD_DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS cold_sources (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  namespace TEXT NOT NULL,
-  address TEXT NOT NULL,
-  codec TEXT NOT NULL,
-  byte_length INTEGER NOT NULL,
-  payload BLOB NOT NULL,
-  context_payload BLOB,
-  digest TEXT NOT NULL,
-  archived_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  UNIQUE(namespace, address)
-);
-"#;
+pub const COLD_DDL: &str = "CREATE TABLE IF NOT EXISTS cold_sources (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT NOT NULL, address TEXT NOT NULL, codec TEXT NOT NULL, byte_length INTEGER NOT NULL, payload BLOB NOT NULL, context_payload BLOB, digest TEXT NOT NULL, archived_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(namespace, address));";
 
 pub fn ensure_cold_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(COLD_DDL)
@@ -100,18 +87,7 @@ pub fn move_to_cold(conn: &Connection, namespace: &str, id: i64) -> rusqlite::Re
         .map(|c| encode(c.as_bytes()))
         .transpose()
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    conn.execute(
-        "INSERT OR REPLACE INTO cold_sources (namespace, address, codec, byte_length, payload, context_payload, digest) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            namespace,
-            id.to_string(),
-            COLD_CODEC,
-            text.len() as i64,
-            payload,
-            context_payload,
-            digest
-        ],
-    )?;
+    conn.execute("INSERT OR REPLACE INTO cold_sources (namespace, address, codec, byte_length, payload, context_payload, digest) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![namespace, id.to_string(), COLD_CODEC, text.len() as i64, payload, context_payload, digest])?;
     let cold_id: i64 = conn.query_row(
         "SELECT id FROM cold_sources WHERE namespace = ?1 AND address = ?2",
         params![namespace, id.to_string()],
@@ -145,13 +121,7 @@ pub fn hydrate(
     if !crate::db::table_exists(conn, "cold_sources") {
         return Ok(None);
     }
-    let row: Option<(Vec<u8>, Option<Vec<u8>>, String, i64)> = conn
-        .query_row(
-            "SELECT payload, context_payload, digest, byte_length FROM cold_sources WHERE namespace = ?1 AND address = ?2",
-            params![namespace, id.to_string()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()?;
+    let row: Option<(Vec<u8>, Option<Vec<u8>>, String, i64)> = conn.query_row("SELECT payload, context_payload, digest, byte_length FROM cold_sources WHERE namespace = ?1 AND address = ?2", params![namespace, id.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
     let Some((payload, context_payload, digest, byte_length)) = row else {
         return Ok(None);
     };
@@ -180,6 +150,5 @@ pub fn cold_count(conn: &Connection) -> i64 {
     if !crate::db::table_exists(conn, "cold_sources") {
         return 0;
     }
-    conn.query_row("SELECT COUNT(*) FROM cold_sources", [], |r| r.get(0))
-        .unwrap_or(0)
+    crate::db::count_or_zero(conn, "SELECT COUNT(*) FROM cold_sources")
 }

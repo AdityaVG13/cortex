@@ -1,12 +1,12 @@
 pub use crate::api_types::{ImportCounts, ImportOptions, ImportPayload};
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use crate::handlers::now_iso;
+use crate::protocol::nonempty_opt;
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 pub const DEFAULT_EXPORT_PAGE_LIMIT: usize = 1000;
 pub const MAX_EXPORT_PAGE_LIMIT: usize = 5000;
 fn normalize_entry_type(raw: Option<&str>, default: &str, aliases: &[(&[&str], &str)]) -> String {
-    let normalized = raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let normalized = nonempty_opt(raw)
         .map(str::to_ascii_lowercase)
         .unwrap_or_else(|| default.to_string());
     for (keys, mapped) in aliases {
@@ -51,7 +51,45 @@ fn normalize_decision_entry_type(raw: Option<&str>) -> String {
 /// SQLite `COALESCE` does not skip `''`. Empty temporal fields must bind as
 /// NULL so they mean "unbounded", matching omitted JSON properties.
 fn optional_time(raw: Option<&str>) -> Option<&str> {
-    raw.map(str::trim).filter(|value| !value.is_empty())
+    nonempty_opt(raw)
+}
+
+const PAGE_TAIL: &str = "WHERE status = 'active' ORDER BY id LIMIT ?1 OFFSET ?2";
+const CHANGESET_TAIL: &str = "WHERE status = 'active' AND julianday(updated_at) > julianday(?1) AND julianday(updated_at) <= julianday(?2) ORDER BY id";
+const PAGE_META: &str = "source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at";
+const CHANGESET_META: &str = "type, status, created_at, updated_at";
+
+const IMPORT_NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+const MEMORIES_INSERT: &str = "INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until{acl_cols}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'active', COALESCE(?13, ?14, {now}), COALESCE(?14, ?13, {now}), ?15{acl_vals})";
+const DECISIONS_INSERT: &str = "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until{acl_cols}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', COALESCE(?12, ?13, {now}), COALESCE(?13, ?12, {now}), ?14{acl_vals})";
+
+fn import_insert_sql(template: &str, has_acl: bool, first_acl: u8) -> String {
+    let sql = template.replace("{now}", IMPORT_NOW);
+    if has_acl {
+        sql.replace("{acl_cols}", ", owner_id, visibility")
+            .replace("{acl_vals}", &format!(", ?{first_acl}, ?{}", first_acl + 1))
+    } else {
+        sql.replace("{acl_cols}", "").replace("{acl_vals}", "")
+    }
+}
+
+fn imported(result: rusqlite::Result<usize>, kind: &str, idx: usize) -> Result<(), String> {
+    result
+        .map(|_| ())
+        .map_err(|e| format!("failed to import {kind}[{idx}]: {e}"))
+}
+
+fn has_acl(conn: &Connection, table: &str) -> Result<bool, String> {
+    Ok(column_exists(conn, table, "owner_id")? && column_exists(conn, table, "visibility")?)
+}
+
+fn agent_client<'a>(
+    agent: Option<&'a str>,
+    client: Option<&'a str>,
+    fallback: &'a str,
+) -> (&'a str, &'a str) {
+    let agent = agent.unwrap_or(fallback);
+    (agent, client.unwrap_or(agent))
 }
 pub fn export_json_page_value(
     conn: &Connection,
@@ -60,19 +98,20 @@ pub fn export_json_page_value(
     decisions_offset: usize,
 ) -> Result<Value, String> {
     let limit = limit.clamp(1, MAX_EXPORT_PAGE_LIMIT);
-    let(memories,memories_has_more)=
-query_table_json_page(conn,
-"SELECT id, text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, \
-         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM memories WHERE status = 'active' ORDER BY id LIMIT ?1 OFFSET ?2"
-,limit,memories_offset,)?;
-    let(decisions,decisions_has_more)=query_table_json_page(conn,
-"SELECT id, decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, \
-         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM decisions WHERE status = 'active' ORDER BY id LIMIT ?1 OFFSET ?2"
-,limit,decisions_offset,)?;
+    let (memories, memories_has_more) = query_table_json_page(
+        conn,
+        &format!("SELECT id, text, source, type, tags, {PAGE_META} FROM memories {PAGE_TAIL}"),
+        limit,
+        memories_offset,
+    )?;
+    let (decisions, decisions_has_more) = query_table_json_page(
+        conn,
+        &format!("SELECT id, decision, context, type, {PAGE_META} FROM decisions {PAGE_TAIL}"),
+        limit,
+        decisions_offset,
+    )?;
     Ok(
-        json!({"version":1,"mode":"page","exported_at":now_iso(),"limit":limit,"memories_offset":memories_offset
-,"decisions_offset":decisions_offset,"next_memories_offset":next_page_offset(memories_offset,&memories,memories_has_more),"next_decisions_offset":next_page_offset(decisions_offset,&decisions,decisions_has_more),"truncated":memories_has_more||decisions_has_more,"memories":memories,"decisions":decisions,"memories_count":
-memories.len(),"decisions_count":decisions.len(),}),
+        json!({"version":1,"mode":"page","exported_at":now_iso(),"limit":limit,"memories_offset":memories_offset,"decisions_offset":decisions_offset,"next_memories_offset":next_page_offset(memories_offset,&memories,memories_has_more),"next_decisions_offset":next_page_offset(decisions_offset,&decisions,decisions_has_more),"truncated":memories_has_more||decisions_has_more,"memories":memories,"decisions":decisions,"memories_count":memories.len(),"decisions_count":decisions.len(),}),
     )
 }
 pub fn export_json_changeset_value(
@@ -86,12 +125,12 @@ pub fn export_json_changeset_value(
     let lower = since.unwrap_or("0001-01-01T00:00:00.000Z");
     let memories = query_rows_json(
         conn,
-        "SELECT id, text, source, type, status, created_at, updated_at FROM memories WHERE status = 'active' AND julianday(updated_at) > julianday(?1) AND julianday(updated_at) <= julianday(?2) ORDER BY id",
+        &format!("SELECT id, text, source, {CHANGESET_META} FROM memories {CHANGESET_TAIL}"),
         &[&lower, &cursor],
     )?;
     let decisions = query_rows_json(
         conn,
-        "SELECT id, decision, context, type, status, created_at, updated_at FROM decisions WHERE status = 'active' AND julianday(updated_at) > julianday(?1) AND julianday(updated_at) <= julianday(?2) ORDER BY id",
+        &format!("SELECT id, decision, context, {CHANGESET_META} FROM decisions {CHANGESET_TAIL}"),
         &[&lower, &cursor],
     )?;
     Ok(
@@ -117,10 +156,7 @@ fn redacted_payload(payload: &ImportPayload, counts: &mut ImportCounts) -> Impor
     if let Some(decisions) = out.decisions.as_mut() {
         decisions.retain_mut(|d| {
             let redacted = crate::handlers::redact_secrets(d.decision.trim());
-            let context = d
-                .context
-                .as_deref()
-                .map(|c| crate::handlers::redact_secrets(c));
+            let context = d.context.as_deref().map(crate::handlers::redact_secrets);
             if redacted.is_empty() {
                 counts.excluded += 1;
                 return false;
@@ -143,10 +179,8 @@ pub fn import_payload(
     let mut counts = ImportCounts::default();
     let visibility = options.visibility.as_deref().unwrap_or("private");
     let fallback = options.source_agent_fallback.as_str();
-    let memories_has_owner = column_exists(conn, "memories", "owner_id")?;
-    let memories_has_visibility = column_exists(conn, "memories", "visibility")?;
-    let decisions_has_owner = column_exists(conn, "decisions", "owner_id")?;
-    let decisions_has_visibility = column_exists(conn, "decisions", "visibility")?;
+    let memories_has_acl = has_acl(conn, "memories")?;
+    let decisions_has_acl = has_acl(conn, "decisions")?;
     let tx = conn
         .transaction()
         .map_err(|e| format!("failed to start import transaction: {e}"))?;
@@ -161,29 +195,58 @@ pub fn import_payload(
             let observed_at = optional_time(m.observed_at.as_deref());
             let valid_from = optional_time(m.valid_from.as_deref());
             let valid_until = optional_time(m.valid_until.as_deref());
-            let inserted = if memories_has_owner && memories_has_visibility {
-                tx.
-execute(
-"INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until, owner_id, visibility)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'active', COALESCE(?13, ?14, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?14, ?13, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?15, ?16, ?17)"
-,params![m.text,m.source,entry_type,m.tags,m.source_agent.as_deref().unwrap_or(fallback),m.source_client.as_deref().unwrap_or(m.
-source_agent.as_deref().unwrap_or(fallback)),m.source_model.as_deref(),m.confidence.unwrap_or(0.8),m.reasoning_depth.as_deref().
-unwrap_or("single-shot"),m.trust_score.unwrap_or(m.confidence.unwrap_or(0.8)),m.score.unwrap_or(1.0),m.retention_class.
-unwrap_or_default().as_str(),observed_at,valid_from,valid_until,options.owner_id,visibility
-,],)
+            let (agent, client) = agent_client(
+                m.source_agent.as_deref(),
+                m.source_client.as_deref(),
+                fallback,
+            );
+            let inserted = if memories_has_acl {
+                tx.execute(
+                    &import_insert_sql(MEMORIES_INSERT, true, 16),
+                    params![
+                        m.text,
+                        m.source,
+                        entry_type,
+                        m.tags,
+                        agent,
+                        client,
+                        m.source_model.as_deref(),
+                        m.confidence.unwrap_or(0.8),
+                        m.reasoning_depth.as_deref().unwrap_or("single-shot"),
+                        m.trust_score.unwrap_or(m.confidence.unwrap_or(0.8)),
+                        m.score.unwrap_or(1.0),
+                        m.retention_class.unwrap_or_default().as_str(),
+                        observed_at,
+                        valid_from,
+                        valid_until,
+                        options.owner_id,
+                        visibility
+                    ],
+                )
             } else {
                 tx.execute(
-"INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'active', COALESCE(?13, ?14, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?14, ?13, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?15)"
-,params![m.text,m.source,entry_type,m.tags,m.source_agent.as_deref().unwrap_or(fallback),m.source_client.as_deref().unwrap_or(m.
-source_agent.as_deref().unwrap_or(fallback)),m.source_model.as_deref(),m.confidence.unwrap_or(0.8),m.reasoning_depth.as_deref().
-unwrap_or("single-shot"),m.trust_score.unwrap_or(m.confidence.unwrap_or(0.8)),m.score.unwrap_or(1.0),m.retention_class.
-unwrap_or_default().as_str(),observed_at,valid_from,valid_until,],)
+                    &import_insert_sql(MEMORIES_INSERT, false, 16),
+                    params![
+                        m.text,
+                        m.source,
+                        entry_type,
+                        m.tags,
+                        agent,
+                        client,
+                        m.source_model.as_deref(),
+                        m.confidence.unwrap_or(0.8),
+                        m.reasoning_depth.as_deref().unwrap_or("single-shot"),
+                        m.trust_score.unwrap_or(m.confidence.unwrap_or(0.8)),
+                        m.score.unwrap_or(1.0),
+                        m.retention_class.unwrap_or_default().as_str(),
+                        observed_at,
+                        valid_from,
+                        valid_until
+                    ],
+                )
             };
-            match inserted {
-                Ok(_) => counts.memories += 1,
-                Err(e) => return Err(format!("failed to import memories[{idx}]: {e}")),
-            }
+            imported(inserted, "memories", idx)?;
+            counts.memories += 1;
         }
     }
     if let Some(decisions) = &payload.decisions {
@@ -192,28 +255,56 @@ unwrap_or_default().as_str(),observed_at,valid_from,valid_until,],)
             let observed_at = optional_time(d.observed_at.as_deref());
             let valid_from = optional_time(d.valid_from.as_deref());
             let valid_until = optional_time(d.valid_until.as_deref());
-            let inserted = if decisions_has_owner && decisions_has_visibility {
+            let (agent, client) = agent_client(
+                d.source_agent.as_deref(),
+                d.source_client.as_deref(),
+                fallback,
+            );
+            let inserted = if decisions_has_acl {
                 tx.execute(
-"INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until, owner_id, visibility)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', COALESCE(?12, ?13, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?13, ?12, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?14, ?15, ?16)"
-,params![d.decision,d.context,entry_type,d.source_agent.as_deref().unwrap_or(fallback),d.source_client.as_deref().unwrap_or(d.
-source_agent.as_deref().unwrap_or(fallback)),d.source_model.as_deref(),d.confidence.unwrap_or(0.8),d.reasoning_depth.as_deref().
-unwrap_or("single-shot"),d.trust_score.unwrap_or(d.confidence.unwrap_or(0.8)),d.score.unwrap_or(1.0),d.retention_class.
-unwrap_or_default().as_str(),observed_at,valid_from,valid_until,options.owner_id,visibility
-,],)
+                    &import_insert_sql(DECISIONS_INSERT, true, 15),
+                    params![
+                        d.decision,
+                        d.context,
+                        entry_type,
+                        agent,
+                        client,
+                        d.source_model.as_deref(),
+                        d.confidence.unwrap_or(0.8),
+                        d.reasoning_depth.as_deref().unwrap_or("single-shot"),
+                        d.trust_score.unwrap_or(d.confidence.unwrap_or(0.8)),
+                        d.score.unwrap_or(1.0),
+                        d.retention_class.unwrap_or_default().as_str(),
+                        observed_at,
+                        valid_from,
+                        valid_until,
+                        options.owner_id,
+                        visibility
+                    ],
+                )
             } else {
                 tx.execute(
-"INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', COALESCE(?12, ?13, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?13, ?12, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?14)"
-,params![d.decision,d.context,entry_type,d.source_agent.as_deref().unwrap_or(fallback),d.source_client.as_deref().unwrap_or(d.
-source_agent.as_deref().unwrap_or(fallback)),d.source_model.as_deref(),d.confidence.unwrap_or(0.8),d.reasoning_depth.as_deref().
-unwrap_or("single-shot"),d.trust_score.unwrap_or(d.confidence.unwrap_or(0.8)),d.score.unwrap_or(1.0),d.retention_class.
-unwrap_or_default().as_str(),observed_at,valid_from,valid_until,],)
+                    &import_insert_sql(DECISIONS_INSERT, false, 15),
+                    params![
+                        d.decision,
+                        d.context,
+                        entry_type,
+                        agent,
+                        client,
+                        d.source_model.as_deref(),
+                        d.confidence.unwrap_or(0.8),
+                        d.reasoning_depth.as_deref().unwrap_or("single-shot"),
+                        d.trust_score.unwrap_or(d.confidence.unwrap_or(0.8)),
+                        d.score.unwrap_or(1.0),
+                        d.retention_class.unwrap_or_default().as_str(),
+                        observed_at,
+                        valid_from,
+                        valid_until
+                    ],
+                )
             };
-            match inserted {
-                Ok(_) => counts.decisions += 1,
-                Err(e) => return Err(format!("failed to import decisions[{idx}]: {e}")),
-            }
+            imported(inserted, "decisions", idx)?;
+            counts.decisions += 1;
         }
     }
     tx.commit()
@@ -269,10 +360,9 @@ fn query_table_json_page(
     limit: usize,
     offset: usize,
 ) -> Result<(Vec<Value>, bool), String> {
-    let fetch_limit = i64::try_from(limit.saturating_add(1))
-        .map_err(|_| "export_page_limit".to_string())?;
-    let offset =
-        i64::try_from(offset).map_err(|_| "export_page_offset".to_string())?;
+    let fetch_limit =
+        i64::try_from(limit.saturating_add(1)).map_err(|_| "export_page_limit".to_string())?;
+    let offset = i64::try_from(offset).map_err(|_| "export_page_offset".to_string())?;
     let mut rows = query_rows_json(conn, sql, &[&fetch_limit, &offset])?;
     let has_more = rows.len() > limit;
     if has_more {
@@ -284,17 +374,13 @@ fn query_table_json_page(
 /// sibling table still has rows. `None` only when this collection is empty
 /// at `offset` (nothing to skip on the next call).
 fn next_page_offset(offset: usize, page: &[Value], has_more: bool) -> Option<usize> {
-    if has_more || !page.is_empty() {
-        Some(offset.saturating_add(page.len()))
-    } else {
-        None
-    }
-}
-fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    (has_more || !page.is_empty()).then(|| offset.saturating_add(page.len()))
 }
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
-    if !table.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+    if !table
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
         return Err("export_schema_table".into());
     }
     let mut stmt = conn

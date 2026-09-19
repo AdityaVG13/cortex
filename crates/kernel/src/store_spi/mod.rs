@@ -106,6 +106,26 @@ pub struct Page {
     pub coverage: Coverage,
 }
 
+impl Page {
+    pub fn covered(
+        rows: Vec<Row>,
+        frontier: Frontier,
+        exhausted: bool,
+        rows_examined: u64,
+        continuation: Option<String>,
+    ) -> Self {
+        Self {
+            rows,
+            coverage: Coverage {
+                frontier,
+                exhausted,
+                rows_examined,
+                continuation,
+            },
+        }
+    }
+}
+
 /// Exact-semantic vs accelerated candidate discovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateProfile {

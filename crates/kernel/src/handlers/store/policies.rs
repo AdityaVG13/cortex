@@ -1,10 +1,13 @@
 use super::*;
 use crate::api_types::RetentionClass;
 use crate::conflict::ConflictResult;
-use crate::db::checkpoint_wal_best_effort;
 use crate::handlers::log_event;
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
+
+fn relation_surprise(relation: &ConflictResult) -> Option<f64> {
+    Some((1.0 - relation.similarity_jaccard).clamp(0.0, 1.0))
+}
 
 fn require_supersede(
     tx: &Connection,
@@ -12,28 +15,8 @@ fn require_supersede(
     target_id: i64,
     owner_id: Option<i64>,
 ) -> Result<(), StoreError> {
-    let updated = if let Some(owner_id) = owner_id {
-        tx.execute(
-            "UPDATE decisions SET status = 'superseded', valid_until = ?1, updated_at = ?1 WHERE id = ?2 AND owner_id = ?3",
-            params![ts, target_id, owner_id],
-        )
-    } else {
-        tx.execute(
-            "UPDATE decisions SET status = 'superseded', valid_until = ?1, updated_at = ?1 WHERE id = ?2",
-            params![ts, target_id],
-        )
-    }
-    .map_err(|e| StoreError::Internal(e.to_string()))?;
-    require_updated(updated, target_id)
-}
-
-fn require_updated(updated: usize, target_id: i64) -> Result<(), StoreError> {
-    if updated == 0 {
-        return Err(StoreError::Internal(format!(
-            "decision `{target_id}` was not updated"
-        )));
-    }
-    Ok(())
+    let updated = tx.execute(&format!("UPDATE decisions SET status = 'superseded', valid_until = ?1, updated_at = ?1 WHERE id = ?2{}", sql_owner_and(owner_id)), params![ts, target_id]).map_err(|e| StoreError::Internal(e.to_string()))?;
+    require_row_updated(updated, target_id)
 }
 
 pub fn handle_contradiction_policy(
@@ -57,97 +40,86 @@ pub fn handle_contradiction_policy(
         .ok_or_else(|| StoreError::Internal("Missing conflict target id".to_string()))?;
     let existing_trust = relation.matched_trust_score.unwrap_or(0.8);
     let incoming_wins = trust_score > existing_trust;
-    let strategy = if incoming_wins {
-        "trust_score_source_wins"
+    let (strategy, status, disputes, supersedes) = if incoming_wins {
+        ("trust_score_source_wins", "active", None, Some(existing_id))
     } else {
-        "trust_score_target_wins"
+        (
+            "trust_score_target_wins",
+            "disputed",
+            Some(existing_id),
+            None,
+        )
     };
-    let tx = conn
-        .savepoint()
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
-    if incoming_wins {
-        require_supersede(&tx, ts, existing_id, owner_id)?;
-    }
-    let new_id = insert_decision_with_state(
-        &tx,
-        decision,
-        context,
-        entry_type,
-        source_agent,
-        provenance,
-        confidence,
-        trust_score,
-        quality,
-        retention_class,
-        expires_at,
-        ts,
-        owner_id,
-        if incoming_wins { "active" } else { "disputed" },
+    with_store_savepoint(conn, |tx| {
         if incoming_wins {
-            None
-        } else {
-            Some(existing_id)
-        },
-        if incoming_wins {
-            Some(existing_id)
-        } else {
-            None
-        },
-        Some((1.0 - relation.similarity_jaccard).clamp(0.0, 1.0)),
-    )?;
-    if !incoming_wins {
-        let stamped = tx
-            .execute(
-                "UPDATE decisions SET valid_until = ?1 WHERE id = ?2",
-                params![ts, new_id],
-            )
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
-        require_updated(stamped, new_id)?;
-    }
-    let conflict_record_id = insert_conflict_record(
-        &tx,
-        Some(new_id),
-        existing_id,
-        relation.classification,
-        relation.similarity_jaccard,
-        relation.similarity_cosine,
-        "auto_resolved",
-        Some(strategy),
-        Some("policy_engine"),
-        ts,
-    )?;
-    let _ = log_event(
-        &tx,
-        "decision_conflict",
-        json
-!({"newId":new_id,"existingId":existing_id,"source_agent":source_agent,"matchedAgent":relation.matched_agent,"strategy":strategy,
-"source_trust_score":trust_score,"target_trust_score":existing_trust,"conflict_record_id":conflict_record_id,}),
-        "rust-daemon",
-    );
-    tx.commit()
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
-    checkpoint_wal_best_effort(conn);
-    let mut entry = json!({"action":
-"inserted","id":new_id,"status":if incoming_wins{"active"}else{"disputed"},"retention_class":retention_class.as_str(),"quality":
-quality,"conflictWith":existing_id,"resolution_strategy":strategy,"observedAt":ts,"validFrom":ts,});
-    if incoming_wins {
-        entry["supersedes"] = json!(existing_id);
-    } else {
-        entry["validUntil"] = json!(ts);
-    }
-    decorate_entry_with_relation(
-        &mut entry,
-        relation,
-        Some(conflict_record_json(
-            conflict_record_id,
+            require_supersede(tx, ts, existing_id, owner_id)?;
+        }
+        let new_id = insert_decision_with_state(
+            tx,
+            decision,
+            context,
+            entry_type,
+            source_agent,
+            provenance,
+            confidence,
+            trust_score,
+            quality,
+            retention_class,
+            expires_at,
+            ts,
+            owner_id,
+            status,
+            disputes,
+            supersedes,
+            relation_surprise(relation),
+        )?;
+        if !incoming_wins {
+            let stamped = tx
+                .execute(
+                    "UPDATE decisions SET valid_until = ?1 WHERE id = ?2",
+                    params![ts, new_id],
+                )
+                .map_err(|e| StoreError::Internal(e.to_string()))?;
+            require_row_updated(stamped, new_id)?;
+        }
+        let conflict_record_id = insert_conflict_record(
+            tx,
             Some(new_id),
             existing_id,
             relation.classification,
+            relation.similarity_jaccard,
+            relation.similarity_cosine,
             "auto_resolved",
             Some(strategy),
-        )),
-    );
-    Ok((entry, Some(new_id)))
+            Some("policy_engine"),
+            ts,
+        )?;
+        let _ = log_event(
+            tx,
+            "decision_conflict",
+            json!({"newId":new_id,"existingId":existing_id,"source_agent":source_agent,"matchedAgent":relation.matched_agent,"strategy":strategy,"source_trust_score":trust_score,"target_trust_score":existing_trust,"conflict_record_id":conflict_record_id,}),
+            "rust-daemon",
+        );
+        let mut entry = json!({"action":"inserted","id":new_id,"status":status,"retention_class":retention_class.as_str(),"quality":quality,"conflictWith":existing_id,"resolution_strategy":strategy,"observedAt":ts,"validFrom":ts,});
+        if let Some(id) = supersedes {
+            entry["supersedes"] = json!(id);
+        } else {
+            entry["validUntil"] = json!(ts);
+        }
+        decorate_entry_with_relation(
+            &mut entry,
+            relation,
+            Some(conflict_record_json(
+                conflict_record_id,
+                Some(new_id),
+                existing_id,
+                relation.classification,
+                "auto_resolved",
+                Some(strategy),
+            )),
+        );
+        Ok((entry, Some(new_id)))
+    })
 }
 #[allow(clippy::too_many_arguments)]
 pub fn handle_agreement_policy(
@@ -163,110 +135,56 @@ pub fn handle_agreement_policy(
     let target_id = relation
         .matched_id
         .ok_or_else(|| StoreError::Internal("Missing agreement target id".to_string()))?;
-    let tx = conn
-        .savepoint()
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
-    let (existing_decision, existing_context, previous_merged_count): (
-        String,
-        Option<String>,
-        i64,
-    ) = if let Some(owner_id) = owner_id {
-        tx.query_row(
-            "SELECT decision, context, COALESCE(merged_count, 0) FROM decisions WHERE id = ?1 AND owner_id = ?2",
-            params![target_id, owner_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|e| StoreError::Internal(e.to_string()))?
-    } else {
-        tx.query_row(
-            "SELECT decision, context, COALESCE(merged_count, 0) FROM decisions WHERE id = ?1",
-            params![target_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|e| StoreError::Internal(e.to_string()))?
-    };
-    let merged_context = merge_context(existing_context, &existing_decision, context, decision);
-    let merged_count = previous_merged_count + 1;
-    let merged = if let Some(owner_id) = owner_id {
-        tx.execute(
-            "UPDATE decisions \
-             SET context = ?1, \
-                 score = COALESCE(score, 0) + ?2, \
-                 merged_count = ?3, \
-                 quality = MAX(COALESCE(quality, 50), ?4), \
-                 updated_at = ?5 \
-             WHERE id = ?6 AND owner_id = ?7",
-            params![
-                merged_context,
-                MERGE_SCORE_BONUS,
-                merged_count,
-                quality,
-                ts,
-                target_id,
-                owner_id
-            ],
-        )
-    } else {
-        tx.execute(
-            "UPDATE decisions \
-             SET context = ?1, \
-                 score = COALESCE(score, 0) + ?2, \
-                 merged_count = ?3, \
-                 quality = MAX(COALESCE(quality, 50), ?4), \
-                 updated_at = ?5 \
-             WHERE id = ?6",
-            params![
-                merged_context,
-                MERGE_SCORE_BONUS,
-                merged_count,
-                quality,
-                ts,
-                target_id
-            ],
-        )
-    }
-    .map_err(|e| StoreError::Internal(e.to_string()))?;
-    require_updated(merged, target_id)?;
-    let conflict_record_id = insert_conflict_record(
-        &tx,
-        None,
-        target_id,
-        relation.classification,
-        relation.similarity_jaccard,
-        relation.similarity_cosine,
-        "auto_resolved",
-        Some("deduplicated_merge"),
-        Some("policy_engine"),
-        ts,
-    )?;
-    let _ = log_event(
-        &tx,
-        "decision_agreement_merge",
-        json!({"targetId":target_id,"source_agent":source_agent,"similarity_jaccard":relation.
-similarity_jaccard,"conflict_record_id":conflict_record_id,}),
-        "rust-daemon",
-    );
-    tx.commit()
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
-    checkpoint_wal_best_effort(conn);
-    let mut entry = json!({"action":"merged","target_id":target_id,"merged_count":
-merged_count,"quality":quality,});
-    decorate_entry_with_relation(
-        &mut entry,
-        relation,
-        Some(conflict_record_json(
-            conflict_record_id,
+    with_store_savepoint(conn, |tx| {
+        let (existing_decision, existing_context, previous_merged_count) =
+            load_merge_target(tx, target_id, owner_id)?;
+        let merged_context = merge_context(existing_context, &existing_decision, context, decision);
+        let merged_count = previous_merged_count + 1;
+        apply_merge_update(
+            tx,
+            target_id,
+            owner_id,
+            merged_context.as_deref(),
+            merged_count,
+            quality,
+            ts,
+        )?;
+        let conflict_record_id = insert_conflict_record(
+            tx,
             None,
             target_id,
             relation.classification,
+            relation.similarity_jaccard,
+            relation.similarity_cosine,
             "auto_resolved",
             Some("deduplicated_merge"),
-        )),
-    );
-    // The existing row is the store target: deposit must project clock,
-    // graph, and a successor revision onto it. Returning None dropped
-    // those side effects even though the merge wrote context.
-    Ok((entry, Some(target_id)))
+            Some("policy_engine"),
+            ts,
+        )?;
+        let _ = log_event(
+            tx,
+            "decision_agreement_merge",
+            json!({"targetId":target_id,"source_agent":source_agent,"similarity_jaccard":relation.similarity_jaccard,"conflict_record_id":conflict_record_id,}),
+            "rust-daemon",
+        );
+        let mut entry = json!({"action":"merged","target_id":target_id,"merged_count":merged_count,"quality":quality,});
+        decorate_entry_with_relation(
+            &mut entry,
+            relation,
+            Some(conflict_record_json(
+                conflict_record_id,
+                None,
+                target_id,
+                relation.classification,
+                "auto_resolved",
+                Some("deduplicated_merge"),
+            )),
+        );
+        // The existing row is the store target: deposit must project clock,
+        // graph, and a successor revision onto it. Returning None dropped
+        // those side effects even though the merge wrote context.
+        Ok((entry, Some(target_id)))
+    })
 }
 #[allow(clippy::too_many_arguments)]
 pub fn handle_refinement_policy(
@@ -300,102 +218,94 @@ pub fn handle_refinement_policy(
         .as_deref()
         .is_some_and(|matched| same_agent(matched, source_agent))
         || trust_score > target_trust;
-    let tx = conn
-        .savepoint()
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
-    if should_supersede {
-        require_supersede(&tx, ts, target_id, owner_id)?;
-    }
-    let new_id = insert_decision_with_state(
-        &tx,
-        decision,
-        context,
-        entry_type,
-        source_agent,
-        provenance,
-        confidence,
-        trust_score,
-        quality,
-        retention_class,
-        expires_at,
-        ts,
-        owner_id,
-        if should_supersede {
-            "active"
+    with_store_savepoint(conn, |tx| {
+        let (
+            status,
+            disputes,
+            supersedes,
+            conflict_status,
+            strategy,
+            resolved_by,
+            event_name,
+            entry_status,
+            entry_link,
+        ) = if should_supersede {
+            require_supersede(tx, ts, target_id, owner_id)?;
+            (
+                "active",
+                None,
+                Some(target_id),
+                "auto_resolved",
+                Some("refine_supersede"),
+                Some("policy_engine"),
+                "decision_supersede",
+                "superseded_old",
+                "supersedes",
+            )
         } else {
-            "disputed"
-        },
-        if should_supersede {
-            None
-        } else {
-            Some(target_id)
-        },
-        if should_supersede {
-            Some(target_id)
-        } else {
-            None
-        },
-        Some((1.0 - relation.similarity_jaccard).clamp(0.0, 1.0)),
-    )?;
-    let conflict_status = if should_supersede {
-        "auto_resolved"
-    } else {
-        "open"
-    };
-    let strategy = if should_supersede {
-        Some("refine_supersede")
-    } else {
-        Some("requires_user_review")
-    };
-    let conflict_record_id = insert_conflict_record(
-        &tx,
-        Some(new_id),
-        target_id,
-        relation.classification,
-        relation.similarity_jaccard,
-        relation.similarity_cosine,
-        conflict_status,
-        strategy,
-        if should_supersede {
-            Some("policy_engine")
-        } else {
-            None
-        },
-        ts,
-    )?;
-    let event_name = if should_supersede {
-        "decision_supersede"
-    } else {
-        "decision_refine_pending"
-    };
-    let _ = log_event(
-        &tx,
-        event_name,
-        json!({"newId":new_id,"targetId":target_id,"source_agent":source_agent,"strategy":strategy,"conflict_record_id":
-conflict_record_id,}),
-        "rust-daemon",
-    );
-    tx.commit()
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
-    checkpoint_wal_best_effort(conn);
-    let mut entry = json!({"action":"inserted","id":new_id,"status":if should_supersede{"superseded_old"}else{"disputed"},
-"retention_class":retention_class.as_str(),"quality":quality,"observedAt":ts,"validFrom":ts,});
-    if should_supersede {
-        entry["supersedes"] = json!(target_id);
-    } else {
-        entry["conflictWith"] = json!(target_id);
-    }
-    decorate_entry_with_relation(
-        &mut entry,
-        relation,
-        Some(conflict_record_json(
-            conflict_record_id,
+            (
+                "disputed",
+                Some(target_id),
+                None,
+                "open",
+                Some("requires_user_review"),
+                None,
+                "decision_refine_pending",
+                "disputed",
+                "conflictWith",
+            )
+        };
+        let new_id = insert_decision_with_state(
+            tx,
+            decision,
+            context,
+            entry_type,
+            source_agent,
+            provenance,
+            confidence,
+            trust_score,
+            quality,
+            retention_class,
+            expires_at,
+            ts,
+            owner_id,
+            status,
+            disputes,
+            supersedes,
+            relation_surprise(relation),
+        )?;
+        let conflict_record_id = insert_conflict_record(
+            tx,
             Some(new_id),
             target_id,
             relation.classification,
+            relation.similarity_jaccard,
+            relation.similarity_cosine,
             conflict_status,
             strategy,
-        )),
-    );
-    Ok((entry, Some(new_id)))
+            resolved_by,
+            ts,
+        )?;
+        let _ = log_event(
+            tx,
+            event_name,
+            json!({"newId":new_id,"targetId":target_id,"source_agent":source_agent,"strategy":strategy,"conflict_record_id":conflict_record_id,}),
+            "rust-daemon",
+        );
+        let mut entry = json!({"action":"inserted","id":new_id,"status":entry_status,"retention_class":retention_class.as_str(),"quality":quality,"observedAt":ts,"validFrom":ts,});
+        entry[entry_link] = json!(target_id);
+        decorate_entry_with_relation(
+            &mut entry,
+            relation,
+            Some(conflict_record_json(
+                conflict_record_id,
+                Some(new_id),
+                target_id,
+                relation.classification,
+                conflict_status,
+                strategy,
+            )),
+        );
+        Ok((entry, Some(new_id)))
+    })
 }

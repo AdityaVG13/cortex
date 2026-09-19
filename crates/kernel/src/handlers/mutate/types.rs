@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::nonempty_opt;
 use serde::Deserialize;
 #[derive(Deserialize, Default)]
 pub struct ForgetRequest {
@@ -50,7 +51,7 @@ pub enum ConflictStatusFilter {
 }
 impl ConflictStatusFilter {
     pub fn parse(raw: Option<&str>) -> Result<Self, String> {
-        match raw.map(str::trim).filter(|v| !v.is_empty()) {
+        match nonempty_opt(raw) {
             None => Ok(Self::Open),
             Some(value) => match value.to_ascii_lowercase().as_str() {
                 "open" => Ok(Self::Open),
@@ -86,19 +87,11 @@ impl Default for ConflictListOptions {
 impl ConflictListOptions {
     pub fn from_query(query: ConflictListQuery) -> Result<Self, String> {
         let status = ConflictStatusFilter::parse(query.status.as_deref())?;
-        let classification = match query.classification.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-            Some(raw) => Some(
-                normalize_conflict_classification(raw)
-                    .ok_or_else(|| "Invalid classification filter. Expected AGREES, CONTRADICTS, REFINES, or UNRELATED.".to_string())?,
-            ),
+        let classification = match nonempty_opt(query.classification.as_deref()) {
+            Some(raw) => Some(normalize_conflict_classification(raw).ok_or_else(|| "Invalid classification filter. Expected AGREES, CONTRADICTS, REFINES, or UNRELATED.".to_string())?),
             None => None,
         };
-        let conflict_id = query
-            .conflict_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
+        let conflict_id = nonempty_opt(query.conflict_id.as_deref()).map(str::to_string);
         if let Some(id) = conflict_id.as_deref() {
             if parse_conflict_id(id).is_none() {
                 return Err(

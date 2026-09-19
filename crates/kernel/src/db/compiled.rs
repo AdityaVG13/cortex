@@ -5,10 +5,10 @@
 //! transaction; a coarse per-scope epoch is bumped alongside every relation
 //! epoch so an unknown range can always fall back to over-invalidation.
 
-use super::records::{brain_epochs, DEFAULT_SCOPE};
-use crate::recipe::{evaluate, Fact, Limits, RecipeResult, Snapshot, Step};
-use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::{json, Value};
+use super::records::{DEFAULT_SCOPE, brain_epochs};
+use crate::recipe::{Fact, Limits, RecipeResult, Snapshot, Step, evaluate};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Advance the guard epoch of one (scope, relation) domain plus the coarse
@@ -16,10 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// range: over-invalidation is safe, under-invalidation is not.
 pub fn bump_guard(conn: &Connection, scope: &str, relation: &str) -> rusqlite::Result<()> {
     for key in [relation, "*"] {
-        conn.execute(
-            "INSERT INTO guard_epochs (scope_id, guard_key, generation) VALUES (?1, ?2, 1) ON CONFLICT(scope_id, guard_key) DO UPDATE SET generation = generation + 1",
-            params![scope, key],
-        )?;
+        conn.execute("INSERT INTO guard_epochs (scope_id, guard_key, generation) VALUES (?1, ?2, 1) ON CONFLICT(scope_id, guard_key) DO UPDATE SET generation = generation + 1", params![scope, key])?;
     }
     Ok(())
 }
@@ -47,9 +44,7 @@ pub fn snapshot(conn: &Connection, environment: &str) -> rusqlite::Result<Snapsh
         environment: environment.to_string(),
         ..Snapshot::default()
     };
-    let mut stmt = conn.prepare(
-        "SELECT r.record_id, r.kind, h.revision_id, v.body_json, v.recorded_sequence, v.valid_from, v.valid_until, v.epistemic_status FROM records r JOIN record_heads h ON h.record_id = r.record_id JOIN revisions v ON v.revision_id = h.revision_id WHERE r.scope_id = ?1 ORDER BY r.record_id, h.revision_id",
-    )?;
+    let mut stmt = conn.prepare("SELECT r.record_id, r.kind, h.revision_id, v.body_json, v.recorded_sequence, v.valid_from, v.valid_until, v.epistemic_status FROM records r JOIN record_heads h ON h.record_id = r.record_id JOIN revisions v ON v.revision_id = h.revision_id WHERE r.scope_id = ?1 ORDER BY r.record_id, h.revision_id")?;
     let rows = stmt.query_map(params![DEFAULT_SCOPE], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -125,6 +120,16 @@ fn compiled_id(
     format!("compiled:{}", cortex_logic::traces::content_hash(&payload))
 }
 
+const COMPILED_GUARD_SQL: &str = "INSERT OR REPLACE INTO compiled_guards (compiled_id, scope_id, guard_key, expected_generation, kind) VALUES (?1, ?2, ?3, ?4, ?5)";
+
+fn json_array_len(value: Option<&Value>, key: &str) -> usize {
+    value
+        .and_then(|v| v.get(key))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
 fn recipe_result_from_cached(cached: &Value, snap: &Snapshot) -> Option<RecipeResult> {
     let values = cached
         .get("values")?
@@ -159,6 +164,82 @@ fn recipe_result_from_cached(cached: &Value, snap: &Snapshot) -> Option<RecipeRe
     })
 }
 
+fn cached_result(
+    conn: &Connection,
+    id: &str,
+    raw: &str,
+    snap: &Snapshot,
+) -> rusqlite::Result<Option<(Value, RecipeResult)>> {
+    let value = serde_json::from_str::<Value>(raw).ok();
+    let mut stmt = conn.prepare("SELECT scope_id, guard_key, expected_generation, kind FROM compiled_guards WHERE compiled_id = ?1")?;
+    let guards = stmt
+        .query_map(params![id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<rusqlite::Result<Vec<(String, String, i64, String)>>>();
+    let Ok(guards) = guards else {
+        return Ok(None);
+    };
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    // A crashed replacement can leave a cached result without all guard rows.
+    // Counts must match before checking epochs, including empty result sets.
+    let positive = guards
+        .iter()
+        .filter(|(_, _, _, kind)| kind == "positive")
+        .count();
+    if positive != json_array_len(Some(&value), "positive")
+        || guards.len() - positive != json_array_len(Some(&value), "guards")
+    {
+        return Ok(None);
+    }
+    let valid = guards.into_iter().all(|(scope, key, expected, kind)| {
+        let now = if kind == "positive" {
+            if snap.facts.contains_key(&key) {
+                expected
+            } else {
+                -1
+            }
+        } else {
+            snap.epochs.get(&(scope, key)).copied().unwrap_or(0)
+        };
+        now == expected
+    });
+    Ok(valid
+        .then(|| recipe_result_from_cached(&value, snap))
+        .flatten()
+        .map(|result| (value, result)))
+}
+
+fn reuse_compiled(
+    conn: &Connection,
+    id: &str,
+    principal: &str,
+    snap: &Snapshot,
+) -> rusqlite::Result<Option<(Value, RecipeResult)>> {
+    let cached: Option<(String, String, String, String, i64, String)> = conn.query_row("SELECT result_json, brain_epoch, policy_epoch, environment_ref, through_sequence, operator_versions FROM compiled_reads WHERE compiled_id = ?1 AND principal_id = ?2", params![id, principal], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).optional()?;
+    let Some((raw, brain, policy, environment, _, operators)) = cached else {
+        return Ok(None);
+    };
+    if brain == snap.brain_epoch
+        && policy == snap.policy_epoch
+        && environment == snap.environment
+        && operators == cortex_logic::recipe::OPERATOR_VERSIONS
+    {
+        if let Some(result) = cached_result(conn, id, &raw, snap)? {
+            return Ok(Some(result));
+        }
+    }
+    for table in ["compiled_guards", "compiled_reads"] {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE compiled_id = ?1"),
+            params![id],
+        )?;
+    }
+    Ok(None)
+}
+
 /// Evaluate (or reuse) a recipe. Identity = recipe + operator versions +
 /// plan (steps/outputs) + parameters + principal + brain epoch + policy
 /// epoch + environment; a cached result for one scope/params/plan can
@@ -177,131 +258,35 @@ pub fn run_compiled(
     let snap = snapshot(conn, environment).map_err(|e| e.to_string())?;
     let params_json = params_value.to_string();
     let plan = plan_fingerprint(steps, outputs);
-    let id = compiled_id(
-        recipe_id,
-        principal,
-        &params_json,
-        environment,
-        &plan,
-    );
-    // Reuse path: stored guards must all match the current epochs.
-    let cached: Option<(String, String, String, String, i64, String)> = conn
-        .query_row(
-            "SELECT result_json, brain_epoch, policy_epoch, environment_ref, through_sequence, operator_versions FROM compiled_reads WHERE compiled_id = ?1 AND principal_id = ?2",
-            params![id, principal],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    if let Some((result_json, brain, policy, env, _, stored_ops)) = cached {
-        let mut valid = brain == snap.brain_epoch
-            && policy == snap.policy_epoch
-            && env == snap.environment
-            && stored_ops == cortex_logic::recipe::OPERATOR_VERSIONS;
-        let cached_value = serde_json::from_str::<Value>(&result_json).ok();
-        if valid {
-            // INSERT OR REPLACE on compiled_reads CASCADE-deletes compiled_guards.
-            // A crash between that replace and the new guard rows leaves a
-            // reusable cache with empty guards — mutations would never invalidate.
-            let expected_neg = cached_value
-                .as_ref()
-                .and_then(|v| v.get("guards"))
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0);
-            let expected_pos = cached_value
-                .as_ref()
-                .and_then(|v| v.get("positive"))
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0);
-            let mut stmt = conn
-                .prepare("SELECT scope_id, guard_key, expected_generation, kind FROM compiled_guards WHERE compiled_id = ?1")
-                .map_err(|e| e.to_string())?;
-            let guards = match stmt
-                .query_map(params![id], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                })
-                .map_err(|e| e.to_string())?
-                .collect::<rusqlite::Result<Vec<(String, String, i64, String)>>>()
-            {
-                Ok(guards) => guards,
-                Err(_) => {
-                    valid = false;
-                    Vec::new()
-                }
-            };
-            let got_pos = guards.iter().filter(|(_, _, _, kind)| kind == "positive").count();
-            let got_neg = guards.len().saturating_sub(got_pos);
-            if cached_value.is_none() || got_neg != expected_neg || got_pos != expected_pos {
-                valid = false;
-            }
-            if valid {
-                for (scope, key, expected, kind) in guards {
-                    let now = if kind == "positive" {
-                        if snap.facts.contains_key(&key) {
-                            expected
-                        } else {
-                            -1
-                        }
-                    } else {
-                        snap.epochs
-                            .get(&(scope.clone(), key.clone()))
-                            .copied()
-                            .unwrap_or(0)
-                    };
-                    if now != expected {
-                        valid = false;
-                        break;
-                    }
-                }
-            }
-        }
-        if valid {
-            if let Some(cached_value) = cached_value {
-                if let Some(result) = recipe_result_from_cached(&cached_value, &snap) {
-                    return Ok((cached_value, true, result));
-                }
-            }
-        }
-        conn.execute(
-            "DELETE FROM compiled_guards WHERE compiled_id = ?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
-        conn.execute(
-            "DELETE FROM compiled_reads WHERE compiled_id = ?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
+    let id = compiled_id(recipe_id, principal, &params_json, environment, &plan);
+    if let Some((value, result)) =
+        reuse_compiled(conn, &id, principal, &snap).map_err(|e| e.to_string())?
+    {
+        return Ok((value, true, result));
     }
     let result =
         evaluate(&snap, DEFAULT_SCOPE, steps, outputs, limits).map_err(|e| e.to_string())?;
     let value = json!({"values": result.values, "work": result.work, "operator_versions": result.operator_versions, "positive": result.positive, "guards": result.guards.iter().map(|((s, k), g)| json!({"scope": s, "relation": k, "epoch": g})).collect::<Vec<_>>()});
-    let sp = crate::db::SqliteSavepoint::enter(conn, "compiled_write").map_err(|e| e.to_string())?;
+    let sp =
+        crate::db::SqliteSavepoint::enter(conn, "compiled_write").map_err(|e| e.to_string())?;
     let through: i64 = conn
         .query_row("SELECT COALESCE(MAX(sequence),0) FROM commits", [], |r| {
             r.get(0)
         })
         .map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT OR REPLACE INTO compiled_reads (compiled_id, recipe_id, operator_versions, scope_id, principal_id, brain_epoch, policy_epoch, parameters_json, environment_ref, through_sequence, result_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![id, recipe_id, result.operator_versions, DEFAULT_SCOPE, principal, result.brain_epoch, result.policy_epoch, params_json, environment, through, value.to_string()],
-    )
-    .map_err(|e| e.to_string())?;
+    conn.execute("INSERT OR REPLACE INTO compiled_reads (compiled_id, recipe_id, operator_versions, scope_id, principal_id, brain_epoch, policy_epoch, parameters_json, environment_ref, through_sequence, result_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)", params![id, recipe_id, result.operator_versions, DEFAULT_SCOPE, principal, result.brain_epoch, result.policy_epoch, params_json, environment, through, value.to_string()]).map_err(|e| e.to_string())?;
     for ((scope, key), generation) in &result.guards {
-        conn.execute("INSERT OR IGNORE INTO guard_epochs (scope_id, guard_key, generation) VALUES (?1, ?2, ?3)", params![scope, key, generation])
-            .map_err(|e| e.to_string())?;
+        conn.execute("INSERT OR IGNORE INTO guard_epochs (scope_id, guard_key, generation) VALUES (?1, ?2, ?3)", params![scope, key, generation]).map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT OR REPLACE INTO compiled_guards (compiled_id, scope_id, guard_key, expected_generation, kind) VALUES (?1, ?2, ?3, ?4, 'negative')",
-            params![id, scope, key, generation],
+            COMPILED_GUARD_SQL,
+            params![id, scope, key, generation, "negative"],
         )
         .map_err(|e| e.to_string())?;
     }
     for revision in &result.positive {
         conn.execute(
-            "INSERT OR REPLACE INTO compiled_guards (compiled_id, scope_id, guard_key, expected_generation, kind) VALUES (?1, ?2, ?3, 1, 'positive')",
-            params![id, DEFAULT_SCOPE, revision],
+            COMPILED_GUARD_SQL,
+            params![id, DEFAULT_SCOPE, revision, 1, "positive"],
         )
         .map_err(|e| e.to_string())?;
     }

@@ -1,4 +1,5 @@
-use serde_json::{json, Value};
+use crate::protocol::nonempty_opt;
+use serde_json::{Value, json};
 pub const HARD_MERGE_THRESHOLD: f32 = 0.92;
 pub const REVIEW_MERGE_THRESHOLD: f32 = 0.90;
 pub const JACCARD_MERGE_THRESHOLD: f64 = 0.70;
@@ -15,57 +16,15 @@ pub fn is_benchmark_entry_type(entry_type: &str) -> bool {
     entry_type.eq_ignore_ascii_case(BENCHMARK_ENTRY_TYPE)
 }
 pub fn is_benchmark_source_agent(source_agent: &str) -> bool {
-    let trimmed = source_agent.trim();
-    let prefix = BENCHMARK_SOURCE_AGENT_PREFIX.as_bytes();
-    trimmed.len() >= prefix.len() && trimmed.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix)
+    crate::handlers::starts_with_ascii_ignore_case(
+        source_agent.trim(),
+        BENCHMARK_SOURCE_AGENT_PREFIX,
+    )
 }
 
-/// Operator identity matches Control Center `sessionMatchesAgent` and boot
-/// capsules: trim, drop a trailing ` (model)` suffix, then ASCII-lowercase.
-/// Exact `==` treated `claude-code` and `claude-code (opus)` as different
-/// writers, so a later refinement left both rows active.
-fn strip_trailing_model_suffix(raw: &str) -> &str {
-    let s = raw.trim();
-    if !s.ends_with(')') {
-        return s;
-    }
-    let Some(open) = s.rfind('(') else {
-        return s;
-    };
-    if open == 0 {
-        return s;
-    }
-    let inner = &s[open + 1..s.len() - 1];
-    if inner.is_empty() || inner.contains(')') {
-        return s;
-    }
-    s[..open].trim()
-}
-
-pub fn agent_identity(raw: &str) -> String {
-    strip_trailing_model_suffix(raw).to_ascii_lowercase()
-}
-
-pub fn same_agent(left: &str, right: &str) -> bool {
-    let a = left.trim();
-    let b = right.trim();
-    !a.is_empty() && !b.is_empty() && agent_identity(a) == agent_identity(b)
-}
-
-fn like_literal(raw: &str) -> String {
-    raw.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-/// Exact identity plus trailing ` (model)` for SQL `LIKE ? ESCAPE '\'`.
-pub fn agent_match_params(agent: &str) -> Option<(String, String)> {
-    let ident = agent_identity(agent);
-    if ident.is_empty() {
-        return None;
-    }
-    Some((ident.clone(), format!("{} (%", like_literal(&ident))))
-}
+pub use crate::handlers::{
+    agent_identity, agent_match_params, ident_match_sql, optional_ident_match_sql, same_agent,
+};
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionProvenance {
     pub source_client: String,
@@ -78,10 +37,7 @@ impl DecisionProvenance {
         source_model: Option<&str>,
         reasoning_depth: Option<&str>,
     ) -> Self {
-        let normalized_model = source_model
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
+        let normalized_model = nonempty_opt(source_model).map(str::to_string);
         Self {
             source_client: normalize_source_client(source_agent),
             source_model: normalized_model,
@@ -100,8 +56,7 @@ pub struct QualityFactors {
 }
 impl QualityFactors {
     pub fn as_json(&self) -> Value {
-        json!({"length_score":self.length_score,
-"specificity_bonus":self.specificity_bonus,"question_penalty":self.question_penalty,})
+        json!({"length_score":self.length_score,"specificity_bonus":self.specificity_bonus,"question_penalty":self.question_penalty,})
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,27 +105,28 @@ impl From<String> for StoreError {
         StoreError::Internal(value)
     }
 }
-pub fn normalize_source_client(raw: &str) -> String {
-    let before_model = raw
+/// Drop a trailing ` (model)` suffix and keep `[A-Za-z0-9_-]`. Empty becomes `empty`.
+pub fn normalize_client_slug(raw: &str, empty: &str) -> String {
+    let normalized: String = raw
         .split('(')
         .next()
         .unwrap_or(raw)
         .trim()
-        .to_ascii_lowercase();
-    let normalized: String = before_model
+        .to_ascii_lowercase()
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
         .collect();
     if normalized.is_empty() {
-        "unknown".to_string()
+        empty.to_string()
     } else {
         normalized
     }
 }
+pub fn normalize_source_client(raw: &str) -> String {
+    normalize_client_slug(raw, "unknown")
+}
 pub fn normalize_reasoning_depth(raw: Option<&str>) -> String {
-    let normalized = raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let normalized = nonempty_opt(raw)
         .map(|value| value.to_ascii_lowercase())
         .map(|value| {
             value
@@ -206,24 +162,27 @@ pub fn model_weight(source_model: Option<&str>) -> f64 {
     let Some(model) = source_model.map(|value| value.to_ascii_lowercase()) else {
         return 0.70;
     };
-    if model.contains("opus") {
-        1.0
-    } else if model.contains("sonnet") {
-        0.85
-    } else if model.contains("gemini") && model.contains("pro") {
-        0.80
-    } else if model.contains("gemini") {
-        0.60
-    } else if model.contains("qwen") {
-        0.50
-    } else {
-        0.70
-    }
+    const WEIGHTS: &[(&[&str], f64)] = &[
+        (&["opus"], 1.0),
+        (&["sonnet"], 0.85),
+        (&["gemini", "pro"], 0.80),
+        (&["gemini"], 0.60),
+        (&["qwen"], 0.50),
+    ];
+    WEIGHTS
+        .iter()
+        .find(|(needles, _)| needles.iter().all(|needle| model.contains(needle)))
+        .map(|(_, weight)| *weight)
+        .unwrap_or(0.70)
 }
+pub fn round4(value: f64) -> f64 {
+    (value * 10_000.0).round() / 10_000.0
+}
+
 pub fn compute_trust_score(confidence: f64, source_model: Option<&str>) -> f64 {
     let bounded_confidence = confidence.clamp(0.0, 1.0);
     let raw = bounded_confidence * model_weight(source_model);
-    ((raw * 10_000.0).round() / 10_000.0).clamp(0.0, 1.0)
+    round4(raw).clamp(0.0, 1.0)
 }
 pub fn validate_explicit_ttl_seconds(ttl_seconds: Option<i64>) -> Result<Option<i64>, StoreError> {
     let Some(ttl_seconds) = ttl_seconds else {
@@ -238,4 +197,25 @@ pub fn validate_explicit_ttl_seconds(ttl_seconds: Option<i64>) -> Result<Option<
         ));
     }
     Ok(Some(ttl_seconds))
+}
+
+pub fn sql_owner_and(owner_id: Option<i64>) -> String {
+    match owner_id {
+        Some(id) => format!(" AND owner_id = {id}"),
+        None => String::new(),
+    }
+}
+
+pub fn with_store_savepoint<T>(
+    conn: &mut rusqlite::Connection,
+    body: impl FnOnce(&rusqlite::Connection) -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    let tx = conn
+        .savepoint()
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+    let out = body(&tx)?;
+    tx.commit()
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+    crate::db::checkpoint_wal_best_effort(conn);
+    Ok(out)
 }

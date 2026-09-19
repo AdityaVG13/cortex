@@ -10,8 +10,8 @@
 //! backpressure instead of pretending freshness.
 
 use super::records::DEFAULT_SCOPE;
-use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::{json, Value};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::{Value, json};
 
 pub const JOB_LEASE_SECONDS: i64 = 60;
 pub const MAX_ATTEMPTS: i64 = 5;
@@ -43,10 +43,7 @@ pub fn enqueue_for_commit(
     let mut added = 0;
     for kind in kinds {
         let job_id = format!("job:{sequence}:{kind}");
-        added += conn.execute(
-            "INSERT OR IGNORE INTO outbox (job_id, commit_sequence, job_kind, state, generation, payload_json, attempts) VALUES (?1, ?2, ?3, 'pending', 0, ?4, 0)",
-            params![job_id, sequence, kind, payload.to_string()],
-        )?;
+        added += conn.execute("INSERT OR IGNORE INTO outbox (job_id, commit_sequence, job_kind, state, generation, payload_json, attempts) VALUES (?1, ?2, ?3, 'pending', 0, ?4, 0)", params![job_id, sequence, kind, payload.to_string()])?;
     }
     Ok(added)
 }
@@ -64,22 +61,13 @@ pub struct Claim {
 /// is rejected. Fairness: round-robin over job kinds by oldest first.
 pub fn claim_next(conn: &Connection, worker: &str) -> rusqlite::Result<Option<Claim>> {
     let now = chrono::Utc::now().to_rfc3339();
-    let candidate: Option<(String, String, i64, i64)> = conn
-        .query_row(
-            "SELECT job_id, job_kind, generation, commit_sequence FROM outbox WHERE (state = 'pending' OR (state = 'claimed' AND lease_until < ?1)) AND attempts < ?2 ORDER BY commit_sequence ASC, job_kind ASC LIMIT 1",
-            params![now, MAX_ATTEMPTS],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()?;
+    let candidate: Option<(String, String, i64, i64)> = conn.query_row("SELECT job_id, job_kind, generation, commit_sequence FROM outbox WHERE (state = 'pending' OR (state = 'claimed' AND lease_until < ?1)) AND attempts < ?2 ORDER BY commit_sequence ASC, job_kind ASC LIMIT 1", params![now, MAX_ATTEMPTS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
     let Some((job_id, kind, generation, sequence)) = candidate else {
         return Ok(None);
     };
     let lease_until =
         (chrono::Utc::now() + chrono::Duration::seconds(JOB_LEASE_SECONDS)).to_rfc3339();
-    let updated = conn.execute(
-        "UPDATE outbox SET state = 'claimed', generation = generation + 1, claimed_by = ?1, lease_until = ?2, attempts = attempts + 1 WHERE job_id = ?3 AND generation = ?4",
-        params![worker, lease_until, job_id, generation],
-    )?;
+    let updated = conn.execute("UPDATE outbox SET state = 'claimed', generation = generation + 1, claimed_by = ?1, lease_until = ?2, attempts = attempts + 1 WHERE job_id = ?3 AND generation = ?4", params![worker, lease_until, job_id, generation])?;
     if updated == 0 {
         return Ok(None);
     }
@@ -94,18 +82,12 @@ pub fn claim_next(conn: &Connection, worker: &str) -> rusqlite::Result<Option<Cl
 /// Complete a claim. Idempotent: a repeat completion of the same generation
 /// is a no-op; a stale generation is rejected.
 pub fn complete(conn: &Connection, claim: &Claim) -> rusqlite::Result<bool> {
-    let n = conn.execute(
-        "UPDATE outbox SET state = 'done', lease_until = NULL WHERE job_id = ?1 AND generation = ?2 AND state IN ('claimed', 'done')",
-        params![claim.job_id, claim.generation],
-    )?;
+    let n = conn.execute("UPDATE outbox SET state = 'done', lease_until = NULL WHERE job_id = ?1 AND generation = ?2 AND state IN ('claimed', 'done')", params![claim.job_id, claim.generation])?;
     Ok(n > 0)
 }
 
 pub fn fail(conn: &Connection, claim: &Claim, error: &str) -> rusqlite::Result<bool> {
-    let n = conn.execute(
-        "UPDATE outbox SET state = CASE WHEN attempts >= ?3 THEN 'failed' ELSE 'pending' END, last_error = ?1, lease_until = NULL WHERE job_id = ?2 AND generation = ?4 AND state = 'claimed'",
-        params![error, claim.job_id, MAX_ATTEMPTS, claim.generation],
-    )?;
+    let n = conn.execute("UPDATE outbox SET state = CASE WHEN attempts >= ?3 THEN 'failed' ELSE 'pending' END, last_error = ?1, lease_until = NULL WHERE job_id = ?2 AND generation = ?4 AND state = 'claimed'", params![error, claim.job_id, MAX_ATTEMPTS, claim.generation])?;
     Ok(n > 0)
 }
 
@@ -140,12 +122,7 @@ pub fn run_job(conn: &Connection, claim: &Claim) -> Result<Value, String> {
                 // past the cap; extra clique edges are rebuilt at query time.
                 // Columns are src_*/dst_* (not from_/to_). OFFSET keeps the
                 // newest cap rows the same way feed prune keeps newest rows.
-                trimmed += conn
-                    .execute(
-                        "DELETE FROM clock_links WHERE rowid IN (SELECT l.rowid FROM clock_links l WHERE l.relation IN ('observed_with','same_path','same_symbol') AND EXISTS (SELECT 1 FROM clock_anchor_evidence e1 WHERE e1.anchor_id = ?1 AND e1.target_type = l.src_type AND e1.target_id = l.src_id) AND EXISTS (SELECT 1 FROM clock_anchor_evidence e2 WHERE e2.anchor_id = ?1 AND e2.target_type = l.dst_type AND e2.target_id = l.dst_id) ORDER BY l.rowid DESC LIMIT -1 OFFSET ?2)",
-                        params![anchor_id, ANCHOR_HUB_DEGREE],
-                    )
-                    .map_err(|e| e.to_string())?;
+                trimmed += conn.execute("DELETE FROM clock_links WHERE rowid IN (SELECT l.rowid FROM clock_links l WHERE l.relation IN ('observed_with','same_path','same_symbol') AND EXISTS (SELECT 1 FROM clock_anchor_evidence e1 WHERE e1.anchor_id = ?1 AND e1.target_type = l.src_type AND e1.target_id = l.src_id) AND EXISTS (SELECT 1 FROM clock_anchor_evidence e2 WHERE e2.anchor_id = ?1 AND e2.target_type = l.dst_type AND e2.target_id = l.dst_id) ORDER BY l.rowid DESC LIMIT -1 OFFSET ?2)", params![anchor_id, ANCHOR_HUB_DEGREE]).map_err(|e| e.to_string())?;
             }
             Ok(json!({"hubs": hubs.len(), "links_trimmed": trimmed}))
         }
@@ -155,8 +132,7 @@ pub fn run_job(conn: &Connection, claim: &Claim) -> Result<Value, String> {
 
 /// Anchors whose evidence degree exceeds the hub threshold.
 pub fn hub_anchors(conn: &Connection) -> rusqlite::Result<Vec<(i64, i64)>> {
-    let mut stmt =
-        conn.prepare("SELECT anchor_id, COUNT(*) AS degree FROM clock_anchor_evidence GROUP BY anchor_id HAVING degree > ?1 ORDER BY degree DESC LIMIT 64")?;
+    let mut stmt = conn.prepare("SELECT anchor_id, COUNT(*) AS degree FROM clock_anchor_evidence GROUP BY anchor_id HAVING degree > ?1 ORDER BY degree DESC LIMIT 64")?;
     let rows = stmt.query_map(params![ANCHOR_HUB_DEGREE], |r| Ok((r.get(0)?, r.get(1)?)))?;
     rows.collect()
 }
@@ -170,8 +146,7 @@ pub fn prune_telemetry(conn: &Connection) -> rusqlite::Result<usize> {
         "DELETE FROM feed WHERE julianday(timestamp) < julianday('now', ?1)",
         params![cutoff],
     )?;
-    pruned += conn
-        .execute("DELETE FROM feed WHERE rowid IN (SELECT rowid FROM feed ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT -1 OFFSET ?1)", params![FEED_MAX_ROWS])?;
+    pruned += conn.execute("DELETE FROM feed WHERE rowid IN (SELECT rowid FROM feed ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT -1 OFFSET ?1)", params![FEED_MAX_ROWS])?;
     pruned += conn.execute("DELETE FROM feed_acks WHERE last_seen_id IS NOT NULL AND last_seen_id NOT IN (SELECT id FROM feed)", [])?;
     Ok(pruned)
 }
@@ -223,13 +198,7 @@ impl Debt {
         self.pressure() == "hard"
     }
     pub fn to_json(&self) -> Value {
-        json!({
-            "pending_jobs": self.pending_jobs, "claimed_jobs": self.claimed_jobs, "failed_jobs": self.failed_jobs,
-            "earliest_unprojected_sequence": self.earliest_unprojected_sequence, "commit_frontier": self.commit_frontier,
-            "projection_lag": self.earliest_unprojected_sequence.map(|s| self.commit_frontier - s + 1).unwrap_or(0),
-            "feed_rows": self.feed_rows, "pressure": self.pressure(), "soft_limit_jobs": DEBT_SOFT_LIMIT_JOBS, "hard_limit_jobs": DEBT_HARD_LIMIT_JOBS,
-            "note": "no caller means no progress; run `cortex maintain` or any operation to drain"
-        })
+        json!({"pending_jobs":self.pending_jobs,"claimed_jobs":self.claimed_jobs,"failed_jobs":self.failed_jobs,"earliest_unprojected_sequence":self.earliest_unprojected_sequence,"commit_frontier":self.commit_frontier,"projection_lag":self.earliest_unprojected_sequence.map(|s| self.commit_frontier - s + 1).unwrap_or(0),"feed_rows":self.feed_rows,"pressure":self.pressure(),"soft_limit_jobs":DEBT_SOFT_LIMIT_JOBS,"hard_limit_jobs":DEBT_HARD_LIMIT_JOBS,"note":"no caller means no progress; run `cortex maintain` or any operation to drain"})
     }
 }
 
@@ -262,75 +231,40 @@ pub fn debt(conn: &Connection) -> Debt {
                 r.get(0)
             })
             .unwrap_or(0),
-        feed_rows: conn
-            .query_row("SELECT COUNT(*) FROM feed", [], |r| r.get(0))
-            .unwrap_or(0),
+        feed_rows: super::count_or_zero(conn, "SELECT COUNT(*) FROM feed"),
     }
 }
 
 /// Semantic brain health: what the memory can still promise.
 pub fn brain_health(conn: &Connection, home: &std::path::Path) -> Value {
     let debt = debt(conn);
-    let unresolved_heads: i64 = conn
-        .query_row("SELECT COUNT(*) FROM (SELECT record_id FROM record_heads GROUP BY record_id HAVING COUNT(*) > 1)", [], |r| r.get(0))
-        .unwrap_or(0);
-    let open_conflicts: i64 = conn
-        .query_row("SELECT COUNT(*) FROM decision_conflicts WHERE status = 'open' AND classification = 'CONTRADICTS'", [], |r| r.get(0))
-        .unwrap_or(0);
-    let compiled: i64 = conn
-        .query_row("SELECT COUNT(*) FROM compiled_reads", [], |r| r.get(0))
-        .unwrap_or(0);
-    let records: i64 = conn
-        .query_row("SELECT COUNT(*) FROM records", [], |r| r.get(0))
-        .unwrap_or(0);
-    let recoverable_sources: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM decisions WHERE status != 'erased'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    json!({
-        "commit_durability": crate::runtime::ack_profile_label_pub(&crate::store_spi::sqlite::ack_profile(conn)),
-        "durability_profile": super::DurabilityProfile::from_env().as_str(),
-        "recoverable_sources": recoverable_sources,
-        "records": records,
-        "projection_lag": debt.to_json()["projection_lag"],
-        "maintenance_debt": debt.to_json(),
-        "unresolved_heads": unresolved_heads,
-        "open_contradictions": open_conflicts,
-        "compiled_reads": compiled,
-        "last_verified_restore": super::backup::last_verified_restore(home),
-        "restore_epoch": super::records::brain_epochs(conn).1,
-        "scope": DEFAULT_SCOPE,
-        "capture_policy": super::capture_policy::inspect(conn),
-        "capture_receipts": capture_receipts(conn),
-        "reflex": reflex_status(conn, home),
-    })
+    let unresolved_heads = super::count_or_zero(
+        conn,
+        "SELECT COUNT(*) FROM (SELECT record_id FROM record_heads GROUP BY record_id HAVING COUNT(*) > 1)",
+    );
+    let open_conflicts = super::count_or_zero(
+        conn,
+        "SELECT COUNT(*) FROM decision_conflicts WHERE status = 'open' AND classification = 'CONTRADICTS'",
+    );
+    let compiled = super::count_or_zero(conn, "SELECT COUNT(*) FROM compiled_reads");
+    let records = super::count_or_zero(conn, "SELECT COUNT(*) FROM records");
+    let recoverable_sources = super::count_or_zero(
+        conn,
+        "SELECT COUNT(*) FROM decisions WHERE status != 'erased'",
+    );
+    json!({"commit_durability":super::records::ack_label(conn),"durability_profile":super::DurabilityProfile::from_env().as_str(),"recoverable_sources":recoverable_sources,"records":records,"projection_lag":debt.to_json()["projection_lag"],"maintenance_debt":debt.to_json(),"unresolved_heads":unresolved_heads,"open_contradictions":open_conflicts,"compiled_reads":compiled,"last_verified_restore":super::backup::last_verified_restore(home),"restore_epoch":super::records::brain_epochs(conn).1,"scope":DEFAULT_SCOPE,"capture_policy":super::capture_policy::inspect(conn),"capture_receipts":capture_receipts(conn),"reflex":reflex_status(conn, home)})
 }
 
 /// Capture receipts by status over the sources table plus recent capture
 /// events: what was offered vs retained is what the control center shows.
 fn capture_receipts(conn: &Connection) -> Value {
-    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
-    json!({
-        "sources_owned": count("SELECT COUNT(*) FROM sources WHERE availability IN ('owned_inline','owned_external')"),
-        "sources_external_only": count("SELECT COUNT(*) FROM sources WHERE availability = 'external_only'"),
-        "sources_erased": count("SELECT COUNT(*) FROM sources WHERE availability = 'erased'"),
-        "sources_unavailable": count("SELECT COUNT(*) FROM sources WHERE availability = 'unavailable'"),
-        "hook_captures": count("SELECT COUNT(*) FROM operation_ledger WHERE idempotency_key LIKE 'capture:%'"),
-    })
+    let count = |sql: &str| super::count_or_zero(conn, sql);
+    json!({"sources_owned":count("SELECT COUNT(*) FROM sources WHERE availability IN ('owned_inline','owned_external')"),"sources_external_only":count("SELECT COUNT(*) FROM sources WHERE availability = 'external_only'"),"sources_erased":count("SELECT COUNT(*) FROM sources WHERE availability = 'erased'"),"sources_unavailable":count("SELECT COUNT(*) FROM sources WHERE availability = 'unavailable'"),"hook_captures":count("SELECT COUNT(*) FROM operation_ledger WHERE idempotency_key LIKE 'capture:%'")})
 }
 
 fn reflex_status(conn: &Connection, home: &std::path::Path) -> Value {
     let path = crate::reflex::snapshot_path(home);
     let snapshot = crate::reflex::load(&path);
     let state = crate::reflex::state_for(snapshot.as_ref(), conn);
-    json!({
-        "state": state,
-        "generation": snapshot.as_ref().map(|s| s.header.generation),
-        "records": snapshot.as_ref().map(|s| s.header.records),
-        "built_at": snapshot.as_ref().map(|s| s.header.built_at.clone()),
-        "path": path.display().to_string(),
-    })
+    json!({"state":state,"generation":snapshot.as_ref().map(|s| s.header.generation),"records":snapshot.as_ref().map(|s| s.header.records),"built_at":snapshot.as_ref().map(|s| s.header.built_at.clone()),"path":path.display().to_string()})
 }

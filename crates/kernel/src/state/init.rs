@@ -1,7 +1,7 @@
 use super::read_pool::{
-    open_query_only_connection, read_pool_size_from_env, ReadConnectionPool, ReadConnectionProvider,
+    ReadConnectionPool, ReadConnectionProvider, open_query_only_connection, read_pool_size_from_env,
 };
-use super::runtime::{current_unix_secs, RuntimeState};
+use super::runtime::{RuntimeState, current_unix_secs};
 use super::types::{BrainFiringEvent, DaemonEvent, SqliteVecCanaryConfig};
 use crate::auth::CortexPaths;
 use asupersync::{
@@ -10,8 +10,8 @@ use asupersync::{
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 pub fn initialize(
     paths: &CortexPaths,
     allow_token_rotation: bool,
@@ -39,8 +39,7 @@ pub fn initialize(
             match crate::db::auto_repair(db_path, &timestamp) {
                 Ok(result) => {
                     eprintln!(
-                        "[cortex] Auto-repair succeeded: {} memories, {} decisions recovered. \
-                         Corrupted DB preserved at {}",
+                        "[cortex] Auto-repair succeeded: {} memories, {} decisions recovered. Corrupted DB preserved at {}",
                         result.memories_recovered,
                         result.decisions_recovered,
                         result.corrupt_db_path.display()
@@ -53,13 +52,10 @@ pub fn initialize(
                 }
                 Err(e) => {
                     eprintln!(
-                        "[cortex] Auto-repair failed ({e:?}). \
-                         Starting in degraded mode -- reads may return incomplete data. \
-                         DB path: {}",
+                        "[cortex] Auto-repair failed ({e:?}). Starting in degraded mode -- reads may return incomplete data. DB path: {}",
                         db_path.display()
                     );
-                    let conn =
-                        crate::db::open(db_path).map_err(|open_err| format!("Database corrupt and could not be reopened after failed repair: {open_err}"))?;
+                    let conn = crate::db::open(db_path).map_err(|open_err| format!("Database corrupt and could not be reopened after failed repair: {open_err}"))?;
                     crate::db::configure(&conn).ok();
                     crate::db::initialize_schema(&conn).ok();
                     let (state, rx) = initialize_with_conn(conn, paths, allow_token_rotation)?;
@@ -115,10 +111,7 @@ fn initialize_with_conn(
             )
             .ok()
             .and_then(|v| v.parse::<i64>().ok());
-        from_config.or_else(|| {
-            conn.query_row("SELECT id FROM users ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, id ASC LIMIT 1", [], |row| row.get::<_, i64>(0))
-                .ok()
-        })
+        from_config.or_else(|| conn.query_row("SELECT id FROM users ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, id ASC LIMIT 1", [], |row| row.get::<_, i64>(0)).ok())
     } else {
         None
     };

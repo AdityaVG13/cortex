@@ -11,12 +11,12 @@ pub use keys::{
 };
 pub use locks::{acquire_daemon_lock, acquire_global_daemon_lock};
 pub use migration::migrate_legacy_db;
-pub use paths::CortexPaths;
 pub use paths::{
-    open_append_nofollow, open_nofollow, read_secret_file, restrict_file_to_owner,
+    CortexPaths, is_flag_token, open_append_nofollow, open_nofollow, parse_flag_value,
+    parse_flag_values, read_secret_file, restrict_file_to_owner, take_flag_value,
     write_secret_file,
 };
 pub use runtime::{
-    cleanup_stale_pid_file, cleanup_stale_pid_lock, db_path, pid_file_live_pid,
-    remove_own_pid_file, write_pid_file, MAX_PID_FILE_BYTES,
+    MAX_PID_FILE_BYTES, cleanup_stale_pid_file, cleanup_stale_pid_lock, db_path, pid_file_live_pid,
+    remove_own_pid_file, write_pid_file,
 };

@@ -1,6 +1,6 @@
 use super::paths::{
-    default_home_root, CortexPaths, CORTEX_DIR_NAME, CORTEX_GLOBAL_LOCK_HOME_ENV,
-    CORTEX_GLOBAL_LOCK_NAME,
+    CORTEX_DIR_NAME, CORTEX_GLOBAL_LOCK_HOME_ENV, CORTEX_GLOBAL_LOCK_NAME, CortexPaths,
+    default_home_root,
 };
 use fs2::FileExt;
 use std::fs;
