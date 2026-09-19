@@ -233,6 +233,10 @@ name = "falsifiers"
 path = "contracts/falsifiers.rs"
 
 [[test]]
+name = "recall_positive"
+path = "contracts/recall_positive.rs"
+
+[[test]]
 name = "kernel_embed"
 path = "contracts/kernel_embed.rs"
 

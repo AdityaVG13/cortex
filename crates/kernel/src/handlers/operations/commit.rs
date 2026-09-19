@@ -123,8 +123,8 @@ pub(crate) async fn commit(
         let local_id = entry
             .get("local_id")
             .and_then(Value::as_str)
-            .unwrap_or("entry")
-            .to_string();
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("entry{index}"));
         let paths = commit_paths(args, &entry);
         prepared.push(PreparedEntry {
             text: text.to_string(),

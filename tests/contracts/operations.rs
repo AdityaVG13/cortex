@@ -2027,3 +2027,45 @@ fn resolve_unknown_keep_id_fails_closed() {
         assert_eq!(same["status"], "invalid_request", "{same}");
     });
 }
+
+#[test]
+fn commit_batch_without_local_ids_gets_unique_derived_keys() {
+    // local_id is optional per the tool schema; entries that omit it must
+    // still batch under one top-level idempotency key instead of colliding
+    // on a shared default sub-key.
+    cortex_tests::support::run_with_cx(|cx| async move {
+        let state = solo_state();
+        let batch = json!({"entries": [
+            {"text": "BATCHKEY-1 ledger commits are never retried after ack", "kind": "decision"},
+            {"text": "BATCHKEY-1 deploy freeze covers schema migrations on Fridays", "kind": "decision"},
+            {"text": "BATCHKEY-1 support escalations page the on-call primary", "kind": "decision"},
+        ], "idempotency_key": "ops/batch-noids"});
+        let committed = dispatch(&cx, &state, caller(), Operation::Commit, &batch)
+            .await
+            .unwrap();
+        assert_eq!(committed["status"], "ok", "{committed}");
+        assert_eq!(committed["stored"], 3, "{committed}");
+        let names: Vec<&str> = committed["receipt"]["entries"]
+            .as_object()
+            .map(|m| m.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        for prefix in ["entry0", "entry1", "entry2"] {
+            assert!(
+                names.iter().any(|n| n.starts_with(&format!("{prefix}."))),
+                "each entry keeps a distinct receipt name: {committed}"
+            );
+        }
+        let replay = dispatch(&cx, &state, caller(), Operation::Commit, &batch)
+            .await
+            .unwrap();
+        assert_eq!(replay["status"], "ok", "{replay}");
+        assert_eq!(
+            replay["receipt"]["durability"], committed["receipt"]["durability"],
+            "replay returns the original receipt without new rows"
+        );
+        assert_eq!(
+            replay["receipt"]["entries"], committed["receipt"]["entries"],
+            "replay returns identical entry assignments"
+        );
+    });
+}

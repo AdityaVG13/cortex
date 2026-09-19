@@ -100,7 +100,7 @@ Bulk-ingest design (thousands of sessions, LLM-assisted): see
 
 ## Phase 0 — Measure first (the optimization target)
 
-- [ ] **Recall-positive eval suite** (`tests/contracts/recall_positive.rs`):
+- [x] **Recall-positive eval suite** (`tests/contracts/recall_positive.rs`):
   fixed corpus + fixed queries with expected admittances — the mirror of
   `falsifiers.rs`. Seed with paraphrase pairs, temporal questions, update
   chains, multi-session aggregations, abstention controls.
