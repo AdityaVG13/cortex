@@ -39,6 +39,17 @@ pub struct CapturedFacts {
     pub offered_bytes: usize,
 }
 
+impl TypedCheck {
+    fn verdict(kind: CheckKind, passed: bool) -> Self {
+        Self {
+            kind,
+            passed,
+            passed_count: None,
+            failed_count: None,
+        }
+    }
+}
+
 impl CapturedFacts {
     /// True when there is something a deposit could stand on.
     pub fn is_material(&self) -> bool {
@@ -165,17 +176,14 @@ pub fn parse_tool_result(
 
 fn strip_position(path: &str) -> &str {
     // src/lib.rs:12:5 → src/lib.rs
-    match path.find(':') {
-        Some(i)
-            if path[i + 1..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit()) =>
-        {
-            &path[..i]
-        }
-        _ => path,
-    }
+    path.find(':')
+        .filter(|&i| {
+            path.as_bytes()
+                .get(i + 1)
+                .is_some_and(|b| b.is_ascii_digit())
+        })
+        .map(|i| &path[..i])
+        .unwrap_or(path)
 }
 
 fn looks_like_path(t: &str) -> bool {
@@ -215,6 +223,17 @@ fn cmd_has_token(cmd: &str, token: &str) -> bool {
     cmd_tokens(cmd).any(|part| part == token)
 }
 
+fn any_token(cmd: &str, tokens: &[&str]) -> bool {
+    tokens
+        .iter()
+        .copied()
+        .any(|token| cmd_has_token(cmd, token))
+}
+
+fn any_seq(cmd: &str, seqs: &[&[&str]]) -> bool {
+    seqs.iter().copied().any(|seq| cmd_has_seq(cmd, seq))
+}
+
 /// True when `seq` appears as consecutive command tokens. `contains("cargo
 /// check")` matched `cargo checkout`; `contains("npm test")` matched
 /// `npm testimonial`.
@@ -231,13 +250,17 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
     let out = output.to_ascii_lowercase();
     let mut checks = Vec::new();
     let ok = exit_status.map(|c| c == 0);
-    if cmd_has_seq(&cmd, &["cargo", "test"])
-        || cmd_has_token(&cmd, "pytest")
-        || cmd_has_token(&cmd, "vitest")
-        || cmd_has_seq(&cmd, &["npm", "test"])
-        || cmd_has_seq(&cmd, &["npm", "run", "test"])
-        || cmd_has_seq(&cmd, &["bun", "test"])
-        || cmd_has_seq(&cmd, &["bun", "run", "test"])
+    let error_ok = ok.unwrap_or(!out.contains("error"));
+    if any_seq(
+        &cmd,
+        &[
+            &["cargo", "test"],
+            &["npm", "test"],
+            &["npm", "run", "test"],
+            &["bun", "test"],
+            &["bun", "run", "test"],
+        ],
+    ) || any_token(&cmd, &["pytest", "vitest"])
         || out.contains("test result:")
     {
         let (p, f) = count_tests(&out);
@@ -257,52 +280,39 @@ fn detect_checks(command: &str, output: &str, exit_status: Option<i32>) -> Vec<T
             failed_count: f,
         });
     }
-    if cmd_has_seq(&cmd, &["cargo", "check"])
-        || cmd_has_token(&cmd, "tsc")
-        || cmd_has_token(&cmd, "mypy")
-        || cmd_has_token(&cmd, "typecheck")
-    {
-        checks.push(TypedCheck {
-            kind: CheckKind::Typecheck,
-            passed: ok.unwrap_or(!out.contains("error")),
-            passed_count: None,
-            failed_count: None,
-        });
-    }
-    if cmd_has_token(&cmd, "clippy")
-        || cmd_has_token(&cmd, "eslint")
-        || cmd_has_token(&cmd, "ruff")
-        || cmd_has_token(&cmd, "lint")
-    {
-        checks.push(TypedCheck {
-            kind: CheckKind::Lint,
-            passed: ok.unwrap_or(!out.contains("error")),
-            passed_count: None,
-            failed_count: None,
-        });
-    }
-    if cmd_has_seq(&cmd, &["cargo", "build"])
-        || cmd_has_seq(&cmd, &["npm", "run", "build"])
-        || cmd_has_seq(&cmd, &["bun", "run", "build"])
-        || cmd_has_token(&cmd, "make")
-    {
-        checks.push(TypedCheck {
-            kind: CheckKind::Build,
-            passed: ok.unwrap_or(!out.contains("error")),
-            passed_count: None,
-            failed_count: None,
-        });
-    }
-    if cmd_has_seq(&cmd, &["cargo", "fmt"])
-        || cmd_has_token(&cmd, "prettier")
-        || cmd_has_token(&cmd, "black")
-    {
-        checks.push(TypedCheck {
-            kind: CheckKind::Format,
-            passed: ok.unwrap_or(true),
-            passed_count: None,
-            failed_count: None,
-        });
+    for (kind, hit, passed) in [
+        (
+            CheckKind::Typecheck,
+            cmd_has_seq(&cmd, &["cargo", "check"])
+                || any_token(&cmd, &["tsc", "mypy", "typecheck"]),
+            error_ok,
+        ),
+        (
+            CheckKind::Lint,
+            any_token(&cmd, &["clippy", "eslint", "ruff", "lint"]),
+            error_ok,
+        ),
+        (
+            CheckKind::Build,
+            any_seq(
+                &cmd,
+                &[
+                    &["cargo", "build"],
+                    &["npm", "run", "build"],
+                    &["bun", "run", "build"],
+                ],
+            ) || cmd_has_token(&cmd, "make"),
+            error_ok,
+        ),
+        (
+            CheckKind::Format,
+            cmd_has_seq(&cmd, &["cargo", "fmt"]) || any_token(&cmd, &["prettier", "black"]),
+            ok.unwrap_or(true),
+        ),
+    ] {
+        if hit {
+            checks.push(TypedCheck::verdict(kind, passed));
+        }
     }
     checks
 }
@@ -329,92 +339,4 @@ fn count_tests(out: &str) -> (Option<u32>, Option<u32>) {
         failed = Some(0);
     }
     (passed, failed)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cargo_test_output_yields_a_typed_check_with_counts() {
-        let out = "running 3 tests\ntest a ... ok\ntest result: FAILED. 2 passed; 1 failed; 0 ignored\n  --> crates/logic/src/lens.rs:41:9";
-        let f = parse_tool_result("Bash", Some("cargo test -p cortex-logic"), out, Some(101));
-        assert_eq!(
-            f.checks,
-            vec![TypedCheck {
-                kind: CheckKind::Test,
-                passed: false,
-                passed_count: Some(2),
-                failed_count: Some(1)
-            }]
-        );
-        assert_eq!(f.paths, vec!["crates/logic/src/lens.rs"]);
-        assert!(f.is_material());
-        assert!(f.statement().contains("exit 101"));
-        assert!(
-            f.statement().contains("test failed (2 passed, 1 failed)"),
-            "{}",
-            f.statement()
-        );
-        assert_eq!(
-            f.idempotency_key(),
-            parse_tool_result("Bash", Some("cargo test -p cortex-logic"), out, Some(101))
-                .idempotency_key()
-        );
-    }
-
-    #[test]
-    fn symbols_error_codes_and_non_material_results() {
-        let f = parse_tool_result("Bash", Some("cargo check"), "error[E0277]: the trait bound ... in crate::store_spi::sqlite::SqliteStore\n --> src/a.rs:3:1", Some(1));
-        assert_eq!(f.error_codes, vec!["E0277"]);
-        assert!(
-            f.symbols.iter().any(|s| s.contains("SqliteStore")),
-            "{:?}",
-            f.symbols
-        );
-        assert_eq!(f.checks[0].kind, CheckKind::Typecheck);
-        assert!(!f.checks[0].passed);
-        let idle = parse_tool_result("Read", None, "just some prose without anything", None);
-        assert!(!idle.is_material(), "{idle:?}");
-        let explained = parse_tool_result(
-            "Bash",
-            Some("ls"),
-            "because the cache was cold the build was slow",
-            Some(0),
-        );
-        assert!(
-            !explained.statement().contains("because"),
-            "explanations are never captured as facts"
-        );
-        let cmake = parse_tool_result("Bash", Some("cmake -S . -B build"), "Configuring done", Some(0));
-        assert!(
-            cmake.checks.iter().all(|c| c.kind != CheckKind::Build),
-            "cmake is not a make invocation: {:?}",
-            cmake.checks
-        );
-        let make = parse_tool_result("Bash", Some("make -j4"), "error: *** missing separator", Some(2));
-        assert!(
-            make.checks.iter().any(|c| c.kind == CheckKind::Build && !c.passed),
-            "{:?}",
-            make.checks
-        );
-        let tsconfig = parse_tool_result("Bash", Some("cat tsconfig.json"), "{ \"compilerOptions\": {} }", Some(0));
-        assert!(
-            tsconfig.checks.iter().all(|c| c.kind != CheckKind::Typecheck),
-            "tsconfig is not a tsc invocation: {:?}",
-            tsconfig.checks
-        );
-        let tsc = parse_tool_result("Bash", Some("npx tsc --noEmit"), "error TS2304: Cannot find name 'x'.", Some(1));
-        assert!(
-            tsc.checks.iter().any(|c| c.kind == CheckKind::Typecheck && !c.passed),
-            "{:?}",
-            tsc.checks
-        );
-        let vue_tsc = parse_tool_result("Bash", Some("npx vue-tsc --noEmit"), "Found 0 errors", Some(0));
-        assert!(
-            vue_tsc.checks.iter().any(|c| c.kind == CheckKind::Typecheck && c.passed),
-            "vue-tsc is a tsc wrapper: {:?}",
-            vue_tsc.checks
-        );
-    }
 }

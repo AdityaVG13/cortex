@@ -152,14 +152,14 @@ impl Envelope {
     /// unknown required flags and unknown *non-namespaced* fields fail with
     /// the field to fix.
     pub fn validate(&self) -> Result<(), EnvelopeError> {
-        if self.protocol_version.trim().is_empty() {
-            return Err(EnvelopeError::MissingField("protocol_version"));
-        }
-        if self.request_id.trim().is_empty() {
-            return Err(EnvelopeError::MissingField("request_id"));
-        }
-        if self.brain_id.trim().is_empty() {
-            return Err(EnvelopeError::MissingField("brain_id"));
+        for (field, value) in [
+            ("protocol_version", self.protocol_version.as_str()),
+            ("request_id", self.request_id.as_str()),
+            ("brain_id", self.brain_id.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(EnvelopeError::MissingField(field));
+            }
         }
         if !KNOWN_OPERATIONS.contains(&self.operation.as_str()) {
             return Err(EnvelopeError::UnknownOperation(self.operation.clone()));

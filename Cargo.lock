@@ -577,6 +577,7 @@ version = "0.6.0"
 dependencies = [
  "asupersync",
  "chrono",
+ "libc",
  "rusqlite",
  "rustc-hash",
  "serde",

@@ -1,4 +1,5 @@
 use super::anchors::{Anchor, AnchorKind};
+use crate::protocol::nonempty_opt;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -203,7 +204,7 @@ pub fn query_signature(frame: &QueryFrame) -> String {
 }
 
 fn infer_temporal(raw: &str, explicit: Option<&str>) -> (TemporalMode, Option<String>) {
-    if let Some(value) = explicit.map(str::trim).filter(|v| !v.is_empty()) {
+    if let Some(value) = nonempty_opt(explicit) {
         return (TemporalMode::ExplicitAsOf, Some(value.to_string()));
     }
     let lower = raw.to_ascii_lowercase();
@@ -225,8 +226,7 @@ fn infer_temporal(raw: &str, explicit: Option<&str>) -> (TemporalMode, Option<St
     // Substring "before"/"after" is not a temporal cue: they fire inside
     // ordinary task language ("before merging", "after login") and would
     // switch Current recall into Historical (archived rows + history arm).
-    let historical_phrase =
-        lower.contains("previous version") || lower.contains("rolled back");
+    let historical_phrase = lower.contains("previous version") || lower.contains("rolled back");
     let historical_token = lower
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|t| matches!(t, "history" | "historical"));

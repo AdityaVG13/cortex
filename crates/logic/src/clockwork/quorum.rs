@@ -1,4 +1,4 @@
-use super::evidence::{direct_domains, independent_support, ClockEvidence, Witness};
+use super::evidence::{ClockEvidence, Witness, direct_domains, independent_support};
 use std::cmp::Ordering;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

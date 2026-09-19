@@ -1,8 +1,6 @@
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
-use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 const BUDGETS_FILE_NAME: &str = "budgets.toml";
 pub const BUDGET_SOURCE: &str = "budgets.toml";
@@ -48,8 +46,7 @@ pub struct EndpointBudget {
 }
 impl EndpointBudget {
     fn to_health_json(self) -> Value {
-        json!({"limit":self.
-limit,"windowSeconds":self.window_seconds,"window_seconds":self.window_seconds})
+        json!({"limit":self.limit,"windowSeconds":self.window_seconds,"window_seconds":self.window_seconds})
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,43 +78,15 @@ impl BudgetConfig {
                     None,
                 )
             })?;
-            let limit = raw_budget.limit.ok_or_else(|| {
-                BudgetConfigError::new(
-                    "missing_limit",
-                    format!("budget endpoint {name} is missing limit"),
-                    Some(name.clone()),
-                    Some("limit"),
-                )
-            })?;
-            if limit <= 0 {
-                return Err(BudgetConfigError::new(
-                    "invalid_limit",
-                    format!("budget endpoint {name} limit must be a positive integer"),
-                    Some(name.clone()),
-                    Some("limit"),
-                ));
-            }
-            let window_seconds = raw_budget.window_seconds.ok_or_else(|| {
-                BudgetConfigError::new(
-                    "missing_window_seconds",
-                    format!("budget endpoint {name} is missing window_seconds"),
-                    Some(name.clone()),
-                    Some("window_seconds"),
-                )
-            })?;
-            if window_seconds <= 0 {
-                return Err(BudgetConfigError::new(
-                    "invalid_window_seconds",
-                    format!("budget endpoint {name} window_seconds must be a positive integer"),
-                    Some(name.clone()),
-                    Some("window_seconds"),
-                ));
-            }
             endpoints.insert(
                 endpoint,
                 EndpointBudget {
-                    limit: limit as usize,
-                    window_seconds: window_seconds as u64,
+                    limit: require_positive_i64(&name, "limit", raw_budget.limit)? as usize,
+                    window_seconds: require_positive_i64(
+                        &name,
+                        "window_seconds",
+                        raw_budget.window_seconds,
+                    )? as u64,
                 },
             );
         }
@@ -158,93 +127,36 @@ impl BudgetConfigError {
         }
     }
     fn to_json(&self) -> Value {
-        json!({"code":self.code,"message":self.message,"endpoint":self.endpoint,
-"field":self.field})
-    }
-}
-fn open_nofollow(path: &Path) -> io::Result<fs::File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-    }
-    #[cfg(windows)]
-    {
-        open_windows_rejecting_name_surrogate(path, |opts| {
-            opts.read(true);
-        })
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        fs::File::open(path)
+        json!({"code":self.code,"message":self.message,"endpoint":self.endpoint,"field":self.field})
     }
 }
 
-#[cfg(windows)]
-fn open_windows_rejecting_name_surrogate(
-    path: &Path,
-    configure: impl Fn(&mut fs::OpenOptions),
-) -> io::Result<fs::File> {
-    use std::os::windows::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    let mut inspect = fs::OpenOptions::new();
-    configure(&mut inspect);
-    let file = inspect.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
-    let meta = file.metadata()?;
-    let file_type = meta.file_type();
-    if file_type.is_symlink() || file_type.is_symlink_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "refusing to follow a name-surrogate reparse point",
-        ));
-    }
-    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-        return Ok(file);
-    }
-    drop(file);
-    let mut follow = fs::OpenOptions::new();
-    configure(&mut follow);
-    follow.open(path)
-}
-
-fn read_budget_file(path: &Path) -> Result<Option<String>, BudgetConfigError> {
-    let file = match open_nofollow(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(BudgetConfigError::new(
-                "io_error",
-                format!("failed to read budgets.toml: {error}"),
-                None,
-                None,
-            ))
-        }
-    };
-    let mut contents = String::new();
-    file.take(MAX_BUDGET_FILE_BYTES + 1)
-        .read_to_string(&mut contents)
-        .map_err(|error| {
-            BudgetConfigError::new(
-                "io_error",
-                format!("failed to read budgets.toml: {error}"),
-                None,
-                None,
-            )
-        })?;
-    if contents.len() as u64 > MAX_BUDGET_FILE_BYTES {
+fn require_positive_i64(
+    name: &str,
+    field: &str,
+    value: Option<i64>,
+) -> Result<i64, BudgetConfigError> {
+    let value = value.ok_or_else(|| {
+        BudgetConfigError::new(
+            format!("missing_{field}"),
+            format!("budget endpoint {name} is missing {field}"),
+            Some(name.to_string()),
+            Some(field),
+        )
+    })?;
+    if value <= 0 {
         return Err(BudgetConfigError::new(
-            "too_large",
-            format!("budgets.toml exceeds {MAX_BUDGET_FILE_BYTES} bytes"),
-            None,
-            None,
+            format!("invalid_{field}"),
+            format!("budget endpoint {name} {field} must be a positive integer"),
+            Some(name.to_string()),
+            Some(field),
         ));
     }
-    Ok(Some(contents))
+    Ok(value)
 }
+
+mod io;
+use io::read_budget_file;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BudgetConfigStatus {
@@ -300,12 +212,7 @@ impl BudgetConfigStatus {
         }
     }
     pub fn enabled(&self) -> bool {
-        self.error.is_none()
-            && self
-                .config
-                .as_ref()
-                .map(|config| config.enabled)
-                .unwrap_or(false)
+        self.error.is_none() && self.config.as_ref().is_some_and(|config| config.enabled)
     }
     pub fn budget_for(&self, endpoint: BudgetEndpoint) -> Option<EndpointBudget> {
         if !self.enabled() {
@@ -316,10 +223,7 @@ impl BudgetConfigStatus {
             .and_then(|config| config.budget_for(endpoint))
     }
     pub fn to_health_json(&self, recent_denials: usize) -> Value {
-        json!({"configLoaded":self.config_loaded,
-"config_loaded":self.config_loaded,"enabled":self.enabled(),"source":BUDGET_SOURCE,"error":self.error.as_ref().map(
-BudgetConfigError::to_json),"endpoints":self.config.as_ref().map(BudgetConfig::endpoints_json).unwrap_or_else(||json!({})),
-"recentDenials":recent_denials,"recent_denials":recent_denials})
+        json!({"configLoaded":self.config_loaded,"config_loaded":self.config_loaded,"enabled":self.enabled(),"source":BUDGET_SOURCE,"error":self.error.as_ref().map(BudgetConfigError::to_json),"endpoints":self.config.as_ref().map(BudgetConfig::endpoints_json).unwrap_or_else(||json!({})),"recentDenials":recent_denials,"recent_denials":recent_denials})
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -353,14 +257,10 @@ impl BudgetDecision {
         }
     }
     pub fn http_body_json(&self) -> Value {
-        json!({"error":
-"budget_exceeded","endpoint":self.endpoint.as_str(),"limit":self.limit,"window_seconds":self.window_seconds,"retry_after_seconds":
-self.retry_after_seconds,"source":BUDGET_SOURCE})
+        json!({"error":"budget_exceeded","endpoint":self.endpoint.as_str(),"limit":self.limit,"window_seconds":self.window_seconds,"retry_after_seconds":self.retry_after_seconds,"source":BUDGET_SOURCE})
     }
     pub fn event_json(&self, request_source: &str, source_ip: &str) -> Value {
-        json!({
-"endpoint":self.endpoint.as_str(),"limit":self.limit,"window_seconds":self.window_seconds,"retry_after_seconds":self.
-retry_after_seconds,"source":BUDGET_SOURCE,"request_source":request_source,"source_ip":source_ip})
+        json!({"endpoint":self.endpoint.as_str(),"limit":self.limit,"window_seconds":self.window_seconds,"retry_after_seconds":self.retry_after_seconds,"source":BUDGET_SOURCE,"request_source":request_source,"source_ip":source_ip})
     }
 }
 #[derive(Deserialize)]

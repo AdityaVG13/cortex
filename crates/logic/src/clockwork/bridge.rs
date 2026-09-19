@@ -12,7 +12,7 @@
 use super::anchors::AnchorKind;
 use super::morph::{morph_stem, morph_variants};
 use super::query::{QueryAnchor, QueryFrame};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 const MAX_EXPANDED_TERMS: usize = 16;
 const MAX_SIBLING_ANCHORS: usize = 6;
@@ -49,20 +49,10 @@ pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
     let mut extra_anchors: Vec<QueryAnchor> = Vec::new();
     for seed in &seeds {
         for variant in morph_variants(seed) {
-            push_unique(&mut extra_terms, variant.clone());
-            extra_anchors.push(QueryAnchor {
-                kind: AnchorKind::Term,
-                value: variant,
-                specificity: 1,
-            });
+            push_term(&mut extra_terms, &mut extra_anchors, variant);
         }
         for mate in crate::graph::lexical_cluster_mates(seed) {
-            push_unique(&mut extra_terms, (*mate).to_string());
-            extra_anchors.push(QueryAnchor {
-                kind: AnchorKind::Term,
-                value: (*mate).to_string(),
-                specificity: 1,
-            });
+            push_term(&mut extra_terms, &mut extra_anchors, (*mate).to_string());
         }
         for sibling in sibling_anchors(conn, seed)
             .into_iter()
@@ -74,11 +64,7 @@ pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
     }
 
     extra_terms.truncate(MAX_EXPANDED_TERMS);
-    for term in extra_terms {
-        if !frame.terms.iter().any(|existing| existing == &term) {
-            frame.terms.push(term);
-        }
-    }
+    extend_absent(&mut frame.terms, extra_terms, |a, b| a == b);
     extra_anchors.sort_by(|a, b| {
         b.specificity
             .cmp(&a.specificity)
@@ -86,15 +72,9 @@ pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
             .then_with(|| a.value.cmp(&b.value))
     });
     extra_anchors.dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
-    for anchor in extra_anchors {
-        if !frame
-            .anchors
-            .iter()
-            .any(|existing| existing.kind == anchor.kind && existing.value == anchor.value)
-        {
-            frame.anchors.push(anchor);
-        }
-    }
+    extend_absent(&mut frame.anchors, extra_anchors, |a, b| {
+        a.kind == b.kind && a.value == b.value
+    });
     frame.anchors.truncate(super::MAX_ANCHORS_PER_QUERY.max(1));
 
     let joined = frame.terms.join(" ");
@@ -111,23 +91,7 @@ pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
 fn sibling_anchors(conn: &Connection, seed: &str) -> Vec<QueryAnchor> {
     let lowered = seed.to_ascii_lowercase();
     let stem = morph_stem(&lowered);
-    let mut stmt = match conn.prepare_cached(
-        "SELECT a2.kind, a2.value, a2.specificity
-         FROM clock_anchors a1
-         JOIN clock_anchor_evidence e1 ON e1.anchor_id = a1.id
-         JOIN clock_anchor_evidence e2
-           ON e2.target_type = e1.target_type AND e2.target_id = e1.target_id
-         JOIN clock_anchors a2 ON a2.id = e2.anchor_id
-         WHERE a1.value = ?1
-           AND a2.value != a1.value
-           AND a2.specificity >= 2
-           AND a2.kind IN ('term', 'entity', 'acronym', 'symbol', 'quoted_phrase')
-         ORDER BY a2.specificity DESC, a2.kind ASC, a2.value ASC
-         LIMIT 8",
-    ) {
-        Ok(stmt) => stmt,
-        Err(_) => return Vec::new(),
-    };
+    let mut stmt = match conn.prepare_cached("SELECT a2.kind, a2.value, a2.specificity FROM clock_anchors a1 JOIN clock_anchor_evidence e1 ON e1.anchor_id = a1.id JOIN clock_anchor_evidence e2 ON e2.target_type = e1.target_type AND e2.target_id = e1.target_id JOIN clock_anchors a2 ON a2.id = e2.anchor_id WHERE a1.value = ?1 AND a2.value != a1.value AND a2.specificity >= 2 AND a2.kind IN ('term', 'entity', 'acronym', 'symbol', 'quoted_phrase') ORDER BY a2.specificity DESC, a2.kind ASC, a2.value ASC LIMIT 8") { Ok(stmt) => stmt, Err(_) => return Vec::new() };
     let mut out = Vec::new();
     if let Ok(rows) = stmt.query_map(params![lowered], |row| {
         Ok((
@@ -150,6 +114,23 @@ fn sibling_anchors(conn: &Connection, seed: &str) -> Vec<QueryAnchor> {
         }
     }
     out
+}
+
+fn extend_absent<T>(out: &mut Vec<T>, items: Vec<T>, eq: impl Fn(&T, &T) -> bool) {
+    for item in items {
+        if !out.iter().any(|existing| eq(existing, &item)) {
+            out.push(item);
+        }
+    }
+}
+
+fn push_term(extra_terms: &mut Vec<String>, extra_anchors: &mut Vec<QueryAnchor>, value: String) {
+    push_unique(extra_terms, value.clone());
+    extra_anchors.push(QueryAnchor {
+        kind: AnchorKind::Term,
+        value,
+        specificity: 1,
+    });
 }
 
 fn push_unique(out: &mut Vec<String>, value: String) {

@@ -1,3 +1,4 @@
+use crate::protocol::hay_has_phrase;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -106,26 +107,6 @@ impl RetentionClass {
         }
         Self::Operational
     }
-}
-
-/// Word-boundary phrase match for retention cues. Split on non-alnum so
-/// hyphenated `always-on` still sees `always`, without `never` inside
-/// `whenever`.
-fn hay_has_phrase(hay_lower: &str, needle: &str) -> bool {
-    let parts: Vec<&str> = needle
-        .split_whitespace()
-        .filter(|part| !part.is_empty())
-        .collect();
-    if parts.is_empty() {
-        return false;
-    }
-    let hay_toks: Vec<&str> = hay_lower
-        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-        .filter(|tok| !tok.is_empty())
-        .collect();
-    hay_toks
-        .windows(parts.len())
-        .any(|window| window.iter().copied().eq(parts.iter().copied()))
 }
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct StoreRequest {

@@ -331,3 +331,107 @@ error: could not compile `bar` (lib) due to 1 previous error\n";
     assert_eq!(test.passed_count, Some(5));
     assert_eq!(test.failed_count, Some(0));
 }
+
+#[test]
+fn cargo_test_output_yields_a_typed_check_with_counts() {
+    use cortex_logic::capture::{parse_tool_result, CheckKind, TypedCheck};
+    let out = "running 3 tests\ntest a ... ok\ntest result: FAILED. 2 passed; 1 failed; 0 ignored\n  --> crates/logic/src/lens.rs:41:9";
+    let f = parse_tool_result("Bash", Some("cargo test -p cortex-logic"), out, Some(101));
+    assert_eq!(
+        f.checks,
+        vec![TypedCheck {
+            kind: CheckKind::Test,
+            passed: false,
+            passed_count: Some(2),
+            failed_count: Some(1)
+        }]
+    );
+    assert_eq!(f.paths, vec!["crates/logic/src/lens.rs"]);
+    assert!(f.is_material());
+    assert!(f.statement().contains("exit 101"));
+    assert!(
+        f.statement().contains("test failed (2 passed, 1 failed)"),
+        "{}",
+        f.statement()
+    );
+    assert_eq!(
+        f.idempotency_key(),
+        parse_tool_result("Bash", Some("cargo test -p cortex-logic"), out, Some(101))
+            .idempotency_key()
+    );
+}
+
+#[test]
+fn symbols_error_codes_and_non_material_results() {
+    use cortex_logic::capture::{parse_tool_result, CheckKind};
+    let f = parse_tool_result(
+        "Bash",
+        Some("cargo check"),
+        "error[E0277]: the trait bound ... in crate::store_spi::sqlite::SqliteStore\n --> src/a.rs:3:1",
+        Some(1),
+    );
+    assert_eq!(f.error_codes, vec!["E0277"]);
+    assert!(
+        f.symbols.iter().any(|s| s.contains("SqliteStore")),
+        "{:?}",
+        f.symbols
+    );
+    assert_eq!(f.checks[0].kind, CheckKind::Typecheck);
+    assert!(!f.checks[0].passed);
+    let idle = parse_tool_result("Read", None, "just some prose without anything", None);
+    assert!(!idle.is_material(), "{idle:?}");
+    let explained = parse_tool_result(
+        "Bash",
+        Some("ls"),
+        "because the cache was cold the build was slow",
+        Some(0),
+    );
+    assert!(
+        !explained.statement().contains("because"),
+        "explanations are never captured as facts"
+    );
+    let cmake = parse_tool_result("Bash", Some("cmake -S . -B build"), "Configuring done", Some(0));
+    assert!(
+        cmake.checks.iter().all(|c| c.kind != CheckKind::Build),
+        "cmake is not a make invocation: {:?}",
+        cmake.checks
+    );
+    let make = parse_tool_result("Bash", Some("make -j4"), "error: *** missing separator", Some(2));
+    assert!(
+        make.checks.iter().any(|c| c.kind == CheckKind::Build && !c.passed),
+        "{:?}",
+        make.checks
+    );
+    let tsconfig = parse_tool_result(
+        "Bash",
+        Some("cat tsconfig.json"),
+        "{ \"compilerOptions\": {} }",
+        Some(0),
+    );
+    assert!(
+        tsconfig.checks.iter().all(|c| c.kind != CheckKind::Typecheck),
+        "tsconfig is not a tsc invocation: {:?}",
+        tsconfig.checks
+    );
+    let tsc = parse_tool_result(
+        "Bash",
+        Some("npx tsc --noEmit"),
+        "error TS2304: Cannot find name 'x'.",
+        Some(1),
+    );
+    assert!(
+        tsc.checks.iter().any(|c| c.kind == CheckKind::Typecheck && !c.passed),
+        "{:?}",
+        tsc.checks
+    );
+    let vue_tsc = parse_tool_result("Bash", Some("npx vue-tsc --noEmit"), "Found 0 errors", Some(0));
+    assert!(
+        vue_tsc
+            .checks
+            .iter()
+            .any(|c| c.kind == CheckKind::Typecheck && c.passed),
+        "vue-tsc is a tsc wrapper: {:?}",
+        vue_tsc.checks
+    );
+}
+

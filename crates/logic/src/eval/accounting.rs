@@ -45,28 +45,12 @@ impl Accounting {
     /// Five separate quantities. There is deliberately no `total()`:
     /// summing bytes with prices, or reads with transport, measures nothing.
     pub fn report(&self) -> serde_json::Value {
-        serde_json::json!({
-            "unit": "utf8_bytes",
-            "d_task": self.d_task_bytes,
-            "d_read": self.d_read_bytes,
-            "d_transport": self.d_transport_bytes,
-            "d_context": self.d_context_bytes,
-            "d_price": self.d_price,
-            "price_unit": self.price_unit,
-            "tokenizer_estimate": self.tokenizer_estimate,
-            "never_summed": true,
-        })
+        serde_json::json!({"unit":"utf8_bytes","d_task":self.d_task_bytes,"d_read":self.d_read_bytes,"d_transport":self.d_transport_bytes,"d_context":self.d_context_bytes,"d_price":self.d_price,"price_unit":self.price_unit,"tokenizer_estimate":self.tokenizer_estimate,"never_summed":true})
     }
     /// Context saved relative to a no-memory baseline for the same task: a
     /// difference of like quantities, reported beside the read cost it took.
     pub fn context_delta_vs(&self, baseline: &Accounting) -> serde_json::Value {
-        serde_json::json!({
-            "baseline_context_bytes": baseline.d_context_bytes,
-            "with_memory_context_bytes": self.d_context_bytes,
-            "delta_bytes": baseline.d_context_bytes as i64 - self.d_context_bytes as i64,
-            "read_cost_bytes": self.d_read_bytes,
-            "note": "delta and read cost are separate; a saving that costs more reads than it saves is not a saving",
-        })
+        serde_json::json!({"baseline_context_bytes":baseline.d_context_bytes,"with_memory_context_bytes":self.d_context_bytes,"delta_bytes":baseline.d_context_bytes as i64 - self.d_context_bytes as i64,"read_cost_bytes":self.d_read_bytes,"note":"delta and read cost are separate; a saving that costs more reads than it saves is not a saving"})
     }
 }
 
@@ -117,38 +101,4 @@ pub struct PerfReport {
     pub rss_bytes: Option<u64>,
     pub maintenance_debt: Option<i64>,
     pub reflex_fallback_rate: Option<f64>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accounting_never_sums_and_reports_each_quantity() {
-        let mut a = Accounting {
-            d_task_bytes: 1000,
-            d_price: Some(0.5),
-            price_unit: Some("usd".into()),
-            ..Default::default()
-        };
-        a.add_read(300);
-        a.add_transport(420);
-        a.add_context(250);
-        let r = a.report();
-        assert_eq!(r["never_summed"], true);
-        assert!(r.get("total").is_none());
-        assert_eq!(r["d_read"], 300);
-        let baseline = Accounting {
-            d_context_bytes: 900,
-            ..Default::default()
-        };
-        let d = a.context_delta_vs(&baseline);
-        assert_eq!(d["delta_bytes"], 650);
-        assert_eq!(d["read_cost_bytes"], 300);
-        let l = Latency::from_samples(vec![5, 1, 9, 3, 7]);
-        assert_eq!(
-            (l.p50_micros, l.p99_micros, l.worst_micros, l.samples),
-            (5, 9, 9, 5)
-        );
-    }
 }

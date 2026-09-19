@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 use crate::budgets::{BudgetConfigStatus, BudgetDecision, BudgetEndpoint, EndpointBudget};
+use asupersync::Cx;
+use asupersync::sync::{LockError, Mutex};
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use asupersync::sync::{LockError, Mutex};
-use asupersync::Cx;
 const AUTH_FAIL_LIMIT: usize = 10;
 const REQUEST_LIMIT_NON_LOOPBACK: usize = 100;
 const REQUEST_LIMIT_LOOPBACK: usize = 10_000;
@@ -130,8 +130,8 @@ impl RateLimiter {
             || store_request_limit_loopback != request_limit_loopback
         {
             eprintln!(
-"[cortex] Rate limiter configured: auth_fails/min={auth_fail_limit}, default_requests/min(non-loopback)={request_limit_non_loopback}, default_requests/min(loopback)={request_limit_loopback}, recall_requests/min(non-loopback)={recall_request_limit_non_loopback}, recall_requests/min(loopback)={recall_request_limit_loopback}, store_requests/min(non-loopback)={store_request_limit_non_loopback}, store_requests/min(loopback)={store_request_limit_loopback}"
-);
+                "[cortex] Rate limiter configured: auth_fails/min={auth_fail_limit}, default_requests/min(non-loopback)={request_limit_non_loopback}, default_requests/min(loopback)={request_limit_loopback}, recall_requests/min(non-loopback)={recall_request_limit_non_loopback}, recall_requests/min(loopback)={recall_request_limit_loopback}, store_requests/min(non-loopback)={store_request_limit_non_loopback}, store_requests/min(loopback)={store_request_limit_loopback}"
+            );
         }
         Self {
             auth_failures: Arc::new(Mutex::new(HashMap::new())),
@@ -150,33 +150,31 @@ impl RateLimiter {
         }
     }
     fn request_limit_for_ip_class(&self, ip: IpAddr, class: RequestClass) -> usize {
-        let loopback = ip.is_loopback();
-        match class {
+        let (loopback, non_loopback) = match class {
             RequestClass::Default | RequestClass::Boot => {
-                if loopback {
-                    self.request_limit_loopback
-                } else {
-                    self.request_limit_non_loopback
-                }
+                (self.request_limit_loopback, self.request_limit_non_loopback)
             }
-            RequestClass::Recall => {
-                if loopback {
-                    self.recall_request_limit_loopback
-                } else {
-                    self.recall_request_limit_non_loopback
-                }
-            }
-            RequestClass::Store => {
-                if loopback {
-                    self.store_request_limit_loopback
-                } else {
-                    self.store_request_limit_non_loopback
-                }
-            }
+            RequestClass::Recall => (
+                self.recall_request_limit_loopback,
+                self.recall_request_limit_non_loopback,
+            ),
+            RequestClass::Store => (
+                self.store_request_limit_loopback,
+                self.store_request_limit_non_loopback,
+            ),
+        };
+        if ip.is_loopback() {
+            loopback
+        } else {
+            non_loopback
         }
     }
     /// The outer error reports lock failure; the inner error is retry-after seconds.
-    pub async fn record_auth_failure(&self, cx: &Cx, ip: IpAddr) -> Result<Result<(), u64>, LockError> {
+    pub async fn record_auth_failure(
+        &self,
+        cx: &Cx,
+        ip: IpAddr,
+    ) -> Result<Result<(), u64>, LockError> {
         let mut map = self.auth_failures.lock(cx).await?;
         let window = map.entry(ip).or_insert_with(SlidingWindow::new);
         let now = Instant::now();
@@ -190,13 +188,21 @@ impl RateLimiter {
             let now = Instant::now();
             window.prune(now, WINDOW);
             if window.timestamps.len() >= self.auth_fail_limit {
-                return Ok(Some(window.seconds_until_slot_pruned(now, self.auth_fail_limit, WINDOW)));
+                return Ok(Some(window.seconds_until_slot_pruned(
+                    now,
+                    self.auth_fail_limit,
+                    WINDOW,
+                )));
             }
         }
         Ok(None)
     }
     /// The outer error reports lock failure; the inner error is retry-after seconds.
-    pub async fn check_request(&self, cx: &Cx, ip: IpAddr) -> Result<Result<usize, u64>, LockError> {
+    pub async fn check_request(
+        &self,
+        cx: &Cx,
+        ip: IpAddr,
+    ) -> Result<Result<usize, u64>, LockError> {
         self.check_request_for_class(cx, ip, RequestClass::Default)
             .await
     }

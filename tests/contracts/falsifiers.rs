@@ -263,6 +263,29 @@ fn f06_savings_are_never_summed_and_bandit_stays_off_without_benefit() {
         "retrieval popularity is not benefit"
     );
     assert!(!adaptive_policy((9, 10), (0, 10)).enabled, "under-sampled");
+    let mut counted = Accounting {
+        d_task_bytes: 1000,
+        d_price: Some(0.5),
+        price_unit: Some("usd".into()),
+        ..Default::default()
+    };
+    counted.add_read(300);
+    counted.add_transport(420);
+    counted.add_context(250);
+    let r = counted.report();
+    assert_eq!(r["d_read"], 300);
+    let baseline = Accounting {
+        d_context_bytes: 900,
+        ..Default::default()
+    };
+    let d = counted.context_delta_vs(&baseline);
+    assert_eq!(d["delta_bytes"], 650);
+    assert_eq!(d["read_cost_bytes"], 300);
+    let l = cortex_logic::eval::accounting::Latency::from_samples(vec![5, 1, 9, 3, 7]);
+    assert_eq!(
+        (l.p50_micros, l.p99_micros, l.worst_micros, l.samples),
+        (5, 9, 9, 5)
+    );
 }
 
 #[test]
