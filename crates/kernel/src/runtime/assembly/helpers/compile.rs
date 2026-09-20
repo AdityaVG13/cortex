@@ -276,7 +276,7 @@ pub(in crate::runtime::assembly) fn routes_enabled(
         .unwrap_or(false))
 }
 
-pub(in crate::runtime::assembly) fn refresh_routes(
+pub(crate) fn refresh_routes(
     conn: &Connection,
     principal: &str,
     scope: &str,

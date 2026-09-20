@@ -271,7 +271,7 @@ pub(super) fn feedback_use_score(conn: &Connection, source: &str) -> Result<i64,
 }
 
 pub(super) fn hop_relation(conn: &Connection, target: &ClockTarget) -> Option<String> {
-    conn.query_row("SELECT relation FROM clock_links WHERE (src_type = ?1 AND src_id = ?2) OR (dst_type = ?1 AND dst_id = ?2) ORDER BY CASE relation WHEN 'used_with' THEN 0 ELSE 1 END, relation LIMIT 1", params![target.target_type, target.target_id], |row| row.get(0)).ok()
+    conn.query_row("SELECT relation FROM clock_links WHERE ((src_type = ?1 AND src_id = ?2) OR (dst_type = ?1 AND dst_id = ?2)) AND status != 'rejected' ORDER BY CASE relation WHEN 'used_with' THEN 0 ELSE 1 END, relation LIMIT 1", params![target.target_type, target.target_id], |row| row.get(0)).ok()
 }
 
 pub(super) fn stable_anchors(mut anchors: Vec<WhyAnchor>) -> Vec<WhyAnchor> {

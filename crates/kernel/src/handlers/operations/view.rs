@@ -226,7 +226,7 @@ pub(super) fn need_covered(need: &Need, cards: &[Card]) -> bool {
     }
 }
 
-pub(super) fn legacy_record(
+pub(crate) fn legacy_record(
     conn: &Connection,
     reference: &str,
 ) -> rusqlite::Result<Option<String>> {

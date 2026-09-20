@@ -44,14 +44,18 @@ pub fn exposed_from_receipt(conn: &Connection, receipt_id: &str) -> Result<Vec<S
         .map_err(|e| e.to_string())
 }
 
+pub fn normalize_outcome(raw: &str) -> Result<&'static str, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "success" | "ok" | "pass" => Ok("success"),
+        "partial" | "mixed" | "degraded" => Ok("partial"),
+        "failure" | "fail" | "error" => Ok("failure"),
+        _ => Err("outcome must be success|partial|failure".into()),
+    }
+}
+
 pub fn record(conn: &Connection, fb: &OutcomeFeedback) -> Result<i64, String> {
     ensure(conn).map_err(|e| e.to_string())?;
-    let outcome = match fb.outcome.trim().to_ascii_lowercase().as_str() {
-        "success" | "ok" | "pass" => "success",
-        "partial" | "mixed" | "degraded" => "partial",
-        "failure" | "fail" | "error" => "failure",
-        _ => return Err("outcome must be success|partial|failure".into()),
-    };
+    let outcome = normalize_outcome(&fb.outcome)?;
     let exposed_json = serde_json::to_string(&fb.exposed).map_err(|e| e.to_string())?;
     let used_json = serde_json::to_string(&fb.used).map_err(|e| e.to_string())?;
     conn.execute("INSERT INTO outcome_feedback (scope, task_family, task, prior_view_receipt, selected_action, outcome, exposed_json, used_json, harmful_reuse, wrong_scope, agent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)", params![if fb.scope.is_empty() { "default" } else { &fb.scope }, if fb.task_family.is_empty() { "general" } else { &fb.task_family }, fb.task, fb.prior_view_receipt, fb.selected_action, outcome, exposed_json, used_json, fb.harmful_reuse as i64, fb.wrong_scope as i64, fb.agent]).map_err(|e| e.to_string())?;

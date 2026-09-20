@@ -51,6 +51,7 @@ fn team_recall_hides_other_owner_decisions() {
                 session_id: None,
                 as_of: None,
                 include_cold: false,
+                principal: None,
             },
             None,
         )
@@ -76,6 +77,7 @@ fn team_recall_hides_other_owner_decisions() {
             &RecallContext {
                 caller_id: Some(1),
                 team_mode: true,
+                principal: None,
                 paths: Vec::new(),
                 symbols: Vec::new(),
                 goal_id: None,

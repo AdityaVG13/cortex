@@ -1,5 +1,8 @@
+mod learn;
 mod recall;
 mod stats;
+
+pub(crate) use learn::{ensure_learned_singleton, record_outcome_events};
 
 use crate::protocol::{arg_f64, arg_str, nonempty_opt, nonempty_str};
 use rusqlite::{Connection, params};
@@ -10,6 +13,7 @@ pub use stats::build_agent_feedback_stats_payload;
 
 pub use recall::{
     IMMUNITY_THRESHOLD, IMMUNITY_WINDOW_DAYS, compute_boosts, has_retrieval_immunity, parse_source,
+    query_text_for_receipt, record_use_signals,
 };
 
 const AGENT_FEEDBACK_DEFAULT_HORIZON_DAYS: i64 = 30;

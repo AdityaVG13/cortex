@@ -6,6 +6,8 @@ use serde_json::Value;
 mod helpers;
 mod runtime;
 pub(crate) use helpers::suggest_authorized_members;
+pub(crate) use runtime::learning::record_learning_event_conn;
+pub(crate) use helpers::compile::refresh_routes;
 pub use helpers::tokenize_cues;
 use helpers::*;
 

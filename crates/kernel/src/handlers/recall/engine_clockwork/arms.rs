@@ -1,5 +1,5 @@
 use super::{
-    ARM_ANCHOR, ARM_HISTORY, ARM_HOP, ARM_LEXICAL, ARM_TASK, ARM_TRUTH, RecallContext,
+    ARM_ACTIVITY, ARM_ANCHOR, ARM_HISTORY, ARM_HOP, ARM_LEXICAL, ARM_TASK, ARM_TRUTH, RecallContext,
     ScoredCandidate, as_of_bind, build_fts_query, build_search_term_groups, caller_acl_param,
     candidate_matches_source_scope, canonical_entity_name, feedback_use_score, fts_rows,
     hay_has_quoted_phrase, hop_relation, is_visible, lexical_needle, load_target, loaded_candidate,
@@ -387,6 +387,74 @@ pub(super) fn normalize_task_path(raw: &str) -> String {
         crate::clockwork::AnchorKind::Path,
         raw,
     ))
+}
+
+/// Loop 5: purpose routing. Session anchors carry the query's thread
+/// context; members alive in those threads become task-vote candidates.
+/// One vote, one domain: quorum still needs a second independent line.
+pub(super) fn collect_activity_arm(
+    conn: &Connection,
+    frame: &QueryFrame,
+    ctx: &RecallContext,
+    out: &mut HashMap<(String, i64), ScoredCandidate>,
+) -> Result<(), String> {
+    let mut threads: Vec<String> = Vec::new();
+    for anchor in &frame.anchors {
+        if anchor.kind == crate::clockwork::AnchorKind::Session && !anchor.value.is_empty() {
+            let id = crate::db::threads::thread_id_for(&anchor.value);
+            if !threads.contains(&id) {
+                threads.push(id);
+            }
+        }
+        if threads.len() >= 8 {
+            break;
+        }
+    }
+    if threads.is_empty() {
+        return Ok(());
+    }
+    for thread_id in &threads {
+        let members: Vec<String> = conn
+            .prepare("SELECT record_id FROM thread_members WHERE thread_id = ?1 ORDER BY record_id LIMIT 32")
+            .and_then(|mut stmt| {
+                stmt.query_map(params![thread_id], |r| r.get::<_, String>(0))
+                    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+            })
+            .map_err(|e| e.to_string())?;
+        for record_id in members {
+            // Raw select, not the ensuring resolver: arms run on the
+            // read-only connection and must never write.
+            let bound: Vec<(String, String, String)> = conn
+                .prepare("SELECT scheme, namespace, address FROM addresses WHERE record_id = ?1")
+                .and_then(|mut stmt| {
+                    stmt.query_map(params![record_id], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                    })
+                    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+                })
+                .map_err(|e| e.to_string())?;
+            for (scheme, namespace, address) in bound {
+                if namespace != "decision" && namespace != "memory" {
+                    continue;
+                }
+                if scheme != "legacy" {
+                    continue;
+                }
+                let Ok(target_id) = address.parse::<i64>() else {
+                    continue;
+                };
+                let Some(mut row) = load_target(conn, &namespace, target_id, ctx)? else {
+                    continue;
+                };
+                mark_arm(&mut row.arms, ARM_ACTIVITY);
+                row.task = row.task.max(1);
+                row.witness(WitnessDomain::Task, format!("thread:{thread_id}"), 1);
+                row.specificity = row.specificity.max(1);
+                upsert(out, row);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[path = "arms/graph.rs"]

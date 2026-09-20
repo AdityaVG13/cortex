@@ -306,6 +306,21 @@ fn deposit_inner(
         // existing record; a new decision a baseline revision.
         record_authoritative(conn, input, id, text, &action)
             .map_err(|e| StoreError::Internal(format!("authoritative record: {e}")))?;
+        // Loop 5: threaded deposits join the thread as members, so the
+        // activity arm can route queries to what was alive with them.
+        if let Some(label) = nonempty_opt(input.thread.as_deref()) {
+            let frontier = crate::store_spi::sqlite::current_frontier(conn);
+            let seq = crate::store_spi::sqlite::frontier_sequence(&frontier);
+            let thread_id = crate::db::threads::ensure_thread(conn, seq, label)
+                .map_err(|e| StoreError::Internal(format!("thread ensure: {e}")))?;
+            if let Some(record_id) =
+                crate::db::records::record_for_legacy(conn, "decision", id)
+                    .map_err(|e| StoreError::Internal(format!("legacy map: {e}")))?
+            {
+                crate::db::threads::add_thread_member(conn, &thread_id, &record_id, "deposit")
+                    .map_err(|e| StoreError::Internal(format!("thread join: {e}")))?;
+            }
+        }
     }
     let receipt = build_receipt(conn, input.request_id, target_id, version_id, &action);
     let capture = capture_receipt(

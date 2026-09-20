@@ -8,7 +8,7 @@ use cortex_logic::protocol::ContextPresence;
 use rusqlite::{TransactionBehavior, params};
 use serde_json::Value;
 
-mod learning;
+pub(crate) mod learning;
 
 impl CortexRuntime {
     pub async fn put_assembly(

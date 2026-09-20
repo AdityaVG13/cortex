@@ -192,6 +192,9 @@ pub struct RecallContext {
     pub as_of: Option<String>,
     /// Search the cold/archived partition too (history/audit profiles).
     pub include_cold: bool,
+    /// Principal for learned expansion (query memory). `None` skips it:
+    /// one principal's questions never expand another's.
+    pub principal: Option<String>,
 }
 impl RecallContext {
     pub fn new(caller_id: Option<i64>, team_mode: bool) -> Self {
@@ -204,6 +207,7 @@ impl RecallContext {
             session_id: None,
             as_of: None,
             include_cold: false,
+            principal: None,
         }
     }
     pub fn from_caller(caller_id: Option<i64>, state: &RuntimeState) -> Self {

@@ -18,6 +18,7 @@ mod view;
 
 pub use closure::{ClosureItem, DependencyRole, add_relation, close_revision};
 pub use view::{Card, Coverage, PresenceInputs, View};
+pub(crate) use view::legacy_record;
 
 pub(crate) use crate::protocol::{arg_bool, arg_i64, arg_list, arg_str, arg_usize};
 pub(crate) use bridge::{attach_assembly_evidence, attach_observation_evidence};
@@ -298,8 +299,125 @@ async fn feedback(
         agent: caller.agent.to_string(),
     };
     let id = crate::db::feedback_ledger::record(&conn, &fb)?;
+    // Loop 1: credit what was used so the live ranker, boosts, and aging
+    // immunity learn from this outcome. Same savepoint: signals commit with
+    // the outcome row or roll back with it.
+    let outcome = crate::db::feedback_ledger::normalize_outcome(&fb.outcome)?;
+    let signals = crate::handlers::feedback::record_use_signals(
+        &conn,
+        caller.agent,
+        outcome,
+        &fb.used,
+        fb.harmful_reuse,
+        arg_str(args, &["query", "need", "query_text"]).as_deref(),
+        fb.prior_view_receipt.as_deref(),
+    )?;
+    // Loop 2: attach the outcome to the remembered query (ensuring the row
+    // for explicit-query feedback that never ran a query).
+    let query_text = arg_str(args, &["query", "need", "query_text"]);
+    let signature = match query_text.as_deref() {
+        Some(text) => crate::db::query_memory::record_ask(&conn, &caller.principal, text)?,
+        None => fb
+            .prior_view_receipt
+            .as_deref()
+            .and_then(|r| crate::handlers::feedback::query_text_for_receipt(&conn, r))
+            .map(|text| {
+                crate::db::query_memory::record_ask(&conn, &caller.principal, &text)
+            })
+            .transpose()?
+            .flatten(),
+    };
+    if let Some(signature) = signature {
+        crate::db::query_memory::record_outcome(
+            &conn,
+            &caller.principal,
+            &signature,
+            outcome == "success",
+            &fb.used,
+        )?;
+    }
+    // Loop 3: teach the route engine from this outcome. Unresolvable
+    // sources skip; genuine store errors fail the feedback honestly.
+    let query_for_learning = query_text
+        .as_deref()
+        .map(str::to_owned)
+        .or_else(|| {
+            fb.prior_view_receipt
+                .as_deref()
+                .and_then(|r| crate::handlers::feedback::query_text_for_receipt(&conn, r))
+        });
+    // Assembly rows live under the observation principal, not the caller
+    // label (same split as commit's cite authorization).
+    let learn_principal =
+        crate::CortexRuntime::from_state(state.clone()).observation_principal()?;
+    let learned = crate::handlers::feedback::record_outcome_events(
+        &conn,
+        &learn_principal,
+        &fb.scope,
+        id,
+        outcome,
+        &fb.used,
+        fb.harmful_reuse,
+        query_for_learning.as_deref(),
+        fb.prior_view_receipt.as_deref(),
+    )?;
+    // Loop 4: pair query tokens with used-document tokens. Term bridges are
+    // caller-principal rows (same ownership as query memory and signals).
+    let mut bridges = 0;
+    if outcome == "success" || fb.harmful_reuse {
+        if let Some(query) = query_for_learning.as_deref() {
+            let query_terms = crate::runtime::assembly::tokenize_cues(query);
+            for source in fb.used.iter().take(crate::db::term_bridges::MAX_SOURCES) {
+                let doc_terms = crate::db::term_bridges::doc_terms(&conn, source.trim());
+                if doc_terms.is_empty() {
+                    continue;
+                }
+                bridges += crate::db::term_bridges::record_pairs(
+                    &conn,
+                    &caller.principal,
+                    &query_terms,
+                    &doc_terms,
+                    fb.harmful_reuse,
+                )?;
+            }
+        }
+    }
+    // Loop 6: sources used together attest each other. Pairs get a
+    // used_with link (the hop arm's feedback grant); harmful co-use
+    // rejects it. Single-source use is not a pair.
+    let mut coused = 0;
+    if outcome == "success" || fb.harmful_reuse {
+        let targets: Vec<crate::clockwork::ClockTarget> = fb
+            .used
+            .iter()
+            .take(8)
+            .filter_map(|s| {
+                let (kind, id) = crate::handlers::feedback::parse_source(s.trim());
+                if (kind == "decision" || kind == "memory") && id.is_some_and(|n| n > 0) {
+                    Some(crate::clockwork::ClockTarget {
+                        target_type: kind,
+                        target_id: id.unwrap_or(0),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for pair in targets.iter().enumerate().flat_map(|(i, left)| {
+            targets.iter().skip(i + 1).map(move |right| (left, right))
+        }) {
+            if fb.harmful_reuse {
+                crate::clockwork::reject_used_with(&conn, pair.0, pair.1)
+                    .map_err(|e| e.to_string())?;
+            } else {
+                crate::clockwork::record_used_with(&conn, pair.0, pair.1, None)
+                    .map_err(|e| e.to_string())?;
+            }
+            coused += 1;
+        }
+    }
     sp.release().map_err(|e| e.to_string())?;
-    out["ledger"] = json!({"id": id, "exposed": fb.exposed.len(), "used": fb.used.len(), "scope": fb.scope, "task_family": fb.task_family});
+    out["ledger"] = json!({"id": id, "exposed": fb.exposed.len(), "used": fb.used.len(), "scope": fb.scope, "task_family": fb.task_family, "signals": signals, "learned": learned, "bridges": bridges, "coused": coused});
     Ok(out)
 }
 

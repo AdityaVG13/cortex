@@ -3,7 +3,7 @@ use super::super::*;
 use crate::db::records;
 use asupersync::Cx;
 use cortex_logic::assembly::LearningEvent;
-use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 fn upsert_learning_retraction(
     tx: &Transaction<'_>,
@@ -14,6 +14,37 @@ fn upsert_learning_retraction(
 ) -> Result<(), String> {
     tx.execute("INSERT INTO learning_retractions VALUES(?1,?2,?3,?4) ON CONFLICT(origin,origin_event_id) DO UPDATE SET reason=excluded.reason", params![origin, origin_event_id, sequence, reason]).map_err(|err| err.to_string())?;
     Ok(())
+}
+
+/// Connection-level record shared by the async runtime API and the
+/// feedback op's in-savepoint wire (Loop 3). Savepoint-nestable: rolls
+/// back with an enclosing savepoint instead of committing through it.
+pub(crate) fn record_learning_event_conn(
+    conn: &Connection,
+    principal: &str,
+    event: &LearningEvent,
+) -> Result<bool, String> {
+    ensure(conn)?;
+    let sp = crate::db::SqliteSavepoint::enter(conn, "learn_event")
+        .map_err(|err| err.to_string())?;
+    if crate::db::count_sql(conn, "SELECT COUNT(*) FROM assemblies WHERE principal=?1 AND assembly_id=?2 AND scope_label=?3", params![principal, event.target, event.scope])? == 0 { return Err("learning_target_missing".into()); }
+    if crate::db::count_sql(conn, "SELECT COUNT(*) FROM learning_retractions WHERE origin=?1 AND origin_event_id=?2", params![event.origin, event.origin_event_id])? > 0 { return Ok(false); }
+    for source in &event.sources {
+        if crate::db::count_sql(conn, "SELECT COUNT(*) FROM learning_source_erasures WHERE source_id=?1", params![source])? > 0 { return Ok(false); }
+    }
+    let previous: Option<(i64, String)> = conn.query_row("SELECT reward,cues_json FROM learning_events WHERE origin=?1 AND origin_event_id=?2", params![event.origin, event.origin_event_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|err| err.to_string())?;
+    if let Some((reward, cues_json)) = previous {
+        let cues: Vec<String> = serde_json::from_str(&cues_json).map_err(|err| err.to_string())?;
+        if reward != i64::from(event.reward) || cues != event.cues { return Err("feedback_identity_conflict".into()); }
+        return Ok(false);
+    }
+    let sequence = records::append_ack_commit(conn, principal)?;
+    conn.execute("INSERT INTO learning_events VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", params![event.origin, event.origin_event_id, principal, event.scope, event.training_unit, event.target, event.kind.as_str(), event.reward, serde_json::to_string(&event.cues).map_err(|err| err.to_string())?, event.observed_at, event.receipt_ref, sequence]).map_err(|err| err.to_string())?;
+    for source in &event.sources {
+        conn.execute("INSERT INTO learning_dependencies VALUES(?1,?2,?3)", params![event.origin, event.origin_event_id, source]).map_err(|err| err.to_string())?;
+    }
+    sp.release().map_err(|err| err.to_string())?;
+    Ok(true)
 }
 
 impl CortexRuntime {
@@ -30,27 +61,9 @@ impl CortexRuntime {
             return Err("feedback_not_authorized".into());
         }
         self.with_locked_db(cx, |conn, principal| {
-            ensure(conn)?;
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|err| err.to_string())?;
-        if crate::db::count_sql(&tx, "SELECT COUNT(*) FROM assemblies WHERE principal=?1 AND assembly_id=?2 AND scope_label=?3", params![principal, event.target, event.scope])? == 0 { return Err("learning_target_missing".into()); }
-        if crate::db::count_sql(&tx, "SELECT COUNT(*) FROM learning_retractions WHERE origin=?1 AND origin_event_id=?2", params![event.origin, event.origin_event_id])? > 0 { return Ok(false); }
-        for source in &event.sources {
-            if crate::db::count_sql(&tx, "SELECT COUNT(*) FROM learning_source_erasures WHERE source_id=?1", params![source])? > 0 { return Ok(false); }
-        }
-        let previous: Option<(i64, String)> = tx.query_row("SELECT reward,cues_json FROM learning_events WHERE origin=?1 AND origin_event_id=?2", params![event.origin, event.origin_event_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|err| err.to_string())?;
-        if let Some((reward, cues_json)) = previous {
-            let cues: Vec<String> = serde_json::from_str(&cues_json).map_err(|err| err.to_string())?;
-            if reward != i64::from(event.reward) || cues != event.cues { return Err("feedback_identity_conflict".into()); }
-            return Ok(false);
-        }
-        let sequence = records::append_ack_commit(&tx, &principal)?;
-        tx.execute("INSERT INTO learning_events VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", params![event.origin, event.origin_event_id, principal, event.scope, event.training_unit, event.target, event.kind.as_str(), event.reward, serde_json::to_string(&event.cues).map_err(|err| err.to_string())?, event.observed_at, event.receipt_ref, sequence]).map_err(|err| err.to_string())?;
-        for source in &event.sources {
-            tx.execute("INSERT INTO learning_dependencies VALUES(?1,?2,?3)", params![event.origin, event.origin_event_id, source]).map_err(|err| err.to_string())?;
-        }
-            tx.commit().map_err(|err| err.to_string())?;
-            Ok(true)
-        }).await
+            record_learning_event_conn(conn, principal, &event)
+        })
+        .await
     }
 
     pub async fn retract_learning_event(

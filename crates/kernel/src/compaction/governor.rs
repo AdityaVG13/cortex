@@ -42,6 +42,8 @@ pub struct CompactionResult {
     pub crystal_embeddings_pruned: usize,
     pub cluster_members_pruned: usize,
     pub feedback_aggregated: usize,
+    pub query_memory_trimmed: usize,
+    pub term_bridges_trimmed: usize,
     pub stale_embeddings_pruned: usize,
     pub co_occurrence_pruned: usize,
     pub legacy_embeddings_migrated: usize,

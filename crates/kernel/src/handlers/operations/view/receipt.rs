@@ -33,7 +33,14 @@ impl View {
     }
 
     /// Bind aliases to a receipt row scoped to the principal and brain epoch.
-    pub fn persist_receipt(&mut self, conn: &Connection, principal: &str) -> rusqlite::Result<()> {
+    /// The asking need is stored (bounded) so outcome feedback can resolve
+    /// which query a receipt answered without trusting the client to repeat it.
+    pub fn persist_receipt(
+        &mut self,
+        conn: &Connection,
+        principal: &str,
+        need: &str,
+    ) -> rusqlite::Result<()> {
         crate::db::records::ensure_authoritative_schema(conn)?;
         let (_, restore_epoch, policy_epoch) = crate::db::records::brain_epochs(conn);
         self.apply_change_cursor(conn, principal, &restore_epoch);
@@ -44,7 +51,8 @@ impl View {
         let receipt_id = format!("view-{seq}-{random}");
         self.frontier = Some(json!(frontier));
         let sp = crate::db::SqliteSavepoint::enter(conn, "view_receipt")?;
-        conn.execute("INSERT INTO view_receipts (receipt_id, principal_id, brain_epoch, through_sequence, receipt_json) VALUES (?1, ?2, ?3, ?4, ?5)", params![receipt_id, principal, restore_epoch, seq, json!({"profile": self.profile, "cards": self.cards.len()}).to_string()])?;
+        let need: String = need.chars().take(512).collect();
+        conn.execute("INSERT INTO view_receipts (receipt_id, principal_id, brain_epoch, through_sequence, receipt_json) VALUES (?1, ?2, ?3, ?4, ?5)", params![receipt_id, principal, restore_epoch, seq, json!({"profile": self.profile, "cards": self.cards.len(), "need": need}).to_string()])?;
         for card in &mut self.cards {
             card.expandable = false;
             let Some(record_id) = legacy_record(conn, &card.reference)? else {

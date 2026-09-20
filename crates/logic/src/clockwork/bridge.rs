@@ -17,7 +17,11 @@ use rusqlite::{Connection, params};
 const MAX_EXPANDED_TERMS: usize = 16;
 const MAX_SIBLING_ANCHORS: usize = 6;
 
-pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
+pub fn expand_query_frame(
+    conn: &Connection,
+    frame: &mut QueryFrame,
+    principal: Option<&str>,
+) {
     let mut seeds: Vec<String> = Vec::new();
     for term in &frame.terms {
         push_unique(&mut seeds, term.clone());
@@ -47,6 +51,20 @@ pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
 
     let mut extra_terms: Vec<String> = Vec::new();
     let mut extra_anchors: Vec<QueryAnchor> = Vec::new();
+    // Loop 2: terms from similar *successful* past queries. Same channel
+    // as the other sources (spec-1 access aids, never hard anchors alone).
+    // Principal-scoped; without a principal there is no expansion. First,
+    // so the cap below trims morphosyntactic filler before learned terms.
+    if let Some(principal) = principal {
+        for remembered in remembered_query_terms(conn, principal, frame) {
+            push_term(&mut extra_terms, &mut extra_anchors, remembered);
+        }
+        // Loop 4: doc-side terms of matured bridges (positive mass ≥ 2,
+        // unvetoed). Learned after remembered: both precede filler.
+        for bridged in bridge_doc_terms(conn, principal, frame) {
+            push_term(&mut extra_terms, &mut extra_anchors, bridged);
+        }
+    }
     for seed in &seeds {
         for variant in morph_variants(seed) {
             push_term(&mut extra_terms, &mut extra_anchors, variant);
@@ -85,6 +103,102 @@ pub fn expand_query_frame(conn: &Connection, frame: &mut QueryFrame) {
                 frame.expanded_entity_ids.push(id);
             }
         }
+    }
+}
+
+fn remembered_query_terms(
+    conn: &Connection,
+    principal: &str,
+    frame: &QueryFrame,
+) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut stmt = match conn.prepare_cached("SELECT terms_json, anchors_json FROM query_memory WHERE principal = ?1 AND successes > 0 ORDER BY successes DESC, signature ASC LIMIT 64") { Ok(stmt) => stmt, Err(_) => return Vec::new() };
+    let rows: Vec<(String, String)> = match stmt
+        .query_map(params![principal], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) {
+        Ok(mapped) => mapped.flatten().collect(),
+        Err(_) => return Vec::new(),
+    };
+    let have_terms: BTreeSet<&str> = frame.terms.iter().map(String::as_str).collect();
+    // Stem-normalized overlap: a shared word and its stem are one shared
+    // word, not two (otherwise any single shared word clears the bar).
+    let have_stems: BTreeSet<String> = frame
+        .terms
+        .iter()
+        .filter(|t| !t.contains(' '))
+        .map(|t| morph_stem(&t.to_ascii_lowercase()))
+        .collect();
+    let have_anchors: BTreeSet<String> = frame
+        .anchors
+        .iter()
+        .filter(|a| a.specificity >= 2)
+        .map(|a| format!("{}:{}", a.kind.as_str(), a.value))
+        .collect();
+    let have_anchors: BTreeSet<&str> = have_anchors.iter().map(String::as_str).collect();
+    let mut out = Vec::new();
+    let mut frames_used = 0;
+    for (terms_json, anchors_json) in &rows {
+        if frames_used >= 3 || out.len() >= 8 {
+            break;
+        }
+        let row_terms: Vec<String> = serde_json::from_str(terms_json).unwrap_or_default();
+        let row_anchors: Vec<String> = serde_json::from_str(anchors_json).unwrap_or_default();
+        let row_stems: BTreeSet<String> = row_terms
+            .iter()
+            .filter(|t| !t.contains(' '))
+            .map(|t| morph_stem(&t.to_ascii_lowercase()))
+            .collect();
+        let shared_terms = row_stems.intersection(&have_stems).count();
+        let shared_anchors = row_anchors
+            .iter()
+            .filter(|a| have_anchors.contains(a.as_str()))
+            .count();
+        if shared_terms < 2 && shared_anchors < 1 {
+            continue;
+        }
+        frames_used += 1;
+        for term in row_terms {
+            if out.len() >= 8 {
+                break;
+            }
+            if term.len() >= 3 && !have_terms.contains(term.as_str()) && !out.contains(&term) {
+                out.push(term);
+            }
+        }
+    }
+    out
+}
+
+fn bridge_doc_terms(conn: &Connection, principal: &str, frame: &QueryFrame) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let seeds: Vec<String> = frame
+        .terms
+        .iter()
+        .filter(|t| !t.contains(' ') && t.len() >= 3)
+        .map(|t| t.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(16)
+        .collect();
+    if seeds.is_empty() {
+        return Vec::new();
+    }
+    let placeholders = seeds.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT doc_term FROM term_bridges WHERE principal = ?1 AND query_term IN ({placeholders}) AND positive >= 2 AND negative = 0 ORDER BY positive DESC, doc_term ASC LIMIT 8");
+    let mut stmt = match conn.prepare_cached(&sql) {
+        Ok(stmt) => stmt,
+        Err(_) => return Vec::new(),
+    };
+    let have: BTreeSet<String> = frame.terms.iter().cloned().collect();
+    let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![&principal as &dyn rusqlite::types::ToSql];
+    params.extend(seeds.iter().map(|s| s as &dyn rusqlite::types::ToSql));
+    match stmt.query_map(params.as_slice(), |row| row.get::<_, String>(0)) {
+        Ok(mapped) => mapped
+            .flatten()
+            .filter(|term| !have.contains(term))
+            .collect(),
+        Err(_) => Vec::new(),
     }
 }
 

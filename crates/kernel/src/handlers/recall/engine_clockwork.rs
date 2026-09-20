@@ -23,6 +23,7 @@ pub(super) const ARM_TRUTH: &str = "truth";
 pub(super) const ARM_TASK: &str = "task";
 pub(super) const ARM_HISTORY: &str = "history";
 pub(super) const ARM_HOP: &str = "hop";
+pub(super) const ARM_ACTIVITY: &str = "activity";
 
 pub(super) fn mark_arm(arms: &mut Vec<&'static str>, arm: &'static str) {
     if !arms.contains(&arm) {
@@ -194,7 +195,7 @@ pub fn run_clock_quorum_recall(
     // skipped an empty/stop-word query — and treated trailing `*` as a glob.
     let source_prefix = nonempty_opt(source_prefix);
     frame.entity_ids = graph::resolve_query(conn, query_text);
-    expand_query_frame(conn, &mut frame);
+    expand_query_frame(conn, &mut frame, ctx.principal.as_deref());
 
     let mut by_key: HashMap<(String, i64), ScoredCandidate> = HashMap::new();
     collect_write_arm(conn, &frame, query_text, source_prefix, ctx, &mut by_key)?;
@@ -203,6 +204,10 @@ pub fn run_clock_quorum_recall(
     collect_task_arm(conn, &frame, ctx, &mut by_key)?;
     collect_history_arm(conn, &frame, ctx, source_prefix, &mut by_key)?;
     collect_hop_arm(conn, &frame, ctx, &mut by_key)?;
+    // Activity runs last: hop traversal seeds from strong candidates only,
+    // and members must still be traversable-to (a member that seeds the hop
+    // would self-skip at distance 0 and lose the derived line).
+    collect_activity_arm(conn, &frame, ctx, &mut by_key)?;
 
     let mut trace = RouteTrace {
         rank_tuple: crate::clockwork::RANK_TUPLE_VERSION,

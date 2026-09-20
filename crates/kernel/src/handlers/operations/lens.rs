@@ -22,6 +22,7 @@ pub(crate) async fn run_lens(
     budget_bytes: usize,
 ) -> Result<super::View, String> {
     let mut ctx = RecallContext::from_caller(caller.owner_id, state);
+    ctx.principal = Some(caller.principal.clone());
     ctx.paths.extend(arg_list(args, &["paths"]));
     ctx.paths.extend(frame.handles.paths.iter().cloned());
     if let Some(cwd) = commit::cwd_root(args) {
@@ -101,7 +102,10 @@ pub(crate) async fn run_lens(
         }
     }
     view.close_evidence(&conn).map_err(|e| e.to_string())?;
-    view.persist_receipt(&conn, &caller.principal)
+    // Loop 2: remember the asked query. One bounded upsert; outcomes attach
+    // later via feedback. Failure here must not fail the read.
+    let _ = crate::db::query_memory::record_ask(&conn, &caller.principal, &query_text);
+    view.persist_receipt(&conn, &caller.principal, &query_text)
         .map_err(|e| e.to_string())?;
     Ok(view)
 }

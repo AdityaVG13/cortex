@@ -68,7 +68,7 @@ pub(super) fn apply(
             )?;
         }
     }
-    // persist_receipt stores `{profile, cards: N}`, not the record id. LIKE on
+    // persist_receipt stores `{profile, cards: N, need}`, not the record id. LIKE on
     // receipt_json therefore leaves production receipts in place and, on the
     // test shape, also matches unrelated JSON keys / prefix ids.
     let receipt_ids: Vec<String> = {

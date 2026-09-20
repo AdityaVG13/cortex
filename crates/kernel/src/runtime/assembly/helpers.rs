@@ -292,10 +292,9 @@ pub(super) fn compilation_status(bundles: &[AssemblyBundle]) -> &'static str {
         .unwrap_or("no_match")
 }
 
-mod compile;
+pub(crate) mod compile;
 pub(crate) use compile::suggest_authorized_members;
 pub(in crate::runtime::assembly) use compile::{
     compile_for_cues, load_allowed_assemblies, load_route_edges, merge_compilations,
-    ranked_route_explanations, refresh_routes, resolve_compile_scopes, routes_enabled,
-    stored_from_revision,
+    ranked_route_explanations, resolve_compile_scopes, routes_enabled, stored_from_revision,
 };

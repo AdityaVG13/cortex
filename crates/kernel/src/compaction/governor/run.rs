@@ -162,6 +162,16 @@ pub fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Com
     result.crystal_embeddings_pruned = prune_crystal_member_embeddings(conn);
     result.cluster_members_pruned = prune_orphan_cluster_members(conn, &mut result.failures);
     result.feedback_aggregated = aggregate_old_feedback(conn, &mut result.failures);
+    result.query_memory_trimmed = crate::db::query_memory::trim(conn, crate::db::query_memory::TRIM_KEEP_ROWS)
+        .unwrap_or_else(|err| {
+            record_failure(&mut result.failures, "trim_query_memory", err);
+            0
+        });
+    result.term_bridges_trimmed = crate::db::term_bridges::trim(conn, crate::db::term_bridges::TRIM_KEEP_ROWS)
+        .unwrap_or_else(|err| {
+            record_failure(&mut result.failures, "trim_term_bridges", err);
+            0
+        });
     result.stale_embeddings_pruned = prune_stale_embeddings(conn, &mut result.failures);
     result.co_occurrence_pruned = prune_singleton_co_occurrence(conn, &mut result.failures);
     result.legacy_embeddings_migrated = migrate_legacy_embeddings_to_pq8(conn);

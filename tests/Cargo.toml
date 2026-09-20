@@ -237,6 +237,10 @@ name = "recall_positive"
 path = "contracts/recall_positive.rs"
 
 [[test]]
+name = "learning_loops"
+path = "contracts/learning_loops.rs"
+
+[[test]]
 name = "kernel_embed"
 path = "contracts/kernel_embed.rs"
 

@@ -110,22 +110,22 @@ Bulk-ingest design (thousands of sessions, LLM-assisted): see
 
 ## Phase 1 — The invented program (first, in this order)
 
-- [ ] **Substrate map**: read `assembly/runtime/{learning,compile}`,
+- [x] **Substrate map** (`internal/substrate-map.md`): read `assembly/runtime/{learning,compile}`,
   `outcome_feedback` writers, query-frame shapes, thread/obligation
   writers. Document exactly what association substrate exists today and
   what each table's cue/target vocabulary is. (Grounds everything below.)
-- [ ] **Query memory**: persist query frames + signatures with their recall
+- [x] **Query memory**: persist query frames + signatures with their recall
   outcomes; new query → deterministic frame similarity → past successful
   queries → their recalled evidence as candidates. Provenance:
   `expanded:query-memory`.
-- [ ] **Use-grown term bridges**: on positive outcome, record query-term ↔
+- [x] **Use-grown term bridges**: on positive outcome, record query-term ↔
   recalled-doc-term edges (counts, scope-isolated, retractable); expansion
   walks edges above a mass threshold with quorum. Provenance:
   `expanded:bridge(N successes)`. This is the paraphrase learner.
-- [ ] **Activity-routed arm**: thread/episode/obligation-scoped candidate
+- [x] **Activity-routed arm**: thread/episode/obligation-scoped candidate
   collection as a new CQR arm — "what was alive with what this query
   touches". Purpose routing, not similarity.
-- [ ] **Outcome-attested witness**: the admission-law extension — learned
+- [x] **Outcome-attested witness**: the admission-law extension — learned
   bridges corroborated (two independent-origin bridges, or bridge + weak
   lexical). Never a single bridge alone. True unknowns still empty.
 
